@@ -2151,7 +2151,7 @@ button.origin-context-badge { cursor: pointer; }
 .origin-research-modes button { flex: 1; height: 28px; padding: 0 8px; font-size: 12.5px; }
 .origin-drawer .origin-research-scope { min-height: 34px; padding: 6px 10px; font-size: 13px; }
 .origin-research-body { gap: 0; padding: 14px 18px; }
-.origin-research-log { display: grid; align-content: start; gap: 16px; }
+.origin-research-log { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 16px; }
 .origin-research-hint { margin: 0; color: var(--subtle); font-size: 12.5px; line-height: 1.55; }
 .origin-research-message { min-width: 0; font-size: 13.5px; line-height: 1.6; }
 .origin-research-message .md-view { font-size: 13.5px; }
@@ -2203,13 +2203,13 @@ button.origin-context-badge { cursor: pointer; }
 .origin-research-proposal[data-status="applied"] { border-color: color-mix(in srgb, var(--og-ok) 45%, var(--line)); background: color-mix(in srgb, var(--og-ok) 6%, transparent); }
 .origin-research-proposal[data-status="rejected"] { opacity: .6; border-style: dashed; }
 .origin-research-proposal[data-status="conflict"] { border-color: color-mix(in srgb, var(--og-warn) 55%, var(--line)); }
-.origin-research-proposal-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; }
+.origin-research-proposal-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; overflow-wrap: anywhere; }
 .origin-research-proposal-head input { width: 15px !important; min-height: 15px !important; margin: 0; }
 .origin-research-badge { padding: 1px 8px; border-radius: 999px; background: var(--surface-3); color: var(--muted); font-size: 11px; font-weight: 600; }
 .origin-research-badge.is-applied { background: color-mix(in srgb, var(--og-ok) 18%, transparent); color: color-mix(in srgb, var(--og-ok) 75%, var(--ink)); }
 .origin-research-badge.is-conflict, .origin-research-badge.is-disagree { background: color-mix(in srgb, var(--og-warn) 18%, transparent); color: color-mix(in srgb, var(--og-warn) 75%, var(--ink)); }
 .origin-research-target, .origin-research-from, .origin-research-evidence { margin: 0; color: var(--subtle); font-size: 11.5px; overflow-wrap: anywhere; }
-.origin-research-why { margin: 0; color: var(--text); line-height: 1.5; }
+.origin-research-why { margin: 0; color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
 .origin-research-diff { display: grid; gap: 4px; }
 .origin-research-diff p { margin: 0; padding: 6px 8px; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 .origin-research-diff .is-old { background: color-mix(in srgb, var(--error) 8%, transparent); color: var(--muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--error) 50%, transparent); }
