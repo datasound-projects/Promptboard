@@ -18,8 +18,9 @@ export function parseStatus(output, prefix = '') {
   for (let i = 0; i < fields.length; i++) {
     const field = fields[i];
     if (field.length < 4) continue;
-    const code = field.slice(0, 2), letter = code === '??' ? 'U' : code === '!!' ? 'I' : 'ARC'.includes(code[0]) ? 'A' : 'M';
-    if ('RC'.includes(code[0])) i++; // A rename or copy is followed by its original path.
+    // A rename or copy, in the index (R ) or in the work tree ( R, after git add -N), is followed by its original path.
+    const code = field.slice(0, 2), moved = /[RC]/.test(code), letter = code === '??' ? 'U' : code === '!!' ? 'I' : code[0] === 'A' || moved ? 'A' : 'M';
+    if (moved) i++;
     if (letter === 'M' || letter === 'A') tracked++;
     let path = field.slice(3).replace(/\/$/, '');
     if (prefix) { if (!path.startsWith(`${prefix}/`)) continue; path = path.slice(prefix.length + 1); }

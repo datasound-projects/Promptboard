@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createWorkspaceEntry, inspectWorkspace, saveWorkspaceFile } from '../src/workspace-files.mjs';
@@ -45,8 +45,14 @@ test('a project folder inside a larger repository sees only its own changes, wit
   assert.equal(status.mergeBlocked, true);
 });
 
-test('porcelain parsing keeps renamed files under their new name and skips their old one', () => {
+test('porcelain parsing keeps renamed files under their new name and skips their old one, in the index and in the work tree', async t => {
   assert.deepEqual(parseStatus('R  new.js\0old.js\0 M a.js\0?? dir/\0'), { entries: [['new.js', 'A'], ['a.js', 'M'], ['dir', 'U']], tracked: 2, truncated: false });
+  assert.deepEqual(parseStatus(' R b.txt\0a.txt\0 C copy.js\0src.js\0'), { entries: [['b.txt', 'A'], ['copy.js', 'A']], tracked: 2, truncated: false });
+  // The real case: a moved file whose new name is marked with git add -N is a work-tree rename.
+  const { base, board } = await fixture(t);
+  await rename(join(base, 'readme.md'), join(base, 'intro.md')); git(base, 'add', '-N', 'intro.md');
+  assert.equal(execFileSync('git', ['status', '--porcelain=v1'], { cwd: base, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }), ' R readme.md -> intro.md\n');
+  assert.deepEqual((await projectStatus(board, 'p_shop')).status.entries, [['intro.md', 'A']]);
   assert.deepEqual(parseStatus(' M app/a.js\0 M other/b.js\0', 'app').entries, [['a.js', 'M']]);
 });
 
@@ -77,7 +83,8 @@ test('creating refuses escapes, protected names, links, missing folders, Windows
   const { root, base, board, project } = await fixture(t);
   const { scopeVersion } = await inspectWorkspace(board, 'p_shop');
   const before = await readdir(base);
-  for (const path of ['../outside.js', '/tmp/outside.js', 'src/../x.js', './x.js', 'src//x.js', 'C:/x.js', 'x:stream', '..\\x.js', 'a\0b', '', 'name.', 'name ', 'CON', 'nul.txt']) {
+  for (const path of ['../outside.js', '/tmp/outside.js', 'src/../x.js', './x.js', 'src//x.js', 'C:/x.js', 'x:stream', '..\\x.js', 'a\0b', '', 'name.', 'name ', 'CON', 'nul.txt',
+    'a<b.js', 'a>b.js', 'a"b.js', 'a|b.js', 'a?b.js', 'a*b.js', 'CON .txt', 'aux .md', 'COM¹', 'lpt².log', 'com0', 'conin$']) {
     await assert.rejects(createWorkspaceEntry(board, 'p_shop', { path, kind: 'file', scopeVersion }), { code: 'FILE_PATH_INVALID' }, JSON.stringify(path));
   }
   for (const path of ['.env', '.git/hooks/x', 'keys/id_ed25519', 'server.pem']) await assert.rejects(createWorkspaceEntry(board, 'p_shop', { path, kind: 'file', scopeVersion }), { code: 'FILE_PROTECTED' }, path);
@@ -96,6 +103,27 @@ test('creating refuses escapes, protected names, links, missing folders, Windows
   await assert.rejects(createWorkspaceEntry(board, 'p_shop', { path: 'x.js', kind: 'file', scopeVersion }), { code: 'FILE_CONFLICT' });
   assert.deepEqual(await readdir(join(root, 'other')), []);
   assert.deepEqual((await readdir(base)).filter(name => name !== 'other'), before);
+});
+
+test('a create the file system refuses gets its own plain message, without the local path', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+  const { base, board } = await fixture(t);
+  const { scopeVersion } = await inspectWorkspace(board, 'p_shop');
+  await chmod(join(base, 'src'), 0o555);
+  try {
+    for (const path of ['src/locked.js', `${'n'.repeat(300)}.js`]) {
+      const error = await createWorkspaceEntry(board, 'p_shop', { path, kind: 'file', scopeVersion }).then(() => null, failure => failure);
+      assert.deepEqual([error?.code, error?.message], ['FILE_CREATE_FAILED', 'The file or folder could not be created. Check that you can write to this folder, or choose a shorter name.'], path.slice(0, 20));
+    }
+    await assert.rejects(lstat(join(base, 'src', 'locked.js')), { code: 'ENOENT' });
+  } finally { await chmod(join(base, 'src'), 0o755); } // Before the folder is removed.
+});
+
+test('Git status refuses a project folder that was replaced by a link, like the file list does', { skip: process.platform === 'win32' }, async t => {
+  const { root, board } = await fixture(t), moved = `${root}-original`;
+  await rename(root, moved); t.after(() => rm(moved, { recursive: true, force: true }));
+  await symlink(moved, root);
+  await assert.rejects(inspectWorkspace(board, 'p_shop'), { code: 'FILE_ROOT_CHANGED' });
+  await assert.rejects(projectStatus(board, 'p_shop'), { code: 'FILE_ROOT_CHANGED' });
 });
 
 test('a save over a file that changed on disk is refused; Keep mine saves once more from the newer version', async t => {
