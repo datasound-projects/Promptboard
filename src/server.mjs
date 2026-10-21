@@ -42,6 +42,7 @@ import { streamResearch } from './research-cli.mjs';
 import { PromptStore, createBoardProject, nameTaken, projectsRoute } from './projects.mjs';
 import { Coordinator, CoordinatorError, coordinatorRoute } from './coordinator.mjs';
 import { BatchError, ComposeBatches, batchRoute } from './compose-batch.mjs';
+import { projectInsights } from './insights.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -62,6 +63,7 @@ const assets = new Map([
   ['/origin-research.js', ['origin-research.js', 'text/javascript; charset=utf-8']],
   ['/projects.js', ['projects.js', 'text/javascript; charset=utf-8']],
   ['/coordinator.js', ['coordinator.js', 'text/javascript; charset=utf-8']],
+  ['/insights.js', ['insights.js', 'text/javascript; charset=utf-8']],
   ['/compose-batch.js', ['compose-batch.js', 'text/javascript; charset=utf-8']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
 ]);
@@ -130,7 +132,7 @@ const TASK_BODY_LIMIT = 8 * 1024 * 1024;
 const BOARD_BODY_LIMIT = 48 * 1024 * 1024;
 
 /** Kanban routes. IDs come from the URL; every filesystem path is resolved on the server. */
-async function boardRoute(board, req, res, pathname, searchParams, origin) {
+async function boardRoute(board, req, res, pathname, searchParams, origin, prompts) {
   const method = req.method;
   const match = pathname.match(/^\/api\/(projects|tasks|runs)\/([A-Za-z0-9_-]{1,100})(?:\/([a-z-]+))?$/);
   const body = async (limit = TASK_BODY_LIMIT) => { const value = await jsonBody(req, limit); if (!value || typeof value !== 'object' || Array.isArray(value)) throw Object.assign(new Error('Send a JSON object.'), { status: 400 }); return value; };
@@ -200,6 +202,7 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'PATCH' && action === 'tests') return view({ project: await board.delivery.setTestCommands(id, await body()) });
     if (method === 'POST' && action === 'target-branch') return view({ project: await board.setTargetBranch(id, await body()) });
     if (method === 'GET' && action === 'timeline') return send(res, 200, { events: await board.timeline(id) });
+    if (method === 'GET' && action === 'insights') return send(res, 200, { insights: await projectInsights({ board, origin, prompts }, id, searchParams.get('days')) });
     if (method === 'POST' && action === 'timeline') return send(res, 200, { note: await board.addTimelineNote(id, await body()) });
     if (method === 'POST' && action === 'github') return view({ project: await board.connectGitHub(id, await body()) });
     if (method === 'GET' && action === 'github-remote') return view({ repository: await board.githubRemote(id) });
@@ -702,7 +705,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       return;
     }
     if (/^\/api\/(board|projects|tasks|runs|github)(\/|$)/.test(pathname) || pathname === '/api/repository/validate' || pathname === '/api/folder/choose' || pathname === '/api/settings') {
-      try { if ((await track(boardRoute(board, req, res, pathname, requestUrl.searchParams, origin))) !== false) return; }
+      try { if ((await track(boardRoute(board, req, res, pathname, requestUrl.searchParams, origin, prompts))) !== false) return; }
       // Board, store, and Git errors carry fixed messages; raw Git output is never returned.
       catch (error) { return sendFailure(res, error, 'The board request failed.', { status: 500, code: 'BOARD_FAILED' }); }
       return send(res, 404, { error: 'This route does not exist.' });
