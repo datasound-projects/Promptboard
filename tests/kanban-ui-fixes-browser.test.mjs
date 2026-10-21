@@ -240,3 +240,23 @@ test('"Keep running" in the dock\'s stop prompt returns focus to Stop…', { ski
   assert.equal(await browser.layout(`return document.querySelector('#dock-stop-prompt').hidden && document.activeElement.id;`, 'dock-stop'), 'dock-stop');
   assert.equal((await app.board.state()).runs.filter(run => run.status === 'cancelled').length, 0);
 });
+
+test('an unsaved "Merges into" choice survives a background board refresh', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await linked(app, 'Branches');
+  execFileSync('git', ['branch', 'develop'], { cwd: project.repository.root });
+  const card = await app.board.createTask({ projectId: project.id, title: 'Background', prompt: 'b' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${card.id}"]')`, 'card');
+  await browser.eval(`if (document.querySelector('#project-settings').hidden) document.querySelector('#project-toggle').click();`);
+  await browser.until(`[...document.querySelector('#target-branch').options].some(option => option.value === 'develop')`, 'branches');
+  const target = `JSON.stringify({ value: document.querySelector('#target-branch').value, save: !document.querySelector('#branch-save').hidden })`;
+  await browser.eval(`const select = document.querySelector('#target-branch'); select.focus(); select.value = 'develop'; select.dispatchEvent(new Event('change'));`);
+  await app.board.updateTask(card.id, { title: 'Changed elsewhere', expectedRevision: (await fresh(app, card.id)).revision });
+  await browser.until(`document.querySelector('[data-id="${card.id}"] .kanban-open').textContent === 'Changed elsewhere'`, 'background render');
+  assert.equal(await browser.eval(`return ${target};`), JSON.stringify({ value: 'develop', save: true }));
+  await browser.eval(`document.querySelector('#branch-save').click();`);
+  await browser.until(`(${target}) === ${JSON.stringify(JSON.stringify({ value: 'develop', save: false }))}`, 'saved');
+  // With no choice pending, the list follows a target branch saved elsewhere.
+  await app.board.setTargetBranch(project.id, { branch: 'main', expectedRevision: (await app.board.state()).projects[0].revision });
+  await browser.until(`(${target}) === ${JSON.stringify(JSON.stringify({ value: 'main', save: false }))}`, 'target saved elsewhere');
+});

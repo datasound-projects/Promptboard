@@ -3903,11 +3903,15 @@ function renderRepository(project) {
   $('#branch-field').hidden = !repository;
   const known = repositories.get(project.id);
   const branches = known?.branches || (project.targetBranch ? [{ name: project.targetBranch.name }] : []);
-  $('#target-branch').replaceChildren(option('', branches.length ? 'Choose a local branch…' : 'Reading branches…'), ...branches.map(branch => option(branch.name, branch.name)));
-  $('#target-branch').value = project.targetBranch?.name || '';
+  const select = $('#target-branch'), saved = project.targetBranch?.name || '';
+  // A branch chosen but not saved yet survives a background render while it is still listed.
+  const chosen = select.dataset.projectId === project.id && select.value !== select.dataset.saved && branches.some(branch => branch.name === select.value) ? select.value : saved;
+  select.replaceChildren(option('', branches.length ? 'Choose a local branch…' : 'Reading branches…'), ...branches.map(branch => option(branch.name, branch.name)));
+  select.value = chosen;
+  Object.assign(select.dataset, { projectId: project.id, saved });
   $('#branch-save').disabled = !repository;
   // Save appears only once another branch is chosen; the note only while no code folder is connected.
-  $('#branch-save').hidden = $('#target-branch').value === (project.targetBranch?.name || '');
+  $('#branch-save').hidden = select.value === saved;
   $('.settings-panel-note').hidden = Boolean(repository);
   $('#branch-state').textContent = project.targetBranch
     ? `Target branch: ${project.targetBranch.name} at ${project.targetBranch.commit.slice(0, 12)}. Task worktrees start from this recorded commit.`
