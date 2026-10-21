@@ -16,7 +16,7 @@ import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { redactLocal } from './compose-local.mjs';
 import { readWithBackup, serial, writeAtomic } from './durable.mjs';
-import { createBoardFor, enteredName, nameKey, nameTaken } from './projects.mjs';
+import { createBoardFor, enteredName, nameKey, nameTaken, oneName } from './projects.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 export const ORIGIN_DIR = 'origin';
@@ -265,6 +265,8 @@ export class OriginStore {
     return this.#serial(async () => {
       const record = await this.#require(originId);
       if (record.revision !== expectedRevision) throw new OriginError('This project changed in another window. Reload it first.', 'ORIGIN_REVISION_CONFLICT', 409);
+      // Checked here too, as in create(), so two renames to one name at once never both pass.
+      if (changes.name !== undefined && (await this.#list()).some(other => other.id !== originId && nameKey(other.name) === nameKey(changes.name))) throw new OriginError('A project with this name already exists. Choose it from the project list.', 'NAME_TAKEN', 409);
       return this.#save(record, changes);
     });
   }
@@ -635,19 +637,21 @@ export async function originRoute({ origin, contexts, research, batches, board, 
     const input = await body();
     // One project per name across Origin, Compose and Kanban, its own name or its board's. A board of this
     // name that no Origin project uses is this project's board: the Origin project takes its ID and links to it.
-    const match = named(input.name) ? await nameTaken(services, named(input.name)) : null;
-    if (match?.origin) throw nameInUse();
-    const start = await startBlueprint(origin, input.start);
-    if (match) {
-      const adopted = await origin.create({ name: input.name, description: input.description, id: match.kanban.id, kanbanProjectId: match.kanban.id, start, preferences: input.preferences });
-      return send(res, 200, { project: view(adopted, await kanban()), blueprint: adopted.blueprint, joinedKanban: true });
-    }
-    const created = await origin.create({ name: input.name, description: input.description, start, preferences: input.preferences });
-    if (input.createKanban !== true) return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint });
-    let linked;
-    try { linked = (await createBoardFor(services, created)).record; }
-    catch (error) { return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint, kanbanError: kanbanFailure(error) }); }
-    return send(res, 200, { project: view(linked, await kanban()), blueprint: linked.blueprint });
+    return oneName(async () => {
+      const match = named(input.name) ? await nameTaken(services, named(input.name)) : null;
+      if (match?.origin) throw nameInUse();
+      const start = await startBlueprint(origin, input.start);
+      if (match) {
+        const adopted = await origin.create({ name: input.name, description: input.description, id: match.kanban.id, kanbanProjectId: match.kanban.id, start, preferences: input.preferences });
+        return send(res, 200, { project: view(adopted, await kanban()), blueprint: adopted.blueprint, joinedKanban: true });
+      }
+      const created = await origin.create({ name: input.name, description: input.description, start, preferences: input.preferences });
+      if (input.createKanban !== true) return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint });
+      let linked;
+      try { linked = (await createBoardFor(services, created)).record; }
+      catch (error) { return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint, kanbanError: kanbanFailure(error) }); }
+      return send(res, 200, { project: view(linked, await kanban()), blueprint: linked.blueprint });
+    });
   }
   // Saved blueprints: list (with their structure for the preview) and delete; saving is done from a project.
   if (pathname === '/api/origin/blueprints' && req.method === 'GET') return send(res, 200, { blueprints: await origin.listBlueprints() });
@@ -670,8 +674,10 @@ export async function originRoute({ origin, contexts, research, batches, board, 
   }
   if (!action && req.method === 'PATCH') {
     const input = await body();
-    if (named(input.name) && await nameTaken(services, named(input.name), originId)) throw nameInUse();
-    const saved = await origin.update(originId, { expectedRevision: input.expectedRevision, name: input.name, description: input.description });
+    const saved = await oneName(async () => {
+      if (named(input.name) && await nameTaken(services, named(input.name), originId)) throw nameInUse();
+      return origin.update(originId, { expectedRevision: input.expectedRevision, name: input.name, description: input.description });
+    });
     return send(res, 200, { project: view(saved, await kanban()), revision: saved.revision });
   }
   if (action === 'save-blueprint' && req.method === 'POST') {
@@ -691,9 +697,8 @@ export async function originRoute({ origin, contexts, research, batches, board, 
       // Checked before anything is created; the new board takes this project's ID when it is free.
       if (record.revision !== input.expectedRevision) throw new OriginError('This project changed in another window. Reload it first.', 'ORIGIN_REVISION_CONFLICT', 409);
       const name = named(input.name) || record.name;
-      if (await nameTaken(services, name, originId)) throw nameInUse();
       let saved;
-      try { saved = (await createBoardFor(services, record, { name })).record; }
+      try { saved = (await oneName(async () => { if (await nameTaken(services, name, originId)) throw nameInUse(); return createBoardFor(services, record, { name }); })).record; }
       catch (error) { if (error instanceof OriginError) throw error; const failure = kanbanFailure(error); throw new OriginError(failure.message, failure.code, 409); }
       return send(res, 200, { project: view(saved, await kanban()), revision: saved.revision });
     }

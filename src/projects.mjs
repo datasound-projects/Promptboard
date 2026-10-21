@@ -63,19 +63,28 @@ export async function nameTaken(services, name, exceptId = null) {
   return (await listProjects(services)).find(project => !project.ids.includes(exceptId) && [project.name, project.kanban?.name].some(used => used && sameName(used, name))) || null;
 }
 
+/**
+ * Every check of a name together with the create or rename it allows runs here, one at a time, so two windows
+ * (Origin, Compose, Kanban) never both pass the check. Work in it never waits for this queue again.
+ * ponytail: one queue per process (one app per process); key it by data folder if apps ever share one.
+ */
+export const oneName = serial();
+
 /** Compose (or any page) asks for a project by name: an existing one of that name is selected, never duplicated. */
 export async function ensureProject(services, { name }) {
   const clean = enteredName(name);
   if (!clean) fail('A project name needs 1 to 80 characters and no control characters.');
-  const existing = await nameTaken(services, clean);
-  if (existing) return { project: existing, existing: true };
-  try { return { project: await findProject(services, (await services.origin.create({ name: clean })).id), existing: false }; }
-  catch (error) {
-    // Another window created this name a moment ago: Origin checks names in its write queue.
-    const raced = error.code === 'NAME_TAKEN' && await nameTaken(services, clean);
-    if (!raced) throw error;
-    return { project: raced, existing: true };
-  }
+  return oneName(async () => {
+    const existing = await nameTaken(services, clean);
+    if (existing) return { project: existing, existing: true };
+    try { return { project: await findProject(services, (await services.origin.create({ name: clean })).id), existing: false }; }
+    catch (error) {
+      // Another window created this name a moment ago: Origin checks names in its write queue.
+      const raced = error.code === 'NAME_TAKEN' && await nameTaken(services, clean);
+      if (!raced) throw error;
+      return { project: raced, existing: true };
+    }
+  });
 }
 
 /** A new board for an Origin project, with the project's ID when free, then linked. Kanban changes go only through the board service. */
@@ -114,11 +123,13 @@ export async function ensureOrigin({ origin, board }, id) {
  */
 export async function createBoardProject(services, { name, folder = 'new', workflowMode = 'pipeline' }) {
   const clean = typeof name === 'string' ? name.trim() : '';
-  const match = clean ? await nameTaken(services, clean) : null;
-  if (match?.kanban) fail('A project with this name already exists.', 'NAME_TAKEN', 409);
-  if (!match) return services.board.createProjectWithRepository({ name, folder, workflowMode });
-  const { record, ...made } = await createBoardFor(services, await services.origin.read(match.origin.id, { report: false }), { folder, workflowMode });
-  return { ...made, sharedWith: record.id };
+  return oneName(async () => {
+    const match = clean ? await nameTaken(services, clean) : null;
+    if (match?.kanban) fail('A project with this name already exists.', 'NAME_TAKEN', 409);
+    if (!match) return services.board.createProjectWithRepository({ name, folder, workflowMode });
+    const { record, ...made } = await createBoardFor(services, await services.origin.read(match.origin.id, { report: false }), { folder, workflowMode });
+    return { ...made, sharedWith: record.id };
+  });
 }
 
 // ---- Saved project prompts ----

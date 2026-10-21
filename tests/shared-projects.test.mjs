@@ -191,6 +191,24 @@ test('a board made for an Origin project is linked although the blueprint was sa
   assert.equal((await origin.read(other.id)).kanbanProjectId, 'chosen');
 });
 
+test('one name, one project, also when two windows create or rename on different pages at the same moment', async t => {
+  const { app, call } = await client(t);
+  const using = async name => (await call('/api/shared-projects')).data.projects.filter(project => [project.name, project.kanban?.name].some(used => used?.toLowerCase() === name)).length;
+  const a = (await call('/api/origin/projects', 'POST', { name: 'First' })).data.project, b = (await call('/api/origin/projects', 'POST', { name: 'Second' })).data.project;
+  const renames = await Promise.all([call(`/api/origin/projects/${a.id}`, 'PATCH', { expectedRevision: a.revision, name: 'Same Name' }), call(`/api/origin/projects/${b.id}`, 'PATCH', { expectedRevision: b.revision, name: 'same name' })]);
+  assert.deepEqual(renames.map(result => result.status).sort(), [200, 409], 'both renames to one name succeeded');
+  const board = await app.board.createProject({ name: 'Board' }), c = (await call('/api/origin/projects', 'POST', { name: 'Third' })).data.project;
+  await Promise.all([call(`/api/projects/${board.id}`, 'PATCH', { name: 'Renamed', expectedRevision: board.revision }), call(`/api/origin/projects/${c.id}`, 'PATCH', { expectedRevision: c.revision, name: 'renamed' })]);
+  const kanban = name => call('/api/projects', 'POST', { name, folder: 'new', workflowMode: 'pipeline' });
+  await Promise.all([kanban('Twin'), call('/api/shared-projects', 'POST', { name: 'twin' })]);
+  await Promise.all([kanban('Pair'), call('/api/origin/projects', 'POST', { name: 'pair' })]);
+  for (const name of ['same name', 'renamed', 'twin', 'pair']) assert.equal(await using(name), 1, `projects named ${name}`);
+  // Origin's own store checks a new name in its write queue, on rename as on create.
+  const { origin } = await local(t), one = await origin.create({ name: 'One' }), two = await origin.create({ name: 'Two' });
+  await assert.rejects(Promise.all([origin.update(one.id, { expectedRevision: one.revision, name: 'Both' }), origin.update(two.id, { expectedRevision: two.revision, name: 'BOTH' })]), { code: 'NAME_TAKEN' });
+  assert.equal((await origin.update(one.id, { expectedRevision: (await origin.read(one.id)).revision, name: 'one' })).name, 'one', 'a project may change the case of its own name');
+});
+
 test('saved prompts stay with a kept board when the Origin side of an older link is deleted', async t => {
   const { board, origin, prompts, services, route } = await local(t);
   const kept = await board.createProject({ name: 'Legacy board' }), plan = await origin.create({ name: 'Legacy plan' });
