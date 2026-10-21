@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { Board } from '../src/board.mjs';
-import { Coordinator, coordinatorRoute } from '../src/coordinator.mjs';
+import { Coordinator, coordinatorRoute, noPaths } from '../src/coordinator.mjs';
 import { OriginStore } from '../src/origin.mjs';
 import { commandOnPath, removeOwnedTempDirsSync } from '../src/providers.mjs';
 
@@ -264,4 +264,8 @@ test('local folder paths in event details never reach the model; their last name
   const prompt = calls.at(-1).prompt;
   assert.equal(prompt.includes('/Users/someone'), false, 'no absolute local path');
   assert.match(prompt, /fast-forward in …\/app/, 'the folder name stays');
+  // Also after "=" and in file:// links; web addresses and paths inside the repository stay as they are.
+  assert.equal(noPaths('run with --cwd=/Users/alice/secret/app and open file:///Users/alice/secret/app/index.html'), 'run with --cwd=…/app and open file://…/index.html');
+  assert.equal(noPaths('C:\\Users\\bob\\shop, ROOT=D:\\work\\shop'), '…/shop, ROOT=…/shop');
+  assert.equal(noPaths('https://github.com/acme/shop/pull/7 changed src/cart/total.js'), 'https://github.com/acme/shop/pull/7 changed src/cart/total.js');
 });

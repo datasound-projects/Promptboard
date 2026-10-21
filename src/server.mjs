@@ -401,13 +401,14 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const authStates = new Map(); // Last read per provider, shown while another CLI job runs.
   const invalidate = provider => { catalogs.delete(provider); authStates.delete(provider); };
   const claim = async (kind, provider) => {
-    // Project memory runs in the background: the owner's own CLI work stops it (it is queued again) instead of waiting for it.
-    if (busy?.kind === 'lessons' && kind !== 'lessons') busy.controller.abort('yield');
     // A just-cancelled generation may still be stopping its CLI. Wait briefly for it.
     if (busy?.controller.signal.aborted) await Promise.race([busy.done, new Promise(resolve => setTimeout(resolve, 5000).unref())]);
     // Changing sign-in under a running agent session would break it.
     if (kind === 'auth' && (board.executor?.pendingCount?.() ?? board.executor?.activeCount?.()) > 0) throw Object.assign(new ProviderError('Agent sessions are running. Stop them before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
     if (kind === 'auth' && batches.activeCount() > 0) throw Object.assign(new ProviderError('Compose Batch is running. Wait for it or cancel it before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
+    // Project memory runs in the background: the owner's own CLI work, once allowed, stops it (it is queued again) and
+    // gets the slot as soon as that run has stopped (src/lessons.mjs), never a BUSY refusal.
+    if (busy?.kind === 'lessons' && kind !== 'lessons') { busy.controller.abort('yield'); await busy.done; }
     if (busy) {
       throw Object.assign(new ProviderError(busy.kind === 'auth' ? 'A sign-in change is in progress. Finish or cancel it first.' : 'A prompt is already in progress. Wait or cancel that prompt.', busy.kind === 'auth' ? 'AUTH_IN_PROGRESS' : 'BUSY'), { status: 409 });
     }
@@ -417,7 +418,8 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     const job = busy;
     return { job, release: () => {
       const free = () => { if (busy === job) busy = null; release(); if (job.kind === 'auth') board.executor?.wake?.(); };
-      if (!job.controller.signal.aborted || closing) { free(); return; }
+      // The lessons worker releases only after its own CLI call has settled, so it waits for no unrelated work.
+      if (!job.controller.signal.aborted || closing || job.kind === 'lessons') { free(); return; }
       // The UI can finish cancelling before provider pipes have closed. Keep the
       // slot until tracked cleanup settles; a broken injected adapter is bounded.
       let timer;

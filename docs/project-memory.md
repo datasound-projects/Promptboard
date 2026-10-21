@@ -23,7 +23,7 @@ There are four kinds of lesson:
   | Antigravity | not possible: it cannot run without tools. The card shows why; choose another CLI under **More**. |
 
 - The run has every tool disabled, works in an empty temporary folder that is removed afterwards, and stops after 3 minutes.
-- It goes through the same one-at-a-time CLI slot as Compose, Research, the Coordinator and sign-in. While the slot is busy it waits and tries again 30 seconds later. When you start your own work (Generate, Research, a Coordinator question, a sign-in), the lessons run steps aside: it stops and runs again later, so you never wait for it.
+- It goes through the same one-at-a-time CLI slot as Compose, Research, the Coordinator and sign-in. While the slot is busy it waits and tries again 30 seconds later. When you start your own work (Generate, Research, a Coordinator question, a sign-in that is allowed), the lessons run steps aside: its CLI is stopped, your work starts as soon as it has stopped (a few seconds at most), and the lessons run is queued again. A run stopped 3 times (by your own work or an app restart) is not resent on its own: the card says so and offers **Suggest again**.
 - Jobs are saved. A job that was queued or running when the app stopped runs after the next start.
 - A failure (CLI missing, not signed in, a timeout, an answer that is not a list of lessons) is shown on the card with its reason and **Suggest again**. It is never retried on its own.
 - **No new lessons** is a valid answer and is shown as such.
@@ -36,7 +36,7 @@ There are four kinds of lesson:
   - suggestions waiting for you, each linked to its card;
   - the switch **Suggest lessons after each merged card**, on by default: *One short run with a small model after each merged card.* Off, merges queue nothing and a waiting automatic run is dropped; **Suggest lessons** on a card still asks once, because you clicked it;
   - under **More**: the CLI and model of the suggestions. The model applies to the CLI you choose.
-- Every change checks the revision you loaded. If project memory changed in another window, you are asked to reload.
+- Every change checks the revision you loaded. If project memory changed in another window, or new suggestions arrived, you are asked to reload. A lessons run starting or ending without new suggestions does not count as a change.
 - A suggestion that repeats an approved, suggested, edited or rejected lesson (compared without case and punctuation) is dropped.
 - Limits: 100 suggestions (the oldest make room), 200 rejected lessons (the oldest go) and 200 approved lessons. Approved lessons are never dropped: at 200, remove some before approving more.
 
@@ -76,9 +76,9 @@ The answer must be a JSON array of at most six `{kind, text, evidence}` (text at
 
 ## Storage and backups
 
-- `<data folder>/lessons/<project id>.json` (in file names, capital letters and `_` in the ID are written as `_` plus the lowercase letter), replaced atomically with the previous copy kept as `.bak`. A damaged file is kept aside as `….corrupt-…` and never overwritten. Shape: `{schema, version, projectId, revision, settings: {enabled, provider, model}, lessons: [{id, kind, text, evidence, taskId, taskNumber, status: suggested|approved|rejected, createdAt, decidedAt?, edited?}], jobs: [...]}`.
+- `<data folder>/lessons/<project id>.json` (in file names, capital letters and `_` in the ID are written as `_` plus the lowercase letter), replaced atomically with the previous copy kept as `.bak`. A damaged file is kept aside as `….corrupt-…` and never overwritten. A file saved by a newer Promptboard version is left as it is: that project asks you to update the app, and every other project's memory keeps working. Shape: `{schema, version, projectId, revision, settings: {enabled, provider, model}, lessons: [{id, kind, text, evidence, taskId, taskNumber, status: suggested|approved|rejected, createdAt, decidedAt?, edited?}], jobs: [...]}`.
 - A project without the file has no lessons and the switch on. Nothing is written until a card merges or you change something.
-- **Board backups** carry each project's approved lessons and settings. Suggestions and jobs are not exported; importing a backup replaces a project's lessons with the saved ones. Backups made before project memory import as before.
+- **Board backups** carry each project's approved lessons and settings. Suggestions and jobs are not exported. Importing a backup gives each project in it exactly the saved lessons and settings, when the backup has them. A backup without project memory (made before it existed) leaves the memory already stored for its projects as it is. Memory of a project the import removes from the board is not deleted: it stays in the data folder, unused, and comes back if a project with that ID returns.
 - Deleting a project deletes its project memory.
 
 ## Routes
