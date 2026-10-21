@@ -527,6 +527,19 @@ test('a backup made while imported settings wait for confirmation keeps them', a
   assert.deepEqual((await restored.state()).projects[0].pendingImport, (await board.state()).projects[0].pendingImport);
 });
 
+test('replacing the board by import waits until column automations stop, as deleting a project does', async t => {
+  const board = new Board({ dataDir: await temp(t, 'pb-import-scripts-') });
+  const project = await board.createProject({ name: 'Scripts', workflowMode: 'pipeline' });
+  const card = await board.createTask({ projectId: project.id, title: 'Card', prompt: 'Do it' });
+  const backup = await board.exportBackup(), before = structuredClone(await board.state());
+  board.automationMoves.set(card.id, {}); // A column script of this card is still running.
+  await assert.rejects(board.importBackup({ ...backup, projects: [] }, { replace: true }), { code: 'AUTOMATIONS_ACTIVE', status: 409 });
+  assert.deepEqual(await board.state(), before, 'nothing was imported');
+  board.automationMoves.delete(card.id);
+  await board.importBackup({ ...backup, projects: [] }, { replace: true });
+  assert.deepEqual((await board.state()).projects, []);
+});
+
 test('board HTTP routes need the page token, resolve paths on the server, and never start agents', { skip: process.platform === 'win32' }, async t => {
   const dataDir = await temp(t, 'pb-data-');
   const root = await repo(t);
