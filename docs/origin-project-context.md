@@ -27,6 +27,7 @@
 
 ## The panel
 
+- **Lessons from finished work**, above the preview when the project has a linked Kanban board: the [project memory](project-memory.md) lessons you approved there, grouped by kind and read-only, with **Manage in Kanban**. They are shown beside the document and are never written into it, so its text, hashes and versions stay as they are.
 - **Preview** renders the saved Markdown locally: raw HTML is shown as text, links open only `http(s)` addresses or in-document anchors, and images or other external content are never loaded. Mermaid flowcharts of the kind this document writes are drawn locally as SVG; other or invalid diagram code shows a local message and the text is kept. Very long documents are previewed in part, with a note; the file stays complete.
 - **Edit** is a plain Markdown editor with its own autosave, revision check, **Retry**, and **Reload saved version** / **Keep mine** after a conflict. Unsaved text survives switching the panel to a record editor, and Origin waits for it before switching projects.
 - The panel is resizable on desktop (drag its left edge, or focus the edge and use the arrow keys) and a full-width sheet on narrow screens. Escape closes it.
