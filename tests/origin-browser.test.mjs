@@ -930,3 +930,15 @@ test('Origin keeps the field you type in on the Tasks page when a save refreshes
   assert.equal((await store.read(record.id)).blueprint.blocks.find(block => block.id === 'nb').text, 'Hello world', 'no keystroke is lost');
 });
 
+test('Origin keeps the caret where you type in the task editor when a save redraws it', { skip: !await findChrome(), timeout: 90000 }, async t => {
+  const { browser, store, record, ev, saved, open, statusReads, refreshed } = await sentTaskPage(t);
+  await open('Build checkout');
+  await ev(`const area = document.querySelector('#origin-drawer textarea[data-focus-key="description"]'); area.focus(); area.setSelectionRange(5, 5);`);
+  await browser.type(' big');
+  const before = await statusReads();
+  await saved(); await refreshed(before);
+  assert.deepEqual(await ev(`const a = document.activeElement; return [a?.dataset.focusKey, a?.selectionStart, a?.selectionEnd];`), ['description', 9, 9], 'the redrawn field has the caret where it was');
+  await browser.type('!');
+  await saved();
+  assert.equal((await store.read(record.id)).blueprint.items[0].description, 'Hello big! world');
+});

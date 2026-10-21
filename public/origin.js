@@ -1380,7 +1380,9 @@ window.PromptboardOrigin = (() => {
       if (contextPanel.isOpen() || researchPanel.isOpen()) return; // Project Context or Research owns the panel while it is open.
       const entry = open && record?.exists ? bp()[open.collection]?.find(item => item.id === open.id) : null;
       if (!entry) { open = null; drawer.hidden = true; drawer.replaceChildren(); view.dataset.drawer = 'closed'; return; }
-      const focusKey = restore && drawer.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
+      const focused = restore && drawer.contains(document.activeElement) ? document.activeElement : null, focusKey = focused?.dataset.focusKey;
+      // The caret too: a redraw while you type must not move your next keystrokes to the end.
+      const caret = typeof focused?.selectionStart === 'number' ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
       const scroll = drawer.querySelector('.origin-drawer-body')?.scrollTop || 0;
       drawerMessage = el('p', 'origin-inline-error'); drawerMessage.hidden = true; drawerMessage.setAttribute('role', 'alert');
       const spec = DRAWER[open.collection](entry), collection = open.collection;
@@ -1412,7 +1414,9 @@ window.PromptboardOrigin = (() => {
       drawer.replaceChildren(head, body, message, foot);
       drawer.hidden = false; view.dataset.drawer = 'open';
       body.scrollTop = scroll;
-      if (focusKey) drawer.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
+      const again = focusKey ? drawer.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`) : null;
+      again?.focus();
+      if (caret && typeof again?.selectionStart === 'number') again.setSelectionRange(...caret);
     }
     drawer.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); if (contextPanel.isOpen()) contextPanel.close(); else if (researchPanel.isOpen()) researchPanel.close(); else closeDrawer(); } });
     // Saved project prompts (and their cards) that link to this record. Read-only here; open them to change them.
