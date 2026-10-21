@@ -124,6 +124,44 @@ setInterval(() => {}, 1000);
   }
 });
 
+test('headless: a closed terminal, or Ctrl+C twice while the CLI is still stopping, also stops it and removes its folder', {
+  skip: process.platform === 'win32', timeout: 20000,
+}, async t => {
+  // [signals sent, exit code, whether the fake CLI ignores SIGTERM for a while, as one busy cleaning up can]
+  for (const [signals, code, ignoresTerm] of [[['SIGHUP'], 129, false], [['SIGINT', 'SIGINT'], 130, true]]) {
+    const dir = await mkdtemp(join(tmpdir(), 'ste-cli-signals-'));
+    const reportPath = join(dir, 'provider.json');
+    let report;
+    t.after(async () => {
+      if (report) { try { process.kill(-report.pid, 'SIGKILL'); } catch {} await rm(report.cwd, { recursive: true, force: true }); }
+      await rm(dir, { recursive: true, force: true });
+    });
+    await writeFile(join(dir, 'codex'), `#!${process.execPath}
+const fs = require('node:fs');
+if (process.argv[2] === 'mcp') { process.stdout.write('[]'); process.exit(0); }
+${ignoresTerm ? "process.on('SIGTERM', () => {});" : ''}
+fs.writeFileSync(${JSON.stringify(reportPath + '.tmp')}, JSON.stringify({ pid: process.pid, cwd: process.cwd() }));
+fs.renameSync(${JSON.stringify(reportPath + '.tmp')}, ${JSON.stringify(reportPath)});
+process.stdin.resume();
+setInterval(() => {}, 1000);
+`);
+    await chmod(join(dir, 'codex'), 0o700);
+    const cli = spawn(process.execPath, ['bin/ste.mjs', '--provider', 'codex'], { cwd: repo, env: { ...process.env, PATH: dir, PROMPTBOARD_DATA_DIR: join(dir, 'data') }, stdio: ['pipe', 'ignore', 'ignore'] });
+    t.after(() => { if (cli.exitCode === null && cli.signalCode === null) cli.kill('SIGKILL'); });
+    const exit = new Promise((resolve, reject) => { cli.once('error', reject); cli.once('close', (exitCode, signal) => resolve({ code: exitCode, signal })); });
+    cli.stdin.end('Write a prompt for a small code change.');
+    for (let i = 0; i < 300 && !report; i++) { report = await readFile(reportPath, 'utf8').then(JSON.parse, () => null); if (!report) await new Promise(resolve => setTimeout(resolve, 10)); }
+    assert.ok(report, 'The fixture provider must start before cancellation.');
+    for (const signal of signals) { cli.kill(signal); await new Promise(resolve => setTimeout(resolve, 200)); }
+    assert.deepEqual(await exit, { code, signal: null }, signals.join(' '));
+    // The CLI ran in its own process group: once Promptboard has exited, nothing else stops it.
+    let alive = true;
+    for (let i = 0; i < 100 && alive; i++) { try { process.kill(report.pid, 0); await new Promise(resolve => setTimeout(resolve, 20)); } catch { alive = false; } }
+    assert.equal(alive, false, `the provider CLI still runs after ${signals.join(' ')}`);
+    await assert.rejects(access(report.cwd), { code: 'ENOENT' });
+  }
+});
+
 
 test('headless output gates flagged drafts and JSON preserves the report', {
   skip: process.platform === 'win32', timeout: 10000,
