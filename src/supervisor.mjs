@@ -804,8 +804,15 @@ export class Supervisor {
       if (started?.proc) await this.#cancelSession(started);
       return;
     }
-    const session = this.#session(runId);
+    const session = this.sessions.get(runId);
+    if (!session?.proc) return this.#settleEnded(runId, 'cancelled', 'Stopped by you. The worktree and output are kept.');
     await this.#cancelSession(session);
+  }
+
+  /** The process already ended but its final status was not saved (#exited): record it, so Stop and Pause stay retryable. */
+  async #settleEnded(runId, status, reason) {
+    await this.sessions.get(runId)?.exited;
+    if (ACTIVE.has((await this.board.run(runId)).status)) await this.board.updateRun(runId, { status, reason, endedAt: Date.now() });
   }
 
   /** Pause a queued/preparing or owned live process, preserving the exact native conversation. */
@@ -830,7 +837,9 @@ export class Supervisor {
       if (started?.proc) await this.#cancelSession(started, true);
       return;
     }
-    await this.#cancelSession(this.#session(runId), true);
+    const live = this.sessions.get(runId);
+    if (!live?.proc) return this.#settleEnded(runId, 'suspended', reason || 'Paused by you. The conversation, worktree and output are kept.');
+    await this.#cancelSession(live, true);
   }
 
   /** Cancel a task's automatic plan move that is still waiting for its agent's turn to end. */

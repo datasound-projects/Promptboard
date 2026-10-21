@@ -707,6 +707,26 @@ test('Stop waits for a stubborn agent to exit, escalates once, and keeps its fil
   assert.match(await w.supervisor.artifact(run.id, 'output'), /fake codex started/);
 });
 
+test('Stop and Pause can be retried after the final status of an exited agent could not be saved', { skip }, async t => {
+  const w = await world(t), updateRun = w.board.updateRun.bind(w.board);
+  let failing = '';
+  w.board.updateRun = async (id, fields) => { if (fields.status && fields.status === failing) throw new Error('Fixture disk write failure'); return updateRun(id, fields); };
+  for (const [status, stop] of [['cancelled', id => w.supervisor.cancel(id)], ['suspended', id => w.board.pauseRun(id, { confirm: true })]]) {
+    const card = await w.task(`Unsaved ${status}`, 'Work.');
+    const run = await w.board.requestRun(card.id, { stage: 'executing', consent: true, config: { provider: 'claude' } });
+    await until(async () => (await w.run(run.id)).turnComplete, `${status} turn`);
+    const { pid } = (await w.reports()).at(-1);
+    failing = status;
+    await assert.rejects(stop(run.id), { code: 'STOP_STATE_UNSAVED' });
+    assert.equal(alive(pid), false); assert.equal((await w.run(run.id)).status, 'waiting_for_input');
+    failing = '';
+    await stop(run.id); // The retry the error asks for.
+    assert.equal((await w.run(run.id)).status, status);
+    const task = (await w.board.state()).projects[0].tasks.find(item => item.id === card.id);
+    assert.equal((await w.board.moveTask(card.id, { column: 'todo', expectedRevision: task.revision })).column, 'todo');
+  }
+});
+
 test('planning captures a plan outside the worktree, cannot implement, and approval is tied to the task text', { skip }, async t => {
   const w = await world(t);
   const task = await w.task('Plan it', 'Add a WRITE_FILE feature.', 'planning');
