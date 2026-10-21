@@ -962,3 +962,22 @@ test('Origin’s project menu opens on screen at 390 px, for a short and a long 
     await ev(`document.querySelector('#origin-project-menu').open = false;`);
   }
 });
+
+test('Origin’s next steps wrap long section names and unbroken words at 390 px instead of scrolling sideways', { skip: !await findChrome(), timeout: 90000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const store = new OriginStore(app.board.store.dir);
+  const record = await store.create({ name: 'Clinic portal' });
+  await store.write(record.id, { expectedRevision: record.revision, blueprint: { idea: 'A clinic portal', labels: { phases: {}, sections: { requirements: 'Functional and non-functional requirements with acceptance' } },
+    requirements: [{ id: 'r1', key: 'REQ-001', title: `People sign in ${'x'.repeat(90)}` }], sequence: { requirements: 1 } } });
+  const browser = await launch({ width: 390, height: 844 }); assert.ok(browser); t.after(() => browser.close());
+  await browser.resize(390, 844);
+  const { ev, wait, section } = pageTools(browser);
+  await browser.goto(`${app.url}/#/origin`);
+  await wait(`document.querySelectorAll('.origin-step').length >= 2`, 'Overview with next steps');
+  const wide = () => ev(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
+    return { page: document.documentElement.scrollWidth, past: [...document.querySelectorAll('.origin-step, .origin-step-where, .origin-next, .origin-next-text')].filter(node => node.getBoundingClientRect().right > innerWidth || node.scrollWidth > node.clientWidth + 1 && !node.matches('.origin-step-where')).map(node => node.className) };`);
+  assert.deepEqual(await wide(), { page: 390, past: [] }, 'Overview: Next steps stay inside the page');
+  await section('requirements');
+  await wait(`document.querySelector('.origin-next-text')`, 'Next bar');
+  assert.deepEqual(await wide(), { page: 390, past: [] }, 'Requirements: the Next bar stays inside the page');
+});
