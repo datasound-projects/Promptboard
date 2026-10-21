@@ -477,6 +477,21 @@ test('confirming an imported repository is refused while tasks own worktrees in 
   assert.equal((await other.view()).projects[0].repository.root, current);
 });
 
+test('imported settings are accepted on another computer once the project is linked to its code there', { skip: process.platform === 'win32' }, async t => {
+  const source = new Board({ dataDir: await temp(t, 'pb-move-') }); await source.createProject({ name: 'Shop' });
+  const backup = await source.exportBackup(), commands = [{ label: 'Unit', argv: ['npm', 'test'], timeoutSec: 60 }];
+  Object.assign(backup.projects[0], { repository: { path: join(await temp(t, 'pb-elsewhere-'), 'shop') }, targetBranch: { name: 'main' }, testCommands: commands });
+  const board = new Board({ dataDir: await temp(t, 'pb-move-import-') });
+  await board.importBackup(backup);
+  let project = (await board.view()).projects[0];
+  await assert.rejects(board.confirmImport(project.id, { accept: true, expectedRevision: project.revision }), { code: 'PATH_NOT_FOUND', message: /does not exist\. Link the project to its code on this computer/ });
+  const root = await repo(t);
+  project = (await board.linkRepository(project.id, { path: root, expectedRevision: project.revision })).project;
+  await board.confirmImport(project.id, { accept: true, expectedRevision: project.revision });
+  project = (await board.view()).projects[0];
+  assert.deepEqual([project.repository.root, project.targetBranch.name, project.testCommands, project.pendingImport], [root, 'trunk', commands, null], 'the link made here stays');
+});
+
 test('a backup keeps validated workflow settings and test commands only: deeply nested JSON never reaches the board', async t => {
   const board = new Board({ dataDir: await temp(t, 'pb-deep-') }), deep = JSON.parse('['.repeat(5000) + ']'.repeat(5000));
   await board.importBackup({ kind: 'promptboard-backup', version: 2, projects: [{ id: 'p1', name: 'Deep', tasks: [{ id: 't1', title: 'Card', prompt: 'Do it', column: 'todo' }],

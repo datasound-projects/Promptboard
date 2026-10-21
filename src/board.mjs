@@ -2039,9 +2039,14 @@ export class Board {
   /** Apply settings that came from an import only after the user confirms them. */
   async confirmImport(id, { accept, expectedRevision }) {
     const state = await this.state();
-    const pending = this.#project(state, id).pendingImport;
+    const { pendingImport: pending, repository: linked } = this.#project(state, id);
     if (!pending) throw new BoardError('There are no imported settings to confirm.', 'NOTHING_PENDING');
-    const repository = accept && pending.repositoryPath ? await validateRepository(pending.repositoryPath) : null;
+    // Restored on another computer, the imported path may not be a repository here: the project's own link then stays.
+    const repository = accept && pending.repositoryPath ? await validateRepository(pending.repositoryPath).catch(error => {
+      if (linked) return null;
+      error.message += ' Link the project to its code on this computer, then confirm again.';
+      throw error;
+    }) : null;
     return this.store.update(draft => {
       const project = this.#project(draft, id);
       checkRevision(project, expectedRevision, 'This project');
