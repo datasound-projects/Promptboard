@@ -69,7 +69,8 @@ export function parseCommand(input) {
     const char = input[i];
     if (quote) {
       if (char === quote) quote = null;
-      else if (char === '\\' && quote === '"' && i + 1 < input.length) current += input[++i];
+      // As in sh, a backslash escapes only " and \ here, so "C:\Program Files\node.exe" keeps its separators.
+      else if (char === '\\' && quote === '"' && (input[i + 1] === '"' || input[i + 1] === '\\')) current += input[++i];
       else current += char;
     } else if (char === '"' || char === "'") { quote = char; started = true; }
     else if (/\s/.test(char)) { if (started) { argv.push(current); current = ''; started = false; } }

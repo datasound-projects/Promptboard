@@ -63,6 +63,9 @@ test('command parsing never uses a shell; review findings are parsed from the st
   assert.deepEqual(parseCommand(`npm test -- --grep "two words" 'single' a\\b`), ['npm', 'test', '--', '--grep', 'two words', 'single', 'a\\b']);
   assert.deepEqual(parseCommand('node -e "process.exit(1)"'), ['node', '-e', 'process.exit(1)']);
   assert.deepEqual(parseCommand('echo $(id) && rm -rf /'), ['echo', '$(id)', '&&', 'rm', '-rf', '/'], 'Shell syntax stays literal arguments.');
+  // Inside double quotes a backslash escapes only " and \ (as in sh), so a quoted Windows path keeps its separators.
+  assert.deepEqual(parseCommand('"C:\\Program Files\\nodejs\\node.exe" "tests\\unit dir\\run.js"'), ['C:\\Program Files\\nodejs\\node.exe', 'tests\\unit dir\\run.js']);
+  assert.deepEqual(parseCommand('node -e "console.log(\\"hi\\")" "a\\\\b"'), ['node', '-e', 'console.log("hi")', 'a\\b']);
   assert.throws(() => parseCommand('say "unclosed'), { code: 'INVALID_COMMAND' });
   const parsed = parseFindings('Notes.\n```json\n{"verdict":"changes_required","findings":[{"severity":"high","file":"a.js","line":3,"explanation":"Bug."}]}\n```');
   assert.deepEqual(parsed, { parsed: true, verdict: 'changes_required', findings: [{ severity: 'high', file: 'a.js', line: 3, explanation: 'Bug.' }] });
