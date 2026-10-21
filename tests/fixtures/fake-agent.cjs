@@ -2,7 +2,7 @@
 // It reads the lifecycle configuration the adapter passes (Claude --settings hooks,
 // Codex -c notify, Gemini system-settings hooks) and invokes it the same way the real
 // CLIs document. Scenario words in the task text choose the behavior.
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { appendFileSync, readFileSync, writeFileSync } = require('node:fs');
 const { basename, join } = require('node:path');
 
@@ -46,6 +46,8 @@ if (provider === 'claude') {
 }
 
 if (prompt.includes('IGNORE_TERM')) process.on('SIGTERM', () => {});
+// BACKGROUND_CHILD: leave a child in this process group that ignores SIGHUP, as `nohup server &` does (POSIX only).
+if (prompt.includes('BACKGROUND_CHILD')) appendFileSync(report, JSON.stringify({ child: spawn('/bin/sh', ['-c', 'trap "" HUP; exec sleep 300'], { stdio: 'ignore' }).pid }) + '\n');
 process.stdout.write(`fake ${provider} started in ${process.cwd()}\r\n`);
 // Report terminal size changes so tests can see resizes reach the process.
 process.on('SIGWINCH', () => process.stdout.write(`size ${process.stdout.columns}x${process.stdout.rows}\r\n`));
@@ -228,6 +230,8 @@ process.stdin.on('data', chunk => {
   line += chunk.toString();
   if (!/[\r\n]/.test(line)) return;
   const text = line.trim(); line = '';
+  // EMPTY_ENTER_IGNORED: as the real CLIs do, an Enter on an empty prompt submits nothing (no hook, no turn).
+  if (!text && prompt.includes('EMPTY_ENTER_IGNORED')) return;
   process.stdout.write(`you said: ${text}\r\n`);
   if (codexQuestion) { codexQuestion = false; process.stdout.write('\x1b]0;\u280b thread-1\x07'); }
   if (text === 'quit') process.exit(0);

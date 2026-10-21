@@ -443,10 +443,10 @@ export class Supervisor {
       if (title !== undefined && !CODEX_ASKS.test(title)) this.#inputReady(session, 'terminal-title');
     }
     this.#push(session, { data });
-    if (session.logBytes < LOG_BYTES) {
-      const chunk = session.logBytes + Buffer.byteLength(data) > LOG_BYTES ? '\n[Promptboard: output log limit reached]\n' : data;
-      session.logBytes += Buffer.byteLength(chunk);
-      session.log.write(chunk);
+    // The first chunk past the limit is replaced by the marker, once; nothing is logged after it.
+    if (session.logBytes <= LOG_BYTES) {
+      session.logBytes += Buffer.byteLength(data);
+      session.log.write(session.logBytes > LOG_BYTES ? '\n[Promptboard: output log limit reached]\n' : data);
     }
   }
 
@@ -582,6 +582,7 @@ export class Supervisor {
 
   async #setStatus(session, status, fields = {}) {
     session.status = status;
+    session.turnEnded = 'turns' in fields; // Only a finished turn reports its count; other waits are inside a turn.
     await this.board.updateRun(session.runId, { status, ...fields }).catch(() => {});
     this.#push(session, { status, ...(fields.waitingReason ? { reason: fields.waitingReason } : {}) });
   }
@@ -650,7 +651,11 @@ export class Supervisor {
     // Read the last lifecycle events (for example a final Stop) and usage before the session closes.
     await this.#readEvents(session).catch(() => {});
     await this.#readUsage(session).catch(() => {});
-    untrackPid(session.proc.pid);
+    const pid = session.proc.pid;
+    // A child the CLI left in its process group (a background server that ignores SIGHUP) ends with it. POSIX only, and
+    // only the group: the exited CLI's own PID may already belong to another process. Windows keeps its behaviour.
+    if (process.platform !== 'win32' && pid > 0) try { process.kill(-pid, 'SIGTERM'); setTimeout(() => { try { process.kill(-pid, 'SIGKILL'); } catch {} }, 3000).unref(); } catch {}
+    untrackPid(pid);
     session.proc = null;
     try { await session.baseCleanup?.(); } catch { /* Continue closing the owned session even if a temporary file cannot be removed. */ }
     clearTimeout(session.killTimer);
@@ -693,11 +698,17 @@ export class Supervisor {
     if (session.suspending) throw new AgentError('The agent is being paused. Wait for it to exit before resuming.', 'SESSION_SUSPENDING', 409);
     // A terminal or mouse report is not typing. Drop it during a native paste so it cannot land inside the message.
     if (AUTOMATIC_REPORTS.test(data)) { if (!session.messageInputPending) session.proc.write(data); return; }
+    const keys = data.replace(REPORTS, ''), dialog = DIALOG_KEY.test(keys) && session.activity?.snapshot().permissionPending;
+    // After a finished turn, an Enter with nothing typed since the last Enter submits nothing: each CLI ignores an
+    // empty prompt. Claude and Gemini report a new turn with their prompt hook; Codex has none, so its typed text
+    // starts the turn here. Inside a turn (a permission or question wait) Enter answers and the turn goes on.
+    const finished = session.status === 'waiting_for_input' && session.turnEnded;
+    const stray = finished && !session.draft && /^[\r\n]+$/.test(keys);
     if (data) {
       // A key that answers the CLI's own permission or question dialog starts no draft, so queued
       // column messages stay deliverable. Free text, or input outside such a dialog, is a human draft.
-      if (!(DIALOG_KEY.test(data.replace(REPORTS, '')) && session.activity?.snapshot().permissionPending)) session.terminalInput?.manualInput(data);
-      session.inputEpoch++; session.activity?.input();
+      if (!dialog) session.terminalInput?.manualInput(data);
+      session.inputEpoch++; if (!stray) session.activity?.input();
       const initialPastePending = Boolean(session.paste);
       if (initialPastePending) {
         // A human owns the input before transport, even if their write fails.
@@ -707,8 +718,9 @@ export class Supervisor {
       }
       if (initialPastePending || session.initialSubmitPending) this.#initialInputUnconfirmed(session);
     }
+    if (keys && !dialog) session.draft = !/[\r\n]$/.test(keys);
     session.proc.write(data);
-    if (session.status === 'waiting_for_input' && /\r|\n/.test(data)) this.#setStatus(session, 'running', { waitingReason: '' });
+    if (session.status === 'waiting_for_input' && /\r|\n/.test(keys) && (!finished || (session.provider === 'codex' && !stray))) this.#setStatus(session, 'running', { waitingReason: '', turnComplete: false });
   }
 
   /** Private cached observation: no input, hook processing, grant or session selection. */
@@ -796,8 +808,15 @@ export class Supervisor {
       if (started?.proc) await this.#cancelSession(started);
       return;
     }
-    const session = this.#session(runId);
+    const session = this.sessions.get(runId);
+    if (!session?.proc) return this.#settleEnded(runId, 'cancelled', 'Stopped by you. The worktree and output are kept.');
     await this.#cancelSession(session);
+  }
+
+  /** The process already ended but its final status was not saved (#exited): record it, so Stop and Pause stay retryable. */
+  async #settleEnded(runId, status, reason) {
+    await this.sessions.get(runId)?.exited;
+    if (ACTIVE.has((await this.board.run(runId)).status)) await this.board.updateRun(runId, { status, reason, endedAt: Date.now() });
   }
 
   /** Pause a queued/preparing or owned live process, preserving the exact native conversation. */
@@ -822,7 +841,9 @@ export class Supervisor {
       if (started?.proc) await this.#cancelSession(started, true);
       return;
     }
-    await this.#cancelSession(this.#session(runId), true);
+    const live = this.sessions.get(runId);
+    if (!live?.proc) return this.#settleEnded(runId, 'suspended', reason || 'Paused by you. The conversation, worktree and output are kept.');
+    await this.#cancelSession(live, true);
   }
 
   /** Cancel a task's automatic plan move that is still waiting for its agent's turn to end. */

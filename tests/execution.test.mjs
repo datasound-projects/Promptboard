@@ -707,6 +707,35 @@ test('Stop waits for a stubborn agent to exit, escalates once, and keeps its fil
   assert.match(await w.supervisor.artifact(run.id, 'output'), /fake codex started/);
 });
 
+test('Stop and Pause can be retried after the final status of an exited agent could not be saved', { skip }, async t => {
+  const w = await world(t), updateRun = w.board.updateRun.bind(w.board);
+  let failing = '';
+  w.board.updateRun = async (id, fields) => { if (fields.status && fields.status === failing) throw new Error('Fixture disk write failure'); return updateRun(id, fields); };
+  for (const [status, stop] of [['cancelled', id => w.supervisor.cancel(id)], ['suspended', id => w.board.pauseRun(id, { confirm: true })]]) {
+    const card = await w.task(`Unsaved ${status}`, 'Work.');
+    const run = await w.board.requestRun(card.id, { stage: 'executing', consent: true, config: { provider: 'claude' } });
+    await until(async () => (await w.run(run.id)).turnComplete, `${status} turn`);
+    const { pid } = (await w.reports()).at(-1);
+    failing = status;
+    await assert.rejects(stop(run.id), { code: 'STOP_STATE_UNSAVED' });
+    assert.equal(alive(pid), false); assert.equal((await w.run(run.id)).status, 'waiting_for_input');
+    failing = '';
+    await stop(run.id); // The retry the error asks for.
+    assert.equal((await w.run(run.id)).status, status);
+    const task = (await w.board.state()).projects[0].tasks.find(item => item.id === card.id);
+    assert.equal((await w.board.moveTask(card.id, { column: 'todo', expectedRevision: task.revision })).column, 'todo');
+  }
+});
+
+test('a child the CLI leaves in its process group ends when the CLI exits on its own', { skip }, async t => {
+  const w = await world(t), card = await w.task('Background child', 'Start the server. BACKGROUND_CHILD EXIT_NOW');
+  const run = await w.board.requestRun(card.id, { stage: 'executing', consent: true, config: { provider: 'claude' } });
+  await until(async () => (await w.run(run.id)).status === 'interrupted', 'natural exit');
+  const { child } = (await w.reports()).find(item => item.child);
+  t.after(() => { try { process.kill(child, 'SIGKILL'); } catch {} });
+  await until(() => !alive(child), 'the child ended with its CLI');
+});
+
 test('planning captures a plan outside the worktree, cannot implement, and approval is tied to the task text', { skip }, async t => {
   const w = await world(t);
   const task = await w.task('Plan it', 'Add a WRITE_FILE feature.', 'planning');
@@ -780,6 +809,24 @@ test('two tasks run concurrently in separate processes; stopping one does not st
   w.supervisor.input(runB.id, 'continue please\r');
   await until(async () => /you said: continue please/.test(await w.supervisor.artifact(runB.id, 'output')), 'input echoed');
   assert.doesNotMatch(await w.supervisor.artifact(runC.id, 'output'), /continue please/);
+});
+
+test('an Enter on an empty prompt after a finished turn starts nothing; typed text still starts the next turn', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  for (const provider of ['claude', 'codex', 'gemini']) {
+    const card = await w.task(`Enter ${provider}`, 'Implement it. EMPTY_ENTER_IGNORED');
+    const run = await w.board.requestRun(card.id, { stage: 'executing', consent: true, config: { provider } });
+    const finished = turns => until(async () => { const r = await w.run(run.id); return r.status === 'waiting_for_input' && r.turnComplete && r.turns === turns; }, `${provider} turn ${turns}`);
+    await finished(1);
+    // The CLI ignores it: no hook fires and no turn starts, so the finished turn stays confirmable.
+    w.supervisor.input(run.id, '\r'); w.supervisor.input(run.id, '\r');
+    assert.equal(w.supervisor.sessions.get(run.id).status, 'waiting_for_input', provider);
+    w.supervisor.input(run.id, 'Next step\r');
+    await finished(2);
+    w.supervisor.input(run.id, '\n');
+    await w.supervisor.confirm(run.id);
+    assert.equal((await w.run(run.id)).status, 'succeeded', provider);
+  }
 });
 
 test('failures are classified once; unconfirmed exits are interrupted; waiting states surface; streams resume in order', { skip }, async t => {
@@ -860,7 +907,7 @@ test('a CLI that exits while its start is being saved leaves no event poll runni
 async function fakeLaunch(t) {
   const dataDir = await temp(t, 'pb-data-');
   const spawned = {};
-  const pty = { spawn(command, args, options) { Object.assign(spawned, { command, args, options }); spawned.proc = { pid: 2147483000, onData() {}, onExit(cb) { this.exit = cb; }, write() {}, resize() {} }; return spawned.proc; } };
+  const pty = { spawn(command, args, options) { Object.assign(spawned, { command, args, options }); spawned.proc = { pid: 2147483000, onData(cb) { this.data = cb; }, onExit(cb) { this.exit = cb; }, write() {}, resize() {} }; return spawned.proc; } };
   const run = { id: 'r1', status: 'queued', taskId: 't1', artifactsDir: 'runs/r1', stage: 'executing', workspacePath: dataDir,
     config: { provider: 'claude', permissionMode: 'acceptEdits' }, baseManifest: { resources: [] } };
   const board = { state: async () => ({ settings: { maxConcurrentRuns: 1 }, base: { resources: [], approvedRoots: [] }, sessions: [] }),
@@ -881,6 +928,21 @@ test('shutdown ends a terminal stream for good: a process that exits later write
   assert.equal(run.status, 'interrupted'); assert.equal(seen.at(-1), 'end');
   spawned.proc.exit({ exitCode: null, signal: 9 }); await session.exited;
   assert.deepEqual(seen.slice(seen.indexOf('end')), ['end'], 'An HTTP response written after end() raises an uncaught error.');
+});
+
+test('the output log ends with one limit marker, also when the output reaches the limit exactly', async t => {
+  const marker = '\n[Promptboard: output log limit reached]\n', chunk = `${'y'.repeat(4095)}\n`;
+  for (const first of ['', 'z']) {
+    const { run, session, spawned } = await fakeLaunch(t);
+    if (first) spawned.proc.data(first);
+    for (let i = 0; i < 5120; i++) spawned.proc.data(chunk); // 20 MiB, the limit.
+    for (let i = 0; i < 3; i++) spawned.proc.data('more output\n');
+    spawned.proc.exit({ exitCode: 0 }); await session.exited;
+    const log = await readFile(join(run.workspacePath, run.artifactsDir, 'output.log'), 'utf8');
+    assert.equal(log.split(marker).length, 2, `one marker (${first ? 'past' : 'at'} the limit)`);
+    assert.ok(log.endsWith(marker), 'Nothing is logged after the marker.');
+    assert.ok(Buffer.byteLength(log) <= 20 * 1024 * 1024 + marker.length);
+  }
 });
 
 test('an agent terminal never inherits the session identity or message credential of an agent session that started Promptboard', async t => {
