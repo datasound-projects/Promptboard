@@ -228,6 +228,8 @@ process.stdin.on('data', chunk => {
   line += chunk.toString();
   if (!/[\r\n]/.test(line)) return;
   const text = line.trim(); line = '';
+  // EMPTY_ENTER_IGNORED: as the real CLIs do, an Enter on an empty prompt submits nothing (no hook, no turn).
+  if (!text && prompt.includes('EMPTY_ENTER_IGNORED')) return;
   process.stdout.write(`you said: ${text}\r\n`);
   if (codexQuestion) { codexQuestion = false; process.stdout.write('\x1b]0;\u280b thread-1\x07'); }
   if (text === 'quit') process.exit(0);

@@ -191,6 +191,7 @@ Every stage from Planning to Merge can run an agent; To Do and Done never do (`S
 - A finished turn → `waiting_for_input`. The last message is saved as `plan.md` (Planning), `review.md` (Code Review) or `last-message.md` (other stages).
 - A permission prompt → `waiting_for_input`, with a reason.
 - A structured failure → `failed`, with a stable code. There is no automatic retry.
+- Typing in the terminal is the one exception: Enter during a permission prompt or question → `running`. After a finished turn, Claude and Gemini report the next turn with their prompt hook; Codex has none, so its Enter after typed text → `running`. An Enter on an empty prompt changes nothing, as each CLI ignores it.
 
 A stage becomes `succeeded` only through a confirmation after a finished turn: `POST /api/runs/:id/confirm`, the hand-off of a move, Complete stage, merge preparation or Autopilot. For Planning, that also records the plan approval. Process exit is never success: an exit without confirmation becomes `interrupted`. If no event arrives within 10 seconds, the run keeps `running` and says the CLI may be asking a startup question, such as folder trust. The hook bridge writes only lifecycle fields; it never prints output that could steer the agent.
 

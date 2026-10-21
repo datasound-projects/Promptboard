@@ -782,6 +782,24 @@ test('two tasks run concurrently in separate processes; stopping one does not st
   assert.doesNotMatch(await w.supervisor.artifact(runC.id, 'output'), /continue please/);
 });
 
+test('an Enter on an empty prompt after a finished turn starts nothing; typed text still starts the next turn', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  for (const provider of ['claude', 'codex', 'gemini']) {
+    const card = await w.task(`Enter ${provider}`, 'Implement it. EMPTY_ENTER_IGNORED');
+    const run = await w.board.requestRun(card.id, { stage: 'executing', consent: true, config: { provider } });
+    const finished = turns => until(async () => { const r = await w.run(run.id); return r.status === 'waiting_for_input' && r.turnComplete && r.turns === turns; }, `${provider} turn ${turns}`);
+    await finished(1);
+    // The CLI ignores it: no hook fires and no turn starts, so the finished turn stays confirmable.
+    w.supervisor.input(run.id, '\r'); w.supervisor.input(run.id, '\r');
+    assert.equal(w.supervisor.sessions.get(run.id).status, 'waiting_for_input', provider);
+    w.supervisor.input(run.id, 'Next step\r');
+    await finished(2);
+    w.supervisor.input(run.id, '\n');
+    await w.supervisor.confirm(run.id);
+    assert.equal((await w.run(run.id)).status, 'succeeded', provider);
+  }
+});
+
 test('failures are classified once; unconfirmed exits are interrupted; waiting states surface; streams resume in order', { skip }, async t => {
   const w = await world(t, { limit: 3 });
   const billing = await w.task('Billing', 'BILLING');

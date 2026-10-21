@@ -417,6 +417,18 @@ test('an autonomous agent stuck on an unrecognized startup menu is reported, and
   assert.equal((await w.outcome(card.id, 'succeeded')).runId, run.id, 'Answered in the terminal, the same run finishes the stage.');
 });
 
+test('an Enter on an empty prompt after a finished turn still lets the stage complete automatically', { skip, timeout: 120000 }, async t => {
+  for (const provider of ['claude', 'codex', 'gemini']) await t.test(provider, async t => {
+    const w = await world(t, { agents: { executing: provider } });
+    const card = await w.board.createTask({ projectId: w.project.id, title: 'Stray Enter', prompt: 'Change it. WRITE_FILE:feature.txt EMPTY_ENTER_IGNORED' });
+    const run = (await w.go(card.id, 'executing')).run;
+    await w.finished(run.id);
+    w.supervisor.input(run.id, '\r'); // The CLI ignores it: no hook, no turn.
+    await w.board.setExecutionPolicy(w.project.id, { policy: { completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });
+    assert.equal((await w.outcome(card.id, 'succeeded')).runId, run.id);
+  });
+});
+
 test('an autonomous long prompt still waiting for its CLI to show readiness is reported as a startup stall too', { skip, timeout: 120000 }, async t => {
   const w = await world(t);
   await w.board.setExecutionPolicy(w.project.id, { policy: { interaction: 'autonomous', completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });
