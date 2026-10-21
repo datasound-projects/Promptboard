@@ -106,6 +106,22 @@ test('test runs: one claim per task, released on failed setup; a lost log or a b
   assert.equal((await finished()).status, 'passed');
 });
 
+test('a process a test command leaves running (a server the suite forgot to stop) is stopped when the command ends', { skip, timeout: 60000 }, async t => {
+  const repo = await temp(t, 'pb-del-leak-'), dataDir = await temp(t, 'pb-del-leak-data-');
+  git(repo, 'init', '-q', '-b', 'main'); git(repo, '-c', 'user.name=a', '-c', 'user.email=a@b', 'commit', '-q', '--allow-empty', '-m', 'base'); git(repo, 'checkout', '-q', '-b', 'task');
+  const pidFile = join(dataDir, 'child.pid');
+  const task = { id: 't1', column: 'testing', workspace: { status: 'ready', path: repo, branch: 'task' }, evidence: {} };
+  const script = `const c = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); c.unref(); console.log('tests ok')`;
+  const project = { tasks: [task], targetBranch: { name: 'main' }, testCommands: [{ label: 'leaky', timeoutSec: 30, argv: [process.execPath, '-e', script] }] };
+  const delivery = new Delivery({ dataDir, state: async () => ({ projects: [project] }), updateTaskEvidence: async (_id, change) => { change(task); return task; } });
+  await delivery.runTests('t1', { confirm: true });
+  await until(() => !delivery.testsRunning.has('t1'), 'test run recorded');
+  const child = Number(await readFile(pidFile, 'utf8'));
+  t.after(() => { try { process.kill(child, 'SIGKILL'); } catch {} });
+  assert.equal(task.evidence.tests.status, 'passed');
+  await until(() => { try { process.kill(child, 0); return false; } catch { return true; } }, `the leftover process ${child} is stopped`, 5000);
+});
+
 test('full flow: commit, review, send back, fix, accept, test, and a confirmed fast-forward merge into a clean checkout', { skip, timeout: 120000 }, async t => {
   const w = await world(t);
   const task = await w.task('Change value', 'Set the value to two. REVIEW_FAIL');

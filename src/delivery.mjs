@@ -369,6 +369,9 @@ export class Delivery {
       child.once('exit', () => { clearTimeout(timer); setTimeout(() => { child.stdout.destroy(); child.stderr.destroy(); }, 2000).unref(); });
       child.on('close', (code, signal) => {
         clearTimeout(timer);
+        // The command is over: stop what it left running in its process group (a server the suite did not stop).
+        // The group only: its leader has exited, so that pid alone may belong to another program by now.
+        if (child.pid && process.platform !== 'win32') try { process.kill(-child.pid, 'SIGKILL'); } catch {}
         if (child.pid) { untrackPid(child.pid); running.pids.delete(child.pid); }
         done(timedOut ? { status: 'timeout', exitCode: code, reason: `Stopped after ${command.timeoutSec} seconds.` }
           : { status: code === 0 ? 'passed' : 'failed', exitCode: code, ...(signal ? { reason: `Ended by signal ${signal}.` } : {}) });
