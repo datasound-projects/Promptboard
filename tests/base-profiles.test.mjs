@@ -162,6 +162,26 @@ test('a credential typed into an MCP or recipe argument is refused as in imports
   await assert.rejects(base.update(saved.id, { configuration: { ...server([folder, '--secret=hunter2']).configuration } }, { expectedRevision: saved.revision }), /looks like a credential/);
 });
 
+test('a password in a URL, an authorization header and a secret flag’s value are credentials; references, URLs, ports and paths are not', async t => {
+  const refused = [['postgresql://admin:S3cretPass@db.internal:5432/app'], ['redis://:S3cretPass@cache:6379'], ['--header', 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcDEF123'],
+    ['--header=X-API-Key: abc123def456'], ['--api-key', 'BSAk3j4h5g6f7d8s'], ['--client-secret', 'hunter2hunter2']];
+  const accepted = [['postgresql://admin:${DB_PASSWORD}@db.internal:5432/app'], ['postgres://localhost:5432/app', 'ssh://git@github.com/acme/shop.git'], ['--header', 'Authorization: Bearer ${API_TOKEN}'],
+    ['--header', 'Authorization:${AUTH_HEADER}'], ['--api-key', '$BRAVE_API_KEY'], ['--api-key', '${BRAVE_API_KEY}'], ['--token', '--verbose'], ['--token-file', '/run/secrets/token'],
+    ['https://mcp.example.com/mcp', '--port', '8080'], ['/Users/someone/notes', './data', 'C:\\Users\\someone\\notes', 'file:///Users/someone/notes']];
+  const importable = args => parseMcpConfig(JSON.stringify({ mcpServers: { s: { command: 'npx', args } } }), { environment: {} }).servers[0].importable;
+  for (const args of refused) assert.equal(importable(args), false, args.join(' '));
+  for (const args of accepted) assert.equal(importable(args), true, args.join(' '));
+  const url = endpoint => parseMcpConfig(JSON.stringify({ mcpServers: { s: { url: endpoint } } }), { environment: {} }).servers[0].importable;
+  assert.deepEqual([url('https://mcp.example.com/mcp?key=AI' + 'zaSyA-1234567890abcdef'), url('https://mcp.example.com/mcp?region=eu&keyword=x')], [false, true]);
+  // Typed in Base: refused the same way; a server saved with such an argument still loads and can be renamed.
+  const dir = await temp(t), base = new Base({ store: new Store(dir) });
+  const server = args => ({ kind: 'mcp', name: 'Db', configuration: { transport: 'stdio', command: 'db-mcp', args } });
+  for (const args of refused) await assert.rejects(base.create(server(args)), /looks like a credential/, args.join(' '));
+  for (const args of accepted) await base.create(server(args));
+  const legacy = (await base.import({ kind: 'promptboard-base', version: 1, resources: [{ id: 'old', ...server(['--api-key', 'BSAk3j4h5g6f7d8s']) }] })).resources[0];
+  assert.equal((await base.update(legacy.id, { name: 'Db (old)' }, { expectedRevision: legacy.revision })).name, 'Db (old)');
+});
+
 test('repository instruction files are found read-only, imported once, and written back only after a matching preview', async t => {
   const repo = await temp(t), outside = await temp(t);
   await writeFile(join(repo, 'AGENTS.md'), '# Agents\n'); await writeFile(join(repo, 'README.md'), '# Readme\n');
