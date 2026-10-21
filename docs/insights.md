@@ -1,6 +1,6 @@
 # Insights
 
-Insights shows how a Kanban project's work went, counted from what the board already records. It is the chart icon next to **Settings** in the top bar, on every page. It opens one dialog for the project shown on the Kanban page; with several projects, a picker chooses another one.
+Insights shows how a Kanban project's work went, counted from what the board already records. It is the lightbulb icon next to **Settings** in the top bar, on every page. It opens one dialog for the project shown on the Kanban page; with several projects, a picker chooses another one.
 
 Opening Insights reads the board once. It never asks a model, starts an agent or changes anything, so it spends no tokens.
 
