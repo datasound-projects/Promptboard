@@ -894,17 +894,16 @@ test('Origin flags only sent tasks whose context changed, compares, and updates 
 });
 
 /** A Kanban-linked project whose task is on Kanban, so every save on its Tasks page also reads the cards' context status. */
-async function sentTaskPage(t) {
+async function sentTaskPage(t, { items = [{ id: 't1', key: 'IMP-001', title: 'Build checkout', description: 'Hello world', acceptanceCriteria: 'Works' }],
+  blocks = [{ id: 'nb', origin: 'human', sectionId: 'plan', type: 'notes', title: 'Plan notes', text: '' }] } = {}) {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const kanban = await app.board.createProject({ name: 'Shop', workflowMode: 'pipeline' });
   const store = new OriginStore(app.board.store.dir);
   let record = await store.create({ name: 'Shop design' });
   record = await store.link(record.id, { expectedRevision: record.revision, kanbanProjectId: kanban.id });
-  record = await store.write(record.id, { expectedRevision: record.revision, blueprint: { idea: 'Shop', sequence: { items: 1 },
-    items: [{ id: 't1', key: 'IMP-001', title: 'Build checkout', description: 'Hello world', acceptanceCriteria: 'Works' }],
-    blocks: [{ id: 'nb', origin: 'human', sectionId: 'plan', type: 'notes', title: 'Plan notes', text: '' }] } });
+  record = await store.write(record.id, { expectedRevision: record.revision, blueprint: { idea: 'Shop', sequence: { items: items.length }, items, blocks } });
   const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
-  const sent = await fetch(`${app.url}/api/origin/projects/${record.id}/handoff`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: J({ expectedRevision: record.revision, itemIds: ['t1'] }) });
+  const sent = await fetch(`${app.url}/api/origin/projects/${record.id}/handoff`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: J({ expectedRevision: record.revision, itemIds: items.map(item => item.id) }) });
   assert.equal(sent.status, 200);
   const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
   const tools = pageTools(browser);
@@ -928,6 +927,34 @@ test('Origin keeps the field you type in on the Tasks page when a save refreshes
   await browser.type('world');
   await saved();
   assert.equal((await store.read(record.id)).blueprint.blocks.find(block => block.id === 'nb').text, 'Hello world', 'no keystroke is lost');
+});
+
+test('Origin draws what a save changed on the Tasks page once you leave the field, without taking focus from where it went', { skip: !await findChrome(), timeout: 120000 }, async t => {
+  // Each sent task carries one notes block as context, so writing in it marks that card "Context changed".
+  const { browser, store, record, ev, wait, saved, statusReads, refreshed } = await sentTaskPage(t, {
+    items: [{ id: 't1', key: 'IMP-001', title: 'Build checkout', acceptanceCriteria: 'Works', contextIds: [{ collection: 'blocks', id: 'nb' }] }, { id: 't2', key: 'IMP-002', title: 'Ship orders', acceptanceCriteria: 'Works', contextIds: [{ collection: 'blocks', id: 'nb2' }] }],
+    blocks: [{ id: 'nb', origin: 'human', sectionId: 'plan', type: 'notes', title: 'Checkout notes', text: '' }, { id: 'nb2', origin: 'human', sectionId: 'plan', type: 'notes', title: 'Shipping notes', text: '' }] });
+  const flagged = () => ev(`return [...document.querySelectorAll('#origin-main .origin-row')].filter(row => row.textContent.includes('Context changed')).map(row => row.dataset.id).join(',');`);
+  const write = async (block, text) => {
+    await ev(`document.querySelector('.origin-block[data-block="${block}"] textarea').focus();`);
+    await browser.type(text);
+    const before = await statusReads();
+    await saved(); await refreshed(before);
+    assert.equal(await ev(`return document.activeElement?.closest('.origin-block')?.dataset.block;`), block, 'the field keeps focus while the status arrives');
+  };
+  await write('nb', 'Card wallets');
+  // Focus moves out of the page (here to the project selector): the page catches up and the selector keeps focus.
+  await ev(`document.querySelector('#origin-project').focus();`);
+  await wait(`[...document.querySelectorAll('#origin-main .origin-row')].some(row => row.dataset.id === 't1' && row.textContent.includes('Context changed'))`, 'IMP-001 flagged');
+  assert.equal(await ev(`return document.activeElement?.id;`), 'origin-project', 'focus stays where it went');
+  await write('nb2', 'Two couriers');
+  // A click on an empty part of the page: drawn once the click is over.
+  const spot = await ev(`const box = document.querySelector('#origin-main').getBoundingClientRect(); return [box.left + 6, box.top + 6];`);
+  await browser.click(...spot);
+  await wait(`[...document.querySelectorAll('#origin-main .origin-row')].filter(row => row.textContent.includes('Context changed')).length === 2`, 'IMP-002 flagged');
+  assert.equal(await flagged(), 't1,t2');
+  const blocks = (await store.read(record.id)).blueprint.blocks;
+  assert.deepEqual(blocks.map(block => block.text), ['Card wallets', 'Two couriers'], 'every keystroke was kept');
 });
 
 test('Origin keeps the caret where you type in the task editor when a save redraws it', { skip: !await findChrome(), timeout: 90000 }, async t => {
