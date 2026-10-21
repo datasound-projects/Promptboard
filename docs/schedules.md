@@ -4,7 +4,7 @@ A schedule makes the same card again and again: it lands in To Do on a repeat, f
 
 ## Making a schedule
 
-- **Schedules** in the board actions (after **Autopilot**) opens the list of the project's schedules. **New schedule** opens the editor. The editor of a new schedule, and an empty list, offer three quick starts that prefill it: **Nightly dependency update** (every day at 02:00), **Weekly docs sweep** (Mondays at 03:00) and **Weekly security sweep** (Wednesdays at 03:00). Each tells the agent to check, change, test and report, and to change nothing when nothing needs changing.
+- **Schedules** in the board actions (after **Autopilot** and **Coordinator**) opens the list of the project's schedules. **New schedule** opens the editor. The editor of a new schedule, and an empty list, offer three quick starts that prefill it: **Nightly dependency update** (every day at 02:00), **Weekly docs sweep** (Mondays at 03:00) and **Weekly security sweep** (Wednesdays at 03:00). Each tells the agent to check, change, test and report, and to change nothing when nothing needs changing.
 - The editor holds the card's **Title** and **Task** (what the agent should do each time; up to 20,000 characters), the **Repeat** and the **Time**:
   - **Daily**, **Weekdays** (Monday to Friday), **Weekly** (pick one or more days) or **Monthly** (pick a day from the 1st to the 28th, which every month has).
   - Times are this computer's local time. On the night the clocks go forward, a time that does not exist (02:30) runs an hour later; on the night they go back, a time that happens twice runs once, the first time. Other times stay the same local time all year.
