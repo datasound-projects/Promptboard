@@ -588,7 +588,9 @@ function view(record, kanban) {
     kanban: record.kanbanProjectId ? (linked ? { exists: true, name: linked.name, revision: linked.revision, github: linked.github?.nameWithOwner || '' } : { exists: false }) : null };
 }
 
-const kanbanFailure = error => ({ message: error.message || 'The Kanban project could not be created.', code: error.code || 'KANBAN_FAILED' });
+// Only the board's own refusals (they carry a status) are shown; a raw file system error names local paths.
+const kanbanFailure = error => (Number.isInteger(error.status) ? { message: error.message, code: error.code || 'KANBAN_FAILED' }
+  : { message: 'The Kanban project could not be created. Check free disk space and folder permissions.', code: 'KANBAN_FAILED' });
 const nameInUse = () => new OriginError('A project with this name already exists. Choose it from the project list.', 'NAME_TAKEN', 409);
 
 /**

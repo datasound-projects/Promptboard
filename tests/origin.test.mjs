@@ -763,3 +763,15 @@ test('a blueprint restored from its backup is still reported on its page after C
     assert.equal((await api(app, `/api/origin/projects/${id}`, { token })).data.recovery?.restoredFromBackup, true, `${name} took the restore notice`);
   }
 });
+
+test('a board that cannot be made for an Origin project reports a fixed message, never the raw error and its path', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null });
+  const { token } = (await api(app, '/api/session')).data;
+  const projects = join(app.board.store.dir, 'projects');
+  await mkdir(projects); await chmod(projects, 0o500); t.after(() => chmod(projects, 0o700).catch(() => {}));
+  const failure = { message: 'The Kanban project could not be created. Check free disk space and folder permissions.', code: 'KANBAN_FAILED' };
+  const created = await api(app, '/api/origin/projects', { method: 'POST', token, body: { name: 'Origin Side', createKanban: true } });
+  assert.deepEqual([created.status, created.data.kanbanError], [200, failure], 'the Origin project is kept');
+  const linked = await api(app, `/api/origin/projects/${created.data.project.id}/link`, { method: 'POST', token, body: { createKanban: true, expectedRevision: created.data.project.revision } });
+  assert.deepEqual([linked.status, linked.data.error, linked.data.code], [409, failure.message, failure.code]);
+});
