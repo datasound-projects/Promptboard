@@ -175,3 +175,27 @@ test('Escape in a dialog opened from the phone drawer closes only that dialog an
   await escape(browser);
   assert.equal(await browser.layout(`return !document.querySelector('#sidebar').classList.contains('open') && document.activeElement.id === 'menu-toggle';`), true);
 });
+
+test('closing a card or details dialog returns focus to the card after a background re-render', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await linked(app, 'Focus');
+  const one = await app.board.createTask({ projectId: project.id, title: 'One', prompt: '1' });
+  const two = await app.board.createTask({ projectId: project.id, title: 'Two', prompt: '2' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${two.id}"]')`, 'cards');
+  let title = 0;
+  const rerender = async () => {
+    const text = `Two, changed elsewhere ${++title}`;
+    await app.board.updateTask(two.id, { title: text, expectedRevision: (await fresh(app, two.id)).revision });
+    await browser.until(`document.querySelector('[data-id="${two.id}"] .kanban-open').textContent === ${JSON.stringify(text)}`, 'background render');
+  };
+  await browser.eval(`document.querySelector('[data-id="${one.id}"] .kanban-open').focus();`); await enter(browser);
+  await browser.until(`document.querySelector('#card-dialog').open`, 'card dialog');
+  await rerender();
+  await escape(browser);
+  assert.equal(await browser.layout(`return !document.querySelector('#card-dialog').open && document.activeElement === document.querySelector('[data-id="${one.id}"] .kanban-open');`), true, 'the card title takes focus back');
+  await browser.eval(`const item = document.querySelector('[data-id="${one.id}"]'); item.querySelector('.kanban-more-toggle').click(); item.querySelector('.kanban-details').focus();`); await enter(browser);
+  await browser.until(`document.querySelector('#task-dialog').open`, 'details dialog');
+  await rerender();
+  await escape(browser);
+  assert.equal(await browser.layout(`return !document.querySelector('#task-dialog').open && document.activeElement.closest('.kanban-card')?.dataset.id === ${JSON.stringify(one.id)};`), true, 'the card keeps focus');
+});

@@ -2552,7 +2552,7 @@ function openCard(id = null, quick = false) {
     for (const row of rows) { const item = document.createElement('li'); item.textContent = row; $('#card-source-list').append(item); }
   }
   $('#card-error').hidden = true;
-  if (!$('#card-dialog').open) $('#card-dialog').showModal();
+  if (!$('#card-dialog').open) { dialogOpeners['card-dialog'] = document.activeElement; $('#card-dialog').showModal(); }
   $(quick ? '#card-prompt' : '#card-title').focus();
 }
 
@@ -3338,7 +3338,7 @@ async function openTaskDetails(taskId) {
     controls.querySelector('.kanban-details')?.remove(); // This dialog is the details.
     if (controls.childElementCount) delivery.append(section('Conversation', controls));
   } else renderDelivery(card, delivery, section, pre);
-  if (!$('#task-dialog').open) $('#task-dialog').showModal();
+  if (!$('#task-dialog').open) { dialogOpeners['task-dialog'] = document.activeElement; $('#task-dialog').showModal(); }
 }
 
 /** Pipeline task details: the stage engine's outcome and history, and the explicit recovery and reset actions. */
@@ -4374,6 +4374,16 @@ $('#labels-reload').addEventListener('click', reloadLabels);
 $('#labels-dialog').addEventListener('close', () => {
   const dialog = $('#labels-dialog'), active = document.activeElement;
   if (!dialog.open && (active === document.body || dialog.contains(active)) && labelManager?.opener?.isConnected) labelManager.opener.focus();
+});
+// A background render replaces every card, so the native focus return can find its opener gone: focus the same control on the new card.
+const dialogOpeners = {};
+for (const id of ['card-dialog', 'task-dialog']) $(`#${id}`).addEventListener('close', () => {
+  const dialog = $(`#${id}`), active = document.activeElement, opener = dialogOpeners[id];
+  if (dialog.open || !opener || opener.isConnected || !(active === document.body || dialog.contains(active))) return;
+  const item = cardElement(opener.closest('.kanban-card')?.dataset.id);
+  const same = item ? [...item.querySelectorAll(opener.tagName)].find(control => control.className === opener.className && control.getAttribute('aria-label') === opener.getAttribute('aria-label')) : document.getElementById(opener.id);
+  same?.focus();
+  if (item && document.activeElement !== same) item.querySelector('.kanban-open')?.focus();
 });
 $('#card-cancel').addEventListener('click', () => $('#card-dialog').close());
 $('#card-dialog-close').addEventListener('click', () => $('#card-dialog').close());
