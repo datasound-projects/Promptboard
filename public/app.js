@@ -1557,6 +1557,30 @@ async function boardCall(method, path, body, timeoutMs = 60000) {
  * board (a new instance, perhaps restored from an older copy) always does. */
 function acceptBoard(next) { if (!board || !Number.isInteger(next?.revision) || next.revision >= board.revision || next.instance !== board.instance) board = next; }
 
+/** What a settings dialog edits (`fields(project)`), as the dialog shows it. */
+const dialogFields = (project, fields) => ({ projectId: project.id, fields, value: JSON.stringify(fields(project)) });
+/** The dialog's project, unless its fields were changed elsewhere since the dialog showed them. */
+function shownProject(shown) {
+  const project = board?.projects.find(item => item.id === shown.projectId);
+  if (!project || JSON.stringify(shown.fields(project)) !== shown.value) throw Object.assign(new Error('These settings changed since you loaded them. Close this dialog and open it again to see the new settings.'), { code: 'REVISION_CONFLICT' });
+  return project;
+}
+/**
+ * One request from a settings dialog. A change made elsewhere to the dialog's fields is never replaced, but other
+ * revision changes (Autopilot re-recording the target branch, a deleted card) never block a save: `send` gets the
+ * current revision. A conflict on the way is checked once more on the newer board. What was saved becomes the dialog's.
+ */
+async function saveDialogFields(shown, send) {
+  for (let retried = false; ; retried = true) {
+    const { revision } = shownProject(shown);
+    try {
+      const data = await send(revision);
+      shown.value = JSON.stringify(shown.fields((data.board || board).projects.find(item => item.id === shown.projectId)));
+      return data;
+    } catch (error) { if (error.code !== 'REVISION_CONFLICT' || retried) throw error; } // boardCall loaded the newer board.
+  }
+}
+
 async function loadBoard({ ifChanged = false } = {}) {
   if (!token) return;
   const previousRevision = board?.revision, previousInstance = board?.instance;
@@ -3392,12 +3416,12 @@ function workflowPreview(stage, settings) {
   return manual ? `Moving a card here only moves it. Start ${columnTitle(stage)} from the card.` : `Moving a card here starts it: ${what}.`;
 }
 
-let workflowRevision = null; // The project revision the Agents dialog shows: a save never replaces a newer one.
+let workflowShown = null; // The Agents dialog's settings as it shows them.
 function openWorkflowDialog(focusStage = null) {
   if (currentProject()?.workflowMode === 'pipeline') { openColumns(); if (focusStage) { columnsDraft.selected = focusStage; renderColumns(); } return; }
   const project = currentProject();
   if (!project) return;
-  workflowRevision = project.revision;
+  workflowShown = dialogFields(project, item => [item.workflow, item.agentDefaults, item.testCommands]);
   $('#workflow-dialog-project').textContent = `${project.name} · WORKFLOW`;
   const stages = [];
   const customAgents = (project.columnLayout || []).filter(entry => entry.custom && entry.agent?.enabled);
@@ -3499,9 +3523,9 @@ async function saveWorkflow(event) {
   const workflow = Object.fromEntries([...$('#workflow-stages').querySelectorAll('.workflow-stage[data-stage]')].map(box => [box.dataset.stage, readWorkflowStage(box)]));
   const lines = ($('#test-commands')?.value || '').split('\n').map(line => line.trim()).filter(Boolean);
   try {
-    const saved = await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/workflow`, { workflow, agentDefaults: readAgentFields($('#workflow-stages .workflow-defaults')) || {}, expectedRevision: workflowRevision });
+    await saveDialogFields(workflowShown, revision => boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/workflow`, { workflow, agentDefaults: readAgentFields($('#workflow-stages .workflow-defaults')) || {}, expectedRevision: revision }));
     const changed = JSON.stringify(lines) !== JSON.stringify((project.testCommands || []).map(item => item.argv.map(arg => /[\s"']/.test(arg) ? JSON.stringify(arg) : arg).join(' ')));
-    if (changed) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/tests`, { commands: lines.map(command => ({ command })), expectedRevision: saved.project.revision });
+    if (changed) await saveDialogFields(workflowShown, revision => boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/tests`, { commands: lines.map(command => ({ command })), expectedRevision: revision }));
   } catch (error) { $('#workflow-error').textContent = error.message; $('#workflow-error').hidden = false; return; }
   $('#workflow-dialog').close();
   announce(`Workflow settings saved for “${project.name}”. They apply to future runs.`);
@@ -4554,7 +4578,7 @@ async function addAutopilotInstructions(project, route) {
     if (existing?.type === 'send_message') Object.assign(existing, { enabled: true, mode: 'deferred' });
     else column.automations.onEnter.push({ name: existing ? `Autopilot instruction ${Date.now()}` : 'Autopilot instruction', type: 'send_message', mode: 'deferred', enabled: true, message });
   }
-  return boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/pipeline`, { pipeline, expectedRevision: project.revision });
+  await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/pipeline`, { pipeline, expectedRevision: project.revision });
 }
 
 async function autopilotCall(action, extra = {}) {
@@ -4806,7 +4830,7 @@ function openAutopilot({ first = [] } = {}) {
   const queued = (saved?.queue || []).filter(id => todo.some(task => task.id === id) && !lead.includes(id));
   const order = [...lead, ...queued, ...todo.map(task => task.id).filter(id => !queued.includes(id) && !lead.includes(id))];
   autopilotDraft = {
-    revision: project.revision,
+    shown: dialogFields(project, item => ['route', 'finish', 'maxRework', 'queue', 'routes'].map(key => item.autopilot?.[key])),
     route: saved?.route?.some(stage => stages.includes(stage)) ? stages.filter(stage => saved.route.includes(stage)) : [...stages], finish: saved?.finish === 'pull_request' ? 'pull_request' : 'merge', maxRework: saved?.maxRework ?? 2,
     // A saved empty queue (for example right after the Full Autopilot preset) starts nothing, so To Do is offered again.
     order, included: new Set(lead.length ? lead : saved?.queue?.length ? queued : order), routes: { ...(saved?.routes || {}) },
@@ -4869,12 +4893,8 @@ function renderAutopilotDialog() {
     if (missing.length) {
       const add = detailButton('Add default instructions', async () => {
         add.disabled = true;
-        try {
-          // This change of its own keeps the draft current; a draft that was already older stays older.
-          const current = draft.revision === project.revision, { project: saved } = await addAutopilotInstructions(project, draft.route);
-          if (current) draft.revision = saved.revision;
-          renderAutopilotDialog(); announce('Default instructions added to the columns. You can change them in Columns.');
-        } catch (error) { $('#autopilot-error').textContent = error.message; $('#autopilot-error').hidden = false; add.disabled = false; }
+        try { await addAutopilotInstructions(project, draft.route); renderAutopilotDialog(); announce('Default instructions added to the columns. You can change them in Columns.'); }
+        catch (error) { $('#autopilot-error').textContent = error.message; $('#autopilot-error').hidden = false; add.disabled = false; }
       }, 'secondary-button');
       add.id = 'autopilot-add-instructions'; add.disabled = running;
       instructions.append(add);
@@ -4953,8 +4973,8 @@ async function saveAutopilot(start) {
   const queue = draft.order.filter(id => draft.included.has(id));
   const routes = Object.fromEntries(Object.entries(draft.routes).filter(([id]) => queue.includes(id)));
   try {
-    await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, pipelineBoard(project) ? { route: draft.route, queue, expectedRevision: draft.revision }
-      : { route: draft.route, finish: draft.route.includes('merge') ? draft.finish : 'merge', maxRework: draft.maxRework, queue, routes, expectedRevision: draft.revision });
+    await saveDialogFields(draft.shown, revision => boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, pipelineBoard(project) ? { route: draft.route, queue, expectedRevision: revision }
+      : { route: draft.route, finish: draft.route.includes('merge') ? draft.finish : 'merge', maxRework: draft.maxRework, queue, routes, expectedRevision: revision }));
     if (start) await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, { action: 'start', confirm: true });
   } catch (error) { showError(error.message); return false; }
   $('#autopilot-dialog').close();
@@ -5078,7 +5098,7 @@ function profileStrategyEditor(entry, profile) {
 // go anywhere between To Do and Done and are attached to the built-in stage on their left.
 const COLUMN_COLOR_NAMES = { gray: 'Gray', red: 'Red', orange: 'Orange', amber: 'Amber', green: 'Green', teal: 'Teal', blue: 'Blue', violet: 'Violet', pink: 'Pink' };
 const BUILTIN_DEFAULT_COLORS = { todo: 'gray', planning: 'violet', executing: 'blue', code_review: 'amber', testing: 'teal', merge: 'orange', done: 'green' };
-const columnsDraft = { list: [], selected: null, project: null, revision: null, pipeline: false, profiles: [], profileId: null, headerDrafts: new Map(),
+const columnsDraft = { list: [], selected: null, project: null, shown: null, pipeline: false, profiles: [], profileId: null, headerDrafts: new Map(),
   execution: {}, applyAll: false, original: '', tests: '', presetConfirm: false, tab: 'columns', open: new Set() };
 // Column types decide what a pipeline column does; the display name never does.
 const COLUMN_KIND_OPTIONS = [['custom', 'Custom: one conversation continues'], ['planning', 'Planning'], ['execution', 'Executing'], ['review', 'Code Review'], ['testing', 'Testing'], ['merge', 'Merge']];
@@ -5213,8 +5233,8 @@ function openColumns({ tab = 'columns' } = {}) {
   if (!project) return;
   const layout = project.columnLayout?.length ? project.columnLayout : (board?.columns || []).map(column => ({ id: column.id }));
   columnsDraft.project = project.id;
-  columnsDraft.revision = project.revision;
   columnsDraft.pipeline = project.workflowMode === 'pipeline';
+  columnsDraft.shown = dialogFields(project, columnsDraft.pipeline ? item => [item.workflowMode, item.pipeline, item.execution, item.testCommands] : item => [item.workflowMode, item.columnLayout]);
   columnsDraft.profiles = JSON.parse(JSON.stringify(project.pipeline?.profiles || []));
   columnsDraft.profileId = null;
   columnsDraft.list = JSON.parse(JSON.stringify(columnsDraft.pipeline ? project.pipeline.columns : layout));
@@ -5569,18 +5589,17 @@ async function saveColumns(event) {
   save.disabled = true; form.setAttribute('aria-busy', 'true');
   const columns = columnsDraft.list.map(entry => entry.custom ? entry : { id: entry.id, ...(entry.title && entry.title !== builtinTitle(entry.id) ? { title: entry.title } : {}), ...(entry.color && entry.color !== BUILTIN_DEFAULT_COLORS[entry.id] ? { color: entry.color } : {}), ...(entry.hidden ? { hidden: true } : {}) });
   try {
-    if (!columnsDraft.pipeline) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/columns`, { columns, expectedRevision: columnsDraft.revision });
+    const patch = (action, body) => saveDialogFields(columnsDraft.shown, revision => boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/${action}`, { ...body, expectedRevision: revision }));
+    if (!columnsDraft.pipeline) await patch('columns', { columns });
     else {
-      // Only what changed is saved: structure (needs paused agents), then permissions, then test commands.
-      const fresh = () => board?.projects.find(item => item.id === project.id);
-      // An unchanged structure is skipped only while the board is as it was when the dialog opened; a draft that
-      // became stale is still sent, so the server refuses it instead of the person losing sight of the change.
-      if (project.workflowMode !== 'pipeline' || JSON.stringify({ columns: columnsDraft.list, profiles: columnsDraft.profiles }) !== columnsDraft.original || project.revision !== columnsDraft.revision)
-        await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/pipeline`, { pipeline: { version: 1, columns: columnsDraft.list, profiles: columnsDraft.profiles }, expectedRevision: columnsDraft.revision, confirm: true });
-      if (columnsDraft.applyAll || JSON.stringify(columnsDraft.execution) !== JSON.stringify(fresh().execution || {}))
-        await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/execution`, { policy: columnsDraft.execution, applyToAllColumns: columnsDraft.applyAll, expectedRevision: fresh().revision });
+      // Only what changed is saved: structure (needs paused agents), then permissions, then test commands. Settings
+      // changed elsewhere are refused even when nothing here changed, so the person never loses sight of them.
+      shownProject(columnsDraft.shown);
+      const fresh = () => board?.projects.find(item => item.id === project.id), structure = JSON.stringify({ columns: columnsDraft.list, profiles: columnsDraft.profiles });
+      if (structure !== columnsDraft.original) { await patch('pipeline', { pipeline: { version: 1, columns: columnsDraft.list, profiles: columnsDraft.profiles }, confirm: true }); columnsDraft.original = structure; }
+      if (columnsDraft.applyAll || JSON.stringify(columnsDraft.execution) !== JSON.stringify(fresh().execution || {})) await patch('execution', { policy: columnsDraft.execution, applyToAllColumns: columnsDraft.applyAll });
       const lines = columnsDraft.tests.split('\n').map(line => line.trim()).filter(Boolean);
-      if (lines.join('\n') !== testCommandsText(fresh())) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/tests`, { commands: lines.map(command => ({ command })), expectedRevision: fresh().revision });
+      if (lines.join('\n') !== testCommandsText(fresh())) await patch('tests', { commands: lines.map(command => ({ command })) });
     }
   } catch (error) { $('#columns-error').textContent = error.message; $('#columns-error').hidden = false; return; }
   finally { save.disabled = false; form.setAttribute('aria-busy', 'false'); }

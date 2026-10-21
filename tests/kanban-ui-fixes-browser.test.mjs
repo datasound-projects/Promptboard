@@ -70,7 +70,7 @@ test('the Agents, Columns and Autopilot dialogs never save over a change saved m
   const project = await linked(app, 'Lost update');
   const card = await app.board.createTask({ projectId: project.id, title: 'Card', prompt: 'c' });
   await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${card.id}"]') && !document.querySelector('#agents-open').disabled`, 'board');
-  const conflict = /changed since you loaded it/;
+  const conflict = /changed since you loaded/;
   // Agents (workflow): the other window chose Manual for Planning.
   await browser.eval(`document.querySelector('#agents-open').click();`); await browser.until(`document.querySelector('#workflow-dialog').open`, 'Agents dialog');
   let current = (await app.board.state()).projects[0];
@@ -105,6 +105,76 @@ test('the Agents, Columns and Autopilot dialogs never save over a change saved m
   await browser.until(`!document.querySelector('#workflow-dialog').open`, 'Agents saved');
   current = (await app.board.state()).projects[0];
   assert.deepEqual([current.workflow.planning.policy, current.testCommands.map(item => item.argv.join(' '))], ['manual', ['node --test']]);
+  assert.deepEqual(exceptions(browser), []);
+});
+
+// What Autopilot does before each card (src/autopilot.mjs): the project revision moves, no setting changes.
+const bumpRevision = async (app, browser, projectId) => {
+  const current = (await app.board.state()).projects.find(project => project.id === projectId);
+  await app.board.setTargetBranch(projectId, { branch: current.targetBranch.name, expectedRevision: current.revision });
+  await polled(app, browser);
+};
+const shownError = (browser, id) => browser.eval(`return document.querySelector('#${id}').hidden ? '' : document.querySelector('#${id}').textContent;`);
+
+test('the Agents, Columns and Autopilot dialogs save again after their own save, a refused start and a revision change the app makes itself', { skip: !chrome, timeout: 120000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await linked(app, 'One window');
+  const card = await app.board.createTask({ projectId: project.id, title: 'Card', prompt: 'c' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${card.id}"]') && !document.querySelector('#agents-open').disabled`, 'board');
+  // Agents: the workflow saves, then a mistyped test command is refused; corrected after a revision change, Save goes through.
+  await browser.eval(`document.querySelector('#agents-open').click();`); await browser.until(`document.querySelector('#workflow-dialog').open`, 'Agents dialog');
+  await browser.eval(`document.querySelector('#test-commands').value = 'nodee --test'; document.querySelector('#workflow-form').requestSubmit();`);
+  await browser.until(`!document.querySelector('#workflow-error').hidden`, 'mistyped command refused');
+  assert.match(await shownError(browser, 'workflow-error'), /not a program installed/);
+  await bumpRevision(app, browser, project.id);
+  await browser.eval(`document.querySelector('#test-commands').value = 'node --test'; document.querySelector('#workflow-form').requestSubmit();`);
+  await browser.until(`!document.querySelector('#workflow-dialog').open`, 'Agents saved');
+  assert.deepEqual((await app.board.state()).projects[0].testCommands.map(item => item.argv.join(' ')), ['node --test']);
+  // Columns: two saves in a row, each after a revision change.
+  for (const title of ['Plan', 'Plan first']) {
+    await browser.eval(`document.querySelector('#columns-open').click();`); await browser.until(`document.querySelector('#columns-dialog').open`, 'Columns dialog');
+    await bumpRevision(app, browser, project.id);
+    await browser.eval(`columnsDraft.list.find(entry => entry.id === 'planning').title = ${JSON.stringify(title)}; document.querySelector('#columns-form').requestSubmit();`);
+    await browser.until(`!document.querySelector('#columns-dialog').open`, `Columns saved: ${title}`);
+    assert.equal((await app.board.view()).projects[0].columns.find(column => column.id === 'planning').title, title);
+  }
+  // Autopilot: Start saves the settings, then no agent can run here. Start again gives that reason again, not a conflict.
+  await browser.eval(`document.querySelector('#autopilot-open').click();`); await browser.until(`document.querySelector('#autopilot-dialog').open`, 'Autopilot dialog');
+  for (const attempt of [1, 2]) {
+    await browser.eval(`document.querySelector('#autopilot-error').hidden = true; document.querySelector('#autopilot-consent').checked = true; document.querySelector('#autopilot-form').requestSubmit();`);
+    await browser.until(`!document.querySelector('#autopilot-error').hidden`, `start ${attempt} refused`);
+    assert.match(await shownError(browser, 'autopilot-error'), /Agent execution is not available/, `start ${attempt}`);
+    await bumpRevision(app, browser, project.id);
+  }
+  await browser.eval(`document.querySelector('#autopilot-save').click();`);
+  await browser.until(`!document.querySelector('#autopilot-dialog').open`, 'Autopilot saved');
+  assert.deepEqual(exceptions(browser), []);
+});
+
+test('the pipeline Column Manager saves after a revision change the app makes itself, and refuses settings changed elsewhere', { skip: !chrome, timeout: 120000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await linked(app, 'Pipeline window', { workflowMode: 'pipeline' });
+  const card = await app.board.createTask({ projectId: project.id, title: 'Card' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${card.id}"]')`, 'board');
+  const active = (await app.board.state()).projects[0].pipeline.columns.find(column => column.role === 'active').id;
+  for (const [name, tests] of [['Shape', ''], ['Shape it', 'node --test']]) {
+    await browser.eval(`document.querySelector('#columns-open').click();`); await browser.until(`document.querySelector('#columns-dialog').open`, 'Columns dialog');
+    await bumpRevision(app, browser, project.id);
+    await browser.eval(`columnsDraft.list.find(entry => entry.id === ${JSON.stringify(active)}).name = ${JSON.stringify(name)}; columnsDraft.tests = ${JSON.stringify(tests)}; document.querySelector('#columns-form').requestSubmit();`);
+    await browser.until(`!document.querySelector('#columns-dialog').open || !document.querySelector('#columns-error').hidden`, `Columns saved: ${name}`);
+    assert.equal(await shownError(browser, 'columns-error'), '');
+    const saved = (await app.board.state()).projects[0];
+    assert.deepEqual([saved.pipeline.columns.find(column => column.id === active).name, (saved.testCommands || []).map(item => item.argv.join(' '))], [name, tests ? [tests] : []]);
+  }
+  // Test commands changed in another window: a save from the open dialog is refused and keeps them.
+  await browser.eval(`document.querySelector('#columns-open').click();`); await browser.until(`document.querySelector('#columns-dialog').open`, 'Columns dialog again');
+  await app.board.delivery.setTestCommands(project.id, { commands: [{ command: 'node --version' }], expectedRevision: (await app.board.state()).projects[0].revision });
+  await polled(app, browser);
+  await browser.eval(`columnsDraft.list.find(entry => entry.id === ${JSON.stringify(active)}).name = 'Mine'; document.querySelector('#columns-form').requestSubmit();`);
+  await browser.until(`!document.querySelector('#columns-error').hidden`, 'stale save refused');
+  assert.match(await shownError(browser, 'columns-error'), /changed since you loaded/);
+  const kept = (await app.board.state()).projects[0];
+  assert.deepEqual([kept.pipeline.columns.find(column => column.id === active).name, kept.testCommands.map(item => item.argv.join(' '))], ['Shape it', ['node --version']]);
   assert.deepEqual(exceptions(browser), []);
 });
 
