@@ -35,6 +35,8 @@ window.PromptboardFiles = (() => {
     }
     return fragment;
   }
+  // A textarea always reads LF: a file with uniform CRLF line endings keeps them in the draft.
+  const draftText = (original = '', value) => /\r\n/.test(original) && !/(?:^|[^\r])\n/.test(original) ? value.replace(/\n/g, '\r\n') : value;
 
   function create({ request }) {
     const projects = new Map(), viewers = new Map(); let visible = false, active = null, refreshing = false, sequence = 0;
@@ -72,7 +74,7 @@ window.PromptboardFiles = (() => {
     const dirty = row => row?.draft !== undefined && row.draft !== row.text;
     editor.addEventListener('input', () => {
       const row = viewers.get(active); if (!row || row.aiBusy || row.saving || row.reviewing) return;
-      row.draft = /\r\n/.test(row.text || '') && !/(?:^|[^\r])\n/.test(row.text || '') ? editor.value.replace(/\n/g, '\r\n') : editor.value;
+      row.draft = draftText(row.text, editor.value);
       row.notice = ''; remember(); code.replaceChildren(codeLines(row.draft, language(row.path))); code._shown = row.draft; code.scrollTop = editor.scrollTop; code.scrollLeft = editor.scrollLeft; paint(row);
     });
     editor.addEventListener('scroll', () => { code.scrollTop = editor.scrollTop; code.scrollLeft = editor.scrollLeft; });
@@ -314,5 +316,6 @@ window.PromptboardFiles = (() => {
     setInterval(() => void refresh(), 3000);
     return { mount, sync, setVisible, toggle, isOpen };
   }
-  return { create };
+  // The highlighter and draft rule are shared with the project explorer (project-explorer.js).
+  return { create, codeLines, language, draftText };
 })();
