@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Board } from '../src/board.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
-import { addClaudeRecord, addCodexRecord, claudeTranscript, newUsage, readNewLines, usageSummary } from '../src/usage.mjs';
+import { addClaudeRecord, addCodexRecord, claudeTranscript, newUsage, readNewLines, reportedCost, usageSummary } from '../src/usage.mjs';
 
 const skip = process.platform === 'win32';
 const fake = fileURLToPath(new URL('./fixtures/fake-agent.cjs', import.meta.url));
@@ -27,6 +27,17 @@ test('Claude records: one count per message ID, cache reads separate, latest req
   assert.equal(claudeTranscript('/x/sid.jsonl', 'sid'), '/x/sid.jsonl');
   assert.equal(claudeTranscript('/x/other.jsonl', 'sid'), null, 'Only the transcript of the session Promptboard started is read.');
   assert.equal(claudeTranscript('relative/sid.jsonl', 'sid'), null);
+});
+
+test('the reported price is read only from the status line file of the same session, never invented', async t => {
+  const dir = await temp(t, 'pb-usage-cost-'), path = join(dir, 'usage-status.json');
+  assert.equal(await reportedCost(path, 'sid'), null, 'No file: no price.');
+  await writeFile(path, JSON.stringify({ at: 1, sessionId: 'sid', windows: [], costUSD: 1.25 }));
+  assert.equal(await reportedCost(path, 'sid'), 1.25);
+  assert.equal(await reportedCost(path, 'other'), null, 'Another session’s price is not this run’s.');
+  for (const costUSD of [null, -1, 'x']) { await writeFile(path, JSON.stringify({ sessionId: 'sid', costUSD })); assert.equal(await reportedCost(path, 'sid'), null, String(costUSD)); }
+  await writeFile(path, '{"sessionId":');
+  assert.equal(await reportedCost(path, 'sid'), null, 'A half-written file is no price.');
 });
 
 test('Codex records: totals, context window, rate limit, and model come from token_count and turn_context', () => {
@@ -83,8 +94,10 @@ test('live runs record real usage for Claude and Codex, and none for Gemini', { 
   const runs = { claude: await start('claude', 'a'), codex: await start('codex', 'b'), gemini: await start('gemini', 'c') };
   const claude = await until(async () => (await board.run(runs.claude.id)).usage, 'Claude usage');
   assert.deepEqual([claude.model, claude.inputTokens, claude.cachedTokens, claude.outputTokens, claude.contextTokens], ['claude-test-model', 215, 2200, 120, 1205]);
+  assert.equal(claude.costUSD, 0.42, 'Claude Code’s status line price is copied onto the run.');
   const codex = await until(async () => (await board.run(runs.codex.id)).usage, 'Codex usage');
   assert.deepEqual([codex.model, codex.contextWindow, codex.contextTokens, codex.rateLimit.usedPercent], ['gpt-test', 200000, 15100, 40]);
+  assert.equal('costUSD' in codex, false, 'Codex reports no price, so none is stored.');
   await until(async () => (await board.run(runs.gemini.id)).status === 'waiting_for_input', 'Gemini turn');
   assert.equal((await board.run(runs.gemini.id)).usage, undefined, 'Gemini reports no usage, so none is shown.');
   // Each run has its own numbers; nothing leaks across runs.
