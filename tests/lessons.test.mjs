@@ -7,6 +7,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Autopilot } from '../src/autopilot.mjs';
 import { Board } from '../src/board.mjs';
 import { composeMessage } from '../src/agents.mjs';
 import { Lessons, choiceFor, lessonsPrompt, lessonsSection, parseLessons } from '../src/lessons.mjs';
@@ -82,7 +83,7 @@ async function fakeGh(t, state) {
   const old = process.env.PATH; process.env.PATH = `${bin}${delimiter}${old}`; t.after(() => { process.env.PATH = old; });
 }
 
-test('every merge path queues one lessons job: Merge, Merge now, automatic merges on legacy and typed boards, and a merged pull request', { skip: shellSkip, timeout: 120000 }, async t => {
+test('every merge path queues one lessons job: Merge, Merge now, automatic merges on legacy and typed boards, both Autopilot engines, and a merged pull request', { skip: shellSkip, timeout: 120000 }, async t => {
   const w = await world(t);
   // Merge (the route, and legacy Autopilot): Delivery.merge.
   const direct = await w.ready('Direct merge');
@@ -100,12 +101,24 @@ test('every merge path queues one lessons job: Merge, Merge now, automatic merge
   await fakeGh(t, { url: 'https://github.com/acme/shop/pull/7', number: 7, state: 'MERGED', mergedAt: '2026-10-20T10:00:00Z' });
   await w.board.advanceFlows();
   assert.equal((await w.card(proposal.id)).completion.kind, 'pull_request');
+  // Legacy Autopilot's own merge step (Delivery.merge), driven by its engine.
+  const piloted = await w.ready('Autopilot merge');
+  await w.board.store.update(state => { state.projects.find(item => item.id === w.project.id).autopilot = { status: 'running', route: ['executing', 'code_review', 'testing', 'merge'], finish: 'merge', maxRework: 2,
+    queue: [piloted.id], done: [], current: { taskId: piloted.id, stage: 'merge', step: 'start', attempts: 0 }, log: [] }; });
+  await new Autopilot(w.board).tick();
+  assert.equal((await w.card(piloted.id)).completion?.kind, 'merged');
   // The stage engine merges a typed board's card on entering Merge with automatic completion.
   const typed = await world(t, { workflowMode: 'pipeline' });
   await typed.board.setExecutionPolicy(typed.project.id, { policy: { completion: 'automatic' }, expectedRevision: (await typed.current()).revision });
   const engine = await typed.ready('Typed merge', 'testing');
   assert.equal((await typed.board.transition(engine.id, { column: 'merge', expectedRevision: (await typed.card(engine.id)).revision, decision: 'start' })).merged, true);
-  for (const [scope, id] of [[w, direct.id], [w, button.id], [w, automatic.id], [w, proposal.id], [typed, engine.id]]) {
+  // Pipeline Autopilot moves the card into Merge itself.
+  const typedPilot = await typed.ready('Pipeline Autopilot merge', 'testing');
+  await typed.board.store.update(state => { state.projects.find(item => item.id === typed.project.id).autopilot = { status: 'running', route: ['testing', 'merge'], maxRework: 2,
+    queue: [typedPilot.id], done: [], current: { taskId: typedPilot.id, stage: 'testing', step: 'enter', turns: 0 }, log: [] }; });
+  await new Autopilot(typed.board).tick();
+  assert.equal((await typed.card(typedPilot.id)).completion?.kind, 'merged', JSON.stringify((await typed.current()).autopilot));
+  for (const [scope, id] of [[w, direct.id], [w, button.id], [w, automatic.id], [w, proposal.id], [w, piloted.id], [typed, engine.id], [typed, typedPilot.id]]) {
     await until(() => scope.jobOf(id), 'queued after the merge returned');
     const jobs = JSON.parse(await readFile(fileOf(scope.dataDir, scope.project.id), 'utf8')).jobs.filter(job => job.taskId === id);
     assert.deepEqual(jobs.map(job => [job.status, job.trigger, job.completedAt]), [['queued', 'merge', (await scope.card(id)).completion.at]], `one queued job for ${(await scope.card(id)).title}`);
@@ -221,7 +234,7 @@ test('a failed suggestion records a plain reason and is never retried on its own
   w.lessons.kick();
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.deepEqual([w.calls.length, w.retries.length], [1, 0], 'no retry on its own');
-  await assert.rejects(w.lessons.suggestAgain(merged.id, { expectedRevision: 0 }), { code: 'REVISION_CONFLICT' });
+  await assert.rejects(w.lessons.suggestAgain(merged.id, { expectedRevision: 99 }), { code: 'REVISION_CONFLICT' });
   await w.lessons.suggestAgain(merged.id, { expectedRevision: (await w.view()).revision });
   await until(async () => (await w.jobOf(merged.id))?.status === 'failed' && w.calls.length === 2, 'second failure');
   assert.equal((await w.jobOf(merged.id)).reason, 'The model did not answer with a list of lessons.');
@@ -373,6 +386,114 @@ test('a backup carries approved lessons and settings, never suggestions or jobs,
   delete backup.projects[0].lessons;
   await board.importBackup(backup, { replace: true });
   assert.deepEqual((await restored.view(w.project.id)).lessons.map(lesson => lesson.text), ['Keep me.']);
+  // A replace import that leaves the project out never deletes its approved lessons; they come back with the project.
+  const elsewhere = structuredClone(backup);
+  elsewhere.projects = [{ ...elsewhere.projects[0], id: 'another-project', name: 'Another', tasks: [], timelineNotes: [] }];
+  await board.importBackup(elsewhere, { replace: true });
+  await assert.rejects(restored.view(w.project.id), { code: 'NOT_FOUND' });
+  await stat(fileOf(dataDir, w.project.id));
+  await board.importBackup(backup, { replace: true });
+  assert.deepEqual((await restored.view(w.project.id)).lessons.map(lesson => lesson.text), ['Keep me.']);
+});
+
+test('failed test output and local paths reach the model masked, also where the kept end of the output starts inside a secret', { timeout: 60000 }, async t => {
+  const w = await world(t);
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Payments', prompt: 'Run it with --cwd=/Users/alice/private/shop, then open file:///Users/alice/private/shop/index.html.' });
+  const secret = 'sk-live-0123456789abcdefSECRET';
+  // Only the last 600 characters are kept: they start inside the keyword, after "STRIPE_AP".
+  const tail = `${'x'.repeat(2000)} STRIPE_API_KEY=${secret} ${'y'.repeat(600 - secret.length - 7)}`;
+  await w.board.updateTaskEvidence(card.id, task => { task.evidence = { tests: { status: 'failed', results: [{ label: 'unit', argv: ['npm', 'test'], status: 'failed', exitCode: 1, tail }] } }; });
+  await w.board.completeTask(card.id, { kind: 'merged', details: { targetBranch: 'trunk', commits: 1 } });
+  w.lessons.start();
+  await until(async () => (await w.jobOf(card.id))?.status === 'done', 'suggested');
+  const [{ prompt }] = w.calls;
+  assert.match(prompt, /unit: failed \(exit 1\)\n {2}Last output: /);
+  assert.equal(prompt.includes(secret), false, 'the secret never reaches the model');
+  assert.doesNotMatch(prompt, /alice/);
+  assert.match(prompt, /--cwd=…\/shop, then open file:\/\/…\/index\.html\./);
+});
+
+test('a run stopped three times, for the owner’s own CLI work or a restart, stops coming back and waits for Suggest again', { timeout: 60000 }, async t => {
+  const controllers = [];
+  const w = await world(t, { claim: async () => { const claimed = slot(); controllers.push(claimed.job.controller); return claimed; },
+    runner: call => new Promise((_, reject) => call.signal.addEventListener('abort', () => reject(new ProviderError('Generation was cancelled.', 'ABORTED')), { once: true })) });
+  const merged = await w.merged('Busy owner');
+  w.lessons.start();
+  for (let stop = 1; stop <= 3; stop++) {
+    await until(async () => controllers.length === stop && (await w.jobOf(merged.id))?.status === 'running', `run ${stop}`);
+    controllers.at(-1).abort('yield');
+    await until(async () => (await w.jobOf(merged.id))?.status !== 'running', `stop ${stop}`);
+    const job = await w.jobOf(merged.id);
+    if (stop < 3) { assert.deepEqual([job.status, job.stops], ['queued', stop]); w.retries.shift()(); }
+    else assert.deepEqual([job.status, job.stops, job.reason], ['failed', 3, 'It was stopped 3 times to make room for your own CLI work or an app restart. Choose Suggest again when the CLI is free.']);
+  }
+  for (const retry of w.retries.splice(0)) retry();
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(w.calls.length, 3, 'no fourth send on its own');
+  await w.lessons.suggestAgain(merged.id, { expectedRevision: (await w.view()).revision });
+  await until(() => w.calls.length === 4, 'Suggest again sends it once more');
+});
+
+test('deciding a lesson never conflicts with the worker’s job updates; only new suggestions change the revision', { timeout: 60000 }, async t => {
+  const answers = [answer(LESSONS.slice(0, 1)), { text: '[]' }];
+  const w = await world(t, { runner: async () => answers.shift() });
+  w.lessons.start();
+  const first = await w.merged('First card');
+  await until(async () => (await w.jobOf(first.id))?.status === 'done', 'first');
+  const loaded = await w.view();
+  assert.ok(loaded.revision > 0, 'the new suggestion changed it');
+  // While the owner looks at it, another card merges and its run finds nothing new.
+  const second = await w.merged('Second card');
+  await until(async () => (await w.jobOf(second.id))?.status === 'done', 'second');
+  await w.lessons.decide(w.project.id, loaded.lessons[0].id, { status: 'approved', expectedRevision: loaded.revision });
+  assert.equal((await w.view()).lessons[0].status, 'approved');
+});
+
+test('a project memory file from a newer Promptboard version holds back only its own project', { timeout: 60000 }, async t => {
+  const w = await world(t);
+  const blog = await w.board.createProject({ name: 'Blog' });
+  await mkdir(join(w.dataDir, 'lessons'), { recursive: true });
+  await writeFile(fileOf(w.dataDir, blog.id), JSON.stringify({ schema: 'promptboard.lessons', version: 99, projectId: blog.id }));
+  await assert.rejects(w.lessons.view(blog.id), { code: 'LESSONS_VERSION_UNSUPPORTED' });
+  const merged = await w.merged('Still suggested');
+  w.lessons.start();
+  await until(async () => (await w.jobOf(merged.id))?.status === 'done', 'the other project still runs');
+  assert.equal(JSON.parse(await readFile(fileOf(w.dataDir, blog.id), 'utf8')).version, 99, 'the newer file is left as it is');
+});
+
+test('the owner’s own CLI work gets the slot as soon as a lessons run has stopped: no wait for other open requests, no BUSY while it stops, and a refused sign-in leaves it running', { timeout: 120000 }, async t => {
+  const scenario = async stopMs => {
+    let held = null, releasePicker = () => {};
+    const runner = async call => {
+      if (!call.prompt.startsWith('# Promptboard project memory')) return { text: 'Not a split.' };
+      return new Promise((_, reject) => { held = call; call.signal.addEventListener('abort', () => setTimeout(() => reject(new ProviderError('Generation was cancelled.', 'ABORTED')), stopMs), { once: true }); });
+    };
+    // An agent session counts as running, so a sign-in change is refused; a folder picker stays open until released.
+    const app = await startTestServer(t, { port: 0, executor: { pendingCount: () => 1, activeCount: () => 1 }, detector: async () => [], runner,
+      folderPicker: () => new Promise(resolve => { releasePicker = () => resolve({ path: null }); }) });
+    t.after(() => releasePicker());
+    const token = (await (await fetch(`${app.url}/api/session`)).json()).token, headers = { 'x-ste-token': token, 'Content-Type': 'application/json' };
+    const call = async (path, body) => { const response = await fetch(`${app.url}${path}`, { method: body ? 'POST' : 'GET', headers, ...(body ? { body: JSON.stringify(body) } : {}) }); return { status: response.status, json: await response.json() }; };
+    const project = await app.board.createProject({ name: 'Shop' });
+    const card = await app.board.createTask({ projectId: project.id, title: 'Merged card', prompt: 'Done already.' });
+    await app.board.completeTask(card.id, { kind: 'merged', details: { targetBranch: 'trunk', commits: 1 } });
+    await until(() => held, 'the lessons run holds the slot');
+    const refused = await call('/api/auth/login', { provider: 'claude' });
+    assert.deepEqual([refused.status, refused.json.code, held.signal.aborted], [409, 'RUNS_ACTIVE', false], 'a refused sign-in leaves the lessons run alone');
+    // Another long request stays open meanwhile (in practice a test run, a merge or a Compose Batch run).
+    void fetch(`${app.url}/api/folder/choose`, { method: 'POST', headers, body: '{}' }).catch(() => {});
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const started = Date.now();
+    const split = await call('/api/split', { prompt: 'Split this task into two.', provider: 'claude' });
+    const elapsed = Date.now() - started;
+    releasePicker();
+    assert.notEqual(split.status, 409, JSON.stringify(split.json));
+    assert.equal(held.signal.reason, 'yield');
+    await until(async () => (await call(`/api/projects/${project.id}/lessons`)).json.jobs[0]?.status === 'queued', 'queued again');
+    return elapsed;
+  };
+  assert.ok(await scenario(0) < 3000, 'a run that stops at once frees the slot at once');
+  assert.ok(await scenario(5500) >= 5000, 'a slow stop is waited for, not answered with BUSY');
 });
 
 test('HTTP routes: views and changes need the session token and the current revision, unknown projects are refused, owner work takes the slot first, and deleting a project removes its memory', { timeout: 60000 }, async t => {

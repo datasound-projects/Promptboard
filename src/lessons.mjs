@@ -21,14 +21,16 @@ import { FAILURE_MESSAGES, makeTempDir, removeTempDir, SAFE_MODEL } from './prov
 const SCHEMA = 'promptboard.lessons', VERSION = 1;
 const KINDS = Object.freeze(['command', 'convention', 'gotcha', 'failed_approach']);
 const TITLES = { command: 'Commands that worked', convention: 'Conventions', gotcha: 'Gotchas', failed_approach: 'Failed approaches (do not repeat them)' };
-const CAPS = { approved: 200, suggested: 100, rejected: 200, jobs: 200, perRun: 6, text: 300, evidence: 200, input: 24000, prompt: 8000 };
+const CAPS = { approved: 200, suggested: 100, rejected: 200, jobs: 200, perRun: 6, text: 300, evidence: 200, input: 24000, prompt: 8000, stops: 3 };
+const STOPPED = `It was stopped ${CAPS.stops} times to make room for your own CLI work or an app restart. Choose Suggest again when the CLI is free.`;
 // The smallest model of each CLI that can run with every tool disabled. Antigravity cannot, so it never suggests.
 const DEFAULTS = Object.freeze({ claude: { model: 'haiku', effort: '' }, codex: { model: '', effort: 'low' }, gemini: { model: 'flash', effort: '' } });
 const ID = /^[A-Za-z0-9_-]{1,100}$/, SHA = /^[0-9a-f]{7,64}$/;
 const BUSY = new Set(['BUSY', 'AUTH_IN_PROGRESS', 'RUNS_ACTIVE']);
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 const clip = (value, max) => { const text = String(value ?? '').trim(); return text.length > max ? `${text.slice(0, max - 1)}…` : text; };
-// Text that can reach a cloud-backed CLI: local folders keep their last name, secrets are masked.
+// Text that can reach a cloud-backed CLI: local folders keep their last name, secrets are masked. The whole text is
+// masked before it is cut, so a cut never starts inside a secret.
 const safe = (value, max) => clip(redactLocal(noPaths(String(value ?? '').replace(CONTROL, ' '))), max);
 const normal = text => String(text).toLocaleLowerCase().replace(/[\s`'"“”‘’.,;:!?()[\]-]+/g, ' ').trim();
 const merged = completion => completion?.kind === 'merged' || (completion?.kind === 'pull_request' && Boolean(completion.mergedAt));
@@ -106,7 +108,7 @@ async function evidenceFor(project, task, approved = []) {
   const review = task.evidence?.review;
   if (review) add('Code review', [`Verdict: ${safe(review.verdict || review.status, 40)}`, ...(review.findings || []).slice(0, 15).map(item => `- [${safe(item.severity, 12)}] ${safe(item.file, 160)}${item.line ? `:${item.line}` : ''} ${safe(item.explanation, 300)}`)].join('\n'));
   const tests = task.evidence?.tests;
-  if (tests) add('Tests', [`Result: ${safe(tests.status, 20)}${tests.summary ? `, ${safe(tests.summary, 300)}` : ''}`, ...(tests.results || []).slice(0, 10).map(item => `- ${safe(item.label || (item.argv || []).join(' '), 200)}: ${safe(item.status, 20)}${item.exitCode === null || item.exitCode === undefined ? '' : ` (exit ${item.exitCode})`}${item.status !== 'passed' && item.tail ? `\n  Last output: ${safe(String(item.tail).slice(-600), 600)}` : ''}`)].join('\n'));
+  if (tests) add('Tests', [`Result: ${safe(tests.status, 20)}${tests.summary ? `, ${safe(tests.summary, 300)}` : ''}`, ...(tests.results || []).slice(0, 10).map(item => `- ${safe(item.label || (item.argv || []).join(' '), 200)}: ${safe(item.status, 20)}${item.exitCode === null || item.exitCode === undefined ? '' : ` (exit ${item.exitCode})`}${item.status !== 'passed' && item.tail ? `\n  Last output: ${safe(item.tail, Infinity).slice(-600)}` : ''}`)].join('\n'));
   add('Rework requested before the merge', [...(task.reworkHistory || []).slice(-3).map(text => safe(text, 1000)), ...(task.reworkHistory?.length ? [] : [safe(task.reworkNotes, 1500)])].filter(Boolean).join('\n---\n'));
   add('Stage results', (task.stageHistory || []).filter(item => item.status !== 'succeeded' || item.reason).slice(-15).map(item => `- ${safe(item.columnId, 60)}: ${safe(item.status, 30)}${item.code ? ` (${safe(item.code, 40)})` : ''}${item.reason ? ` — ${safe(item.reason, 300)}` : ''}`).join('\n'));
   const done = task.completion || {};
@@ -189,7 +191,10 @@ export class Lessons {
     try { await writeAtomic(fileOf(this.dir, data.projectId), `${JSON.stringify(data, null, 1)}\n`); }
     catch { fail('Project memory could not be saved. Check free disk space. Nothing was changed.', 'LESSONS_WRITE_FAILED', 500); }
   }
-  /** One serialized change of a project's file. `change` returns false to leave the file as it is. */
+  /**
+   * One serialized change of a project's file. `change` returns false to leave the file as it is, or 'job' when only job
+   * state changed: the revision the owner's decisions are checked against then stays, so the worker never causes a conflict.
+   */
   #change(projectId, change, { expectedRevision } = {}) {
     return this.#serial(async () => {
       await this.#project(projectId); // Nothing is ever saved for a project that does not exist (or was just deleted).
@@ -197,7 +202,7 @@ export class Lessons {
       if (expectedRevision !== undefined && expectedRevision !== data.revision) fail('Project memory changed since you loaded it. Reload it and try again.', 'REVISION_CONFLICT', 409);
       const result = await change(data);
       if (result === false) return data;
-      data.revision++;
+      if (result !== 'job') data.revision++;
       await this.#save(data);
       return data;
     });
@@ -232,6 +237,7 @@ export class Lessons {
       if (trigger === 'merge' && last?.completedAt === task.completion.at) return false; // The same completion queues once.
       const now = Date.now();
       data.jobs = [...data.jobs, { id: randomUUID(), taskId, taskNumber: task.number ?? null, completedAt: task.completion.at, status: 'queued', trigger, createdAt: now, updatedAt: now }].slice(-CAPS.jobs);
+      return 'job';
     }, { expectedRevision });
     this.kick();
     return data;
@@ -334,7 +340,7 @@ export class Lessons {
 
   // ---- The worker: one job at a time, through the shared CLI job slot ----
 
-  /** After a restart, a job that was running is queued again, so it resumes. */
+  /** After a restart, a job that was running is queued again, so it resumes (it counts as one of its stops). */
   start() {
     if (this.started) return;
     this.started = true;
@@ -343,7 +349,8 @@ export class Lessons {
         await this.#change(project.id, data => {
           const running = data.jobs.filter(job => job.status === 'running');
           if (!running.length) return false;
-          for (const job of running) Object.assign(job, { status: 'queued', updatedAt: Date.now() });
+          for (const job of running) this.#stopped(job, Date.now());
+          return 'job';
         }).catch(() => {});
       }
     })().catch(() => {}).finally(() => { this.working = null; this.kick(); });
@@ -357,12 +364,17 @@ export class Lessons {
     this.retry = true;
     this.schedule(() => { this.retry = false; this.kick(); }, this.retryMs);
   }
-  /** The oldest queued job of any project. */
+  /** A stopped run is queued again, until its third stop: then it waits for Suggest again (or the card's next merge). */
+  #stopped(job, now) {
+    const stops = (job.stops || 0) + 1;
+    Object.assign(job, stops < CAPS.stops ? { status: 'queued', stops, updatedAt: now } : { status: 'failed', stops, reason: STOPPED, updatedAt: now });
+  }
+  /** The oldest queued job of any project. A file this app cannot read (a newer version) holds back only its own project. */
   async #next() {
     let best = null;
     for (const project of (await this.board.state()).projects) {
-      const data = await this.#serial(() => this.#load(project.id));
-      const job = data.jobs.find(item => item.status === 'queued');
+      const data = await this.#serial(() => this.#load(project.id)).catch(() => null);
+      const job = data?.jobs.find(item => item.status === 'queued');
       if (job && (!best || job.createdAt < best.job.createdAt)) best = { projectId: project.id, job, settings: data.settings };
     }
     return best;
@@ -387,6 +399,7 @@ export class Lessons {
       started = data.jobs.find(item => item.id === queued.id && item.status === 'queued');
       if (!started) return false;
       Object.assign(started, { status: 'running', updatedAt: Date.now() });
+      return 'job';
     });
     if (!started) return;
     this.current = { projectId, trigger: started.trigger, controller: slot.controller };
@@ -399,7 +412,7 @@ export class Lessons {
       if (!job) return false;
       const now = Date.now();
       // Stopped for the owner's own CLI work or a shutdown: queued again, so it runs later (after a restart too).
-      if (outcome.again) Object.assign(job, { status: 'queued', updatedAt: now });
+      if (outcome.again) this.#stopped(job, now);
       else if (outcome.off) data.jobs = data.jobs.filter(item => item !== job);
       else if (outcome.reason) Object.assign(job, { status: 'failed', reason: outcome.reason, updatedAt: now });
       else {
@@ -408,7 +421,9 @@ export class Lessons {
         data.lessons.push(...items.map(item => ({ id: randomUUID(), ...item, taskId: job.taskId, taskNumber: job.taskNumber, status: 'suggested', createdAt: now })));
         this.#trim(data, 'suggested');
         Object.assign(job, { status: 'done', found: items.length, provider: outcome.provider, model: outcome.model, reason: undefined, updatedAt: now });
+        if (items.length) return;
       }
+      return 'job';
     }).catch(() => {});
     if (outcome.again) { this.#later(); return 'wait'; }
   }
