@@ -312,6 +312,11 @@ test('Origin restores a damaged project file and refuses stale saves without tou
   assert.equal((await blueprintFile(app, created.id)).blueprint.idea, 'Saved elsewhere');
   await ev(`[...document.querySelectorAll('#origin-save button')].find(b => b.textContent === 'Reload saved version').click();`);
   await wait(`document.querySelector('#origin-view').dataset.save === 'saved' && document.querySelector('#origin-error').hidden`, 'reloaded saved version');
+  // An Undo offered here would put back the blueprint from before its removal, over what another page saves meanwhile.
+  await section('security');
+  await ev(`const m = document.querySelector('[data-nav="menu:topic:security:secrets"]').closest('details'); m.open = true; [...m.querySelectorAll('.origin-menu-item')].find(b => b.textContent === 'Remove topic').click();`);
+  await wait(`!document.querySelector('#origin-undo').hidden`, 'Undo offered');
+  await saved(); await section('vision');
   // Compose Batch and Kanban links save the blueprint too: back on Origin with nothing unsaved, the page takes the
   // newer saved version, so the next edit is saved instead of being refused as "changed in another window".
   await ev(`location.hash = '#/kanban';`);
@@ -324,6 +329,7 @@ test('Origin restores a damaged project file and refuses stale saves without tou
   await writeFile(join(app.board.store.dir, 'origin', blueprintFileName(created.id)), '{"schema":"promptboard.origin", broken'); // Its backup is the save before.
   await ev(`location.hash = '#/origin';`);
   await wait(`document.querySelector('#origin-main textarea')?.value === 'Saved by Compose' && /last good copy was restored/.test(document.querySelector('#origin-notice').textContent)`, 'the newer saved version is shown');
+  assert.equal(await ev(`return document.querySelector('#origin-undo').hidden;`), true, 'no Undo of an older version');
   await ev(`const t = document.querySelector('#origin-main textarea'); t.value = 'Edited after Compose'; t.dispatchEvent(new Event('input', { bubbles: true }));`);
   await saved();
   assert.equal((await blueprintFile(app, created.id)).blueprint.vision.summary, 'Edited after Compose');
