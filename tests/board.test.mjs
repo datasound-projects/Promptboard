@@ -442,7 +442,7 @@ test('import keeps execution inactive and waits for confirmation of paths and au
   assert.equal(project.repository, null, 'Imported paths are not linked automatically.');
   assert.deepEqual(project.workflow, {}, 'Imported automation is not active.');
   assert.equal(project.effectiveWorkflow.executing.policy, 'start', 'The default: dragging starts the stage. Imported settings wait.');
-  assert.deepEqual(project.pendingImport, { repositoryPath: root, targetBranch: 'trunk', workflow: { executing: { policy: 'start', provider: 'codex' } }, testCommands: null });
+  assert.deepEqual(project.pendingImport, { repositoryPath: root, targetBranch: 'trunk', workflow: { executing: { policy: 'start', instructions: '', provider: 'codex', model: '', effort: '', permissionMode: 'workspace-write' } }, testCommands: null });
   assert.equal(project.tasks[0].column, 'planning');
   assert.equal(project.tasks[0].prompt, 'Exact\r\ntext');
   assert.deepEqual((await other.view()).runs, []);
@@ -475,6 +475,26 @@ test('confirming an imported repository is refused while tasks own worktrees in 
   // Discarding them changes no link and stays possible.
   await other.confirmImport(project.id, { accept: false, expectedRevision: project.revision });
   assert.equal((await other.view()).projects[0].repository.root, current);
+});
+
+test('a backup keeps validated workflow settings and test commands only: deeply nested JSON never reaches the board', async t => {
+  const board = new Board({ dataDir: await temp(t, 'pb-deep-') }), deep = JSON.parse('['.repeat(5000) + ']'.repeat(5000));
+  await board.importBackup({ kind: 'promptboard-backup', version: 2, projects: [{ id: 'p1', name: 'Deep', tasks: [{ id: 't1', title: 'Card', prompt: 'Do it', column: 'todo' }],
+    workflow: { executing: { policy: 'start', x: deep }, x: deep }, testCommands: [{ label: 'Unit', argv: ['npm', 'test'], x: deep }, { argv: deep }, { label: deep, argv: ['node', '-v'] }] }] });
+  let project = (await board.state()).projects[0];
+  const commands = [{ label: 'Unit', argv: ['npm', 'test'], timeoutSec: 600 }, { label: 'node -v', argv: ['node', '-v'], timeoutSec: 600 }];
+  assert.deepEqual([project.pendingImport.workflow, project.pendingImport.testCommands], [{ executing: { policy: 'start', instructions: '' } }, commands]);
+  // Later writes keep working.
+  await board.setSettings({ maxConcurrentRuns: 2 });
+  await board.confirmImport(project.id, { accept: true, expectedRevision: project.revision });
+  project = (await board.state()).projects[0];
+  assert.deepEqual([project.workflow, project.testCommands], [{ executing: { policy: 'start', instructions: '' } }, commands]);
+  // A backup of a project without such settings leaves nothing to confirm.
+  const plain = await board.exportBackup();
+  assert.deepEqual(plain.projects[0].workflow, project.workflow);
+  plain.projects[0].workflow = {}; plain.projects[0].testCommands = [];
+  await board.importBackup(plain, { replace: true });
+  assert.equal((await board.state()).projects[0].pendingImport, null);
 });
 
 test('board HTTP routes need the page token, resolve paths on the server, and never start agents', { skip: process.platform === 'win32' }, async t => {

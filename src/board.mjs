@@ -296,10 +296,10 @@ function parseBackupData(data) {
       ...(v3 ? backupBaseScopes(project, false, columnIds) : {}),
       repositoryPath: v2 && typeof project.repository?.path === 'string' ? project.repository.path.slice(0, 4096) : null,
       targetBranch: v2 && typeof project.targetBranch?.name === 'string' ? project.targetBranch.name.slice(0, 255) : null,
-      // Imported workflow settings (including legacy automation) are kept for confirmation only.
-      workflow: v2 && project.workflow && typeof project.workflow === 'object' ? project.workflow : v2 && project.automation?.autoRun === true ? { executing: { policy: 'start' } } : null,
+      // Imported workflow settings (including legacy automation) are kept for confirmation only, validated like saved ones.
+      workflow: importedWorkflow(v2 && project.workflow && typeof project.workflow === 'object' ? project.workflow : v2 && project.automation?.autoRun === true ? { executing: { policy: 'start' } } : null),
       // Imported test commands never run until the user confirms them.
-      testCommands: v2 && Array.isArray(project.testCommands) && project.testCommands.length ? project.testCommands.slice(0, 20) : null,
+      testCommands: v2 && Array.isArray(project.testCommands) ? importedTestCommands(project.testCommands) : null,
       preview: v2 ? previewSettings(project.preview) : null, // Like test commands, it runs only once the import is confirmed.
       // The execution policy and Autopilot route also wait for confirmation; Autopilot always comes back off.
       execution: pipeline && project.execution && Object.keys(project.execution).length ? normalizeExecutionPolicy(project.execution) : null,
@@ -404,6 +404,16 @@ function autopilotSettings(value, project) {
     if (!Number.isInteger(maxRework) || maxRework < 0 || maxRework > (pipeline ? 5 : 3) || (!pipeline && !['merge', 'pull_request'].includes(value.finish))) return null;
     return pipeline ? { route: pipelineAutopilotRoute(project, value.route), finish: 'done', maxRework } : { route: normalizeRoute(value.route, value.finish), finish: value.finish, maxRework };
   } catch { return null; }
+}
+// A backup's workflow and test commands keep only the fields the board uses, so no unchecked value is ever stored.
+// Settings this version cannot use, or none at all, leave nothing to confirm.
+function importedWorkflow(value) {
+  try { const workflow = value ? normalizeWorkflow(value) : null; return workflow && Object.keys(workflow).length ? workflow : null; } catch { return null; }
+}
+function importedTestCommands(list) {
+  const commands = list.filter(item => Array.isArray(item?.argv) && item.argv.length && item.argv.every(arg => typeof arg === 'string' && arg.length <= 1000 && !arg.includes('\0'))).slice(0, 20)
+    .map(item => ({ label: (typeof item.label === 'string' && item.label || item.argv.join(' ')).slice(0, 80), argv: item.argv.slice(0, 50), timeoutSec: Number.isInteger(item.timeoutSec) && item.timeoutSec >= 1 && item.timeoutSec <= 3600 ? item.timeoutSec : 600 }));
+  return commands.length ? commands : null;
 }
 
 /** Validate workflow overrides. Unknown stages and fields are dropped; invalid values are refused. */
@@ -2059,7 +2069,7 @@ export class Board {
           draft.base.revision++;
         }
         if (pending.preview) project.preview = previewSettings(pending.preview);
-        if (pending.testCommands) project.testCommands = pending.testCommands.filter(item => Array.isArray(item?.argv) && item.argv.length && item.argv.every(arg => typeof arg === 'string' && arg.length <= 1000 && !arg.includes('\0'))).slice(0, 20).map(item => ({ label: String(item.label || item.argv.join(' ')).slice(0, 80), argv: item.argv.slice(0, 50), timeoutSec: Number.isInteger(item.timeoutSec) && item.timeoutSec >= 1 && item.timeoutSec <= 3600 ? item.timeoutSec : 600 }));
+        if (pending.testCommands) project.testCommands = importedTestCommands(pending.testCommands) || [];
       }
       project.pendingImport = null;
       project.revision++;
