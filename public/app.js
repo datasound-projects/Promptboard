@@ -1725,6 +1725,7 @@ function renderBoard() {
   renderRunPanel(project, timelineView);
   if (timelineView) { $('#autopilot-bar').hidden = true; refreshTimeline(project); }
   coordinatorView?.sync(project, board?.revision, !timelineView && currentPage() === 'kanban'); // Read only while it can be seen.
+  window.PromptboardLessonsView?.sync(project, board?.revision);
   updateBoardScroll();
   window.PromptboardDock?.sync();
   const verifying = tasks.find(task => task.evidence?.tests?.status === 'running');
@@ -3247,6 +3248,7 @@ async function openTaskDetails(taskId) {
   const prerequisites = taskPrerequisites(card, project);
   const nodes = [
     section('Status', paragraph(`${status.text}. Task text revision ${card.contentRevision ?? 1}.${status.flag ? ' Review the prompt before you run an agent on it.' : ''}`)),
+    ...(window.PromptboardLessonsView?.taskSection(card, section) || []), // A merged card's suggested lessons (public/lessons.js).
     ...(prerequisites ? [section('Prerequisites', paragraph('These cards must be done before this one starts. Nothing is merged for you.', 'note'), prerequisites)] : []),
     ...(card.originSource?.originTaskId ? [section('From Origin', paragraph(`${card.originSource.key || 'An Origin task'}. Its design context is in the prompt below; change the task in Origin.`, 'note'),
       detailActions(detailButton('Open in Origin', () => { $('#task-dialog').close(); openOrigin(card.originSource.originProjectId, { collection: 'items', id: card.originSource.originTaskId }); }, 'text-button')))] : []),
@@ -6199,6 +6201,9 @@ projectsView = window.PromptboardProjects?.create({ api, announce, getResult: ()
 coordinatorView = window.PromptboardCoordinator?.create({ api, announce, project: () => currentProject(), runs: () => board?.runs || [],
   openTask: taskId => void openTaskDetails(taskId), composeSettings: () => settings(),
   copy: text => navigator.clipboard.writeText(text).then(() => announce('Commit ID copied.'), () => announce(`Commit ${text}`)) }) || null;
+// Project memory: lessons from merged cards, reviewed in task details and the Project memory dialog (public/lessons.js).
+window.PromptboardLessonsView = window.PromptboardLessons?.create({ api, announce, project: () => currentProject(), projects: () => board?.projects || [], openTask: taskId => void openTaskDetails(taskId),
+  openKanban: (projectId, then) => { setSelectedProject(projectId); location.hash = '#/kanban'; setTimeout(then, 0); } }) || null;
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();
