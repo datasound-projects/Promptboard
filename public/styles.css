@@ -2244,7 +2244,9 @@ button.origin-context-badge { cursor: pointer; }
 .origin-research-mini:hover { border-color: var(--sash); }
 .origin-research-mini-status { color: var(--muted); font-weight: 500; }
 .origin-research-mini-status:empty { display: none; }
-@media (max-width: 730px) { .origin-drawer[data-mode="research"] { width: auto; } .origin-research-cli { max-width: 120px; } }
+@media (max-width: 730px) { .origin-drawer[data-mode="research"] { width: auto; } .origin-research-cli { max-width: 120px; }
+  /* The full-width Improve card sits above the minimized Research button (38 px high) instead of covering it. */
+  body:has(#origin-view:not([hidden]) > #origin-research-mini:not([hidden])) .origin-improve-mini { bottom: 66px; } }
 
 /* Safe Markdown preview (Project Context). */
 .md-view { color: var(--text); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
