@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **Scheduled cards.** Kanban → **Schedules** makes cards that land in To Do daily, on weekdays, weekly or monthly, at a time you pick. Quick starts cover a nightly dependency update and weekly docs and security sweeps.
+  - **Run with Autopilot** (asked to confirm once) hands each new card to Autopilot. A paused Autopilot is never resumed.
+  - A time missed while Promptboard was closed gives one card, not one per missed time.
+  - A new card is skipped while the previous one from that schedule is still open.
+  See [Scheduled cards](docs/schedules.md).
+- **Project memory.** After a card merges, one short run with the card's CLI and its smallest model suggests lessons: commands that worked, conventions, gotchas and failed approaches.
+  - You approve, edit or reject each lesson in the card's Details or in **Project memory**.
+  - Approved lessons reach every new agent of the project and show in Origin's Project Context.
+  - Each project has an on/off switch, and your own Compose, Research and Coordinator work always goes first.
+  See [Project memory](docs/project-memory.md).
+- **Insights.** A lightbulb next to Settings shows, per project:
+  - rework rate by agent, model and template;
+  - time spent in each column;
+  - tokens and the reported price per merged card;
+  - the cards that fail review most.
+  It reads what the runs recorded and calls no model. See [Insights](docs/insights.md).
+- **Docker sandbox.** **Run agents in Docker** (Columns → How agents work → Advanced) runs a project's Claude Code and Codex agents in a container. The container sees only the card's worktree, its Git data, the run's folder and Promptboard's own code. Settings → **Docker sandbox** builds the image and checks what is missing. A run that can't start in Docker stops with a plain reason and never falls back to your computer. See [Docker sandbox](docs/docker-sandbox.md).
+- **Live preview.** **Start preview** in a card's Details runs the project's dev server in the card's worktree and gives you a link, so you can click-test before merging. A preview stops when its worktree goes away or Promptboard closes. See [Live preview](docs/live-preview.md).
+- **Project card.** A **Project: <name>** card after Done shows the project's folder, branch, latest commit and last merged card.
+  - **Open project** browses and edits the files where merged work lands, in a file tree and tabbed editor.
+  - **Pop out** opens it in its own window.
+  - A save never overwrites a file that changed on disk.
+  See [Project explorer](docs/project-explorer.md).
 - **Repair pass.** Every part of the app was checked against a written list of what can go wrong (20 areas). Each confirmed problem was fixed where it starts, with a test that failed before the fix. Merged as #134–#138.
 - Fix (data): saving right after a recovery could delete the only good backup. Damaged backups, saved blueprints, Project Context documents, batches, editor lists and remote-access settings are now kept aside instead of being overwritten. Boards between 20 and 47 MB can be imported again, and a migration that keeps failing no longer fills the disk.
 - Fix (security): agents no longer inherit Claude Code's own session variables, including its messaging token, when Promptboard is started from inside Claude Code. A switched-off MCP tool whose name contains a dot is now withheld from Claude. Credentials typed into MCP or recipe arguments are refused. Revoke all also voids a pairing code that was shown but not used, and saving any Twingate field no longer turns HTTPS off.
