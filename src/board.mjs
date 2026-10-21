@@ -2457,7 +2457,8 @@ export class Board {
 
   #importRefusal(state, replace) {
     if (state.projects.length && !replace) throw conflict('Confirm that the import replaces the current board.', 'CONFIRMATION_REQUIRED');
-    for (const project of state.projects) for (const task of project.tasks) this.#requireAutomationsStopped(task); // As deleteProject.
+    try { for (const project of state.projects) for (const task of project.tasks) this.#requireAutomationsStopped(task); } // As deleteProject.
+    catch { throw conflict('Stop the running column automations before you replace the board with a backup.', 'AUTOMATIONS_ACTIVE'); }
     if (this.#hasWorkspaceOrRun(state)) throw conflict('Tasks on the current board own worktrees or runs. Remove those worktrees before you replace the board.', 'WORKSPACES_EXIST');
   }
 

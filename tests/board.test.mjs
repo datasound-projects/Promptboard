@@ -533,7 +533,7 @@ test('replacing the board by import waits until column automations stop, as dele
   const card = await board.createTask({ projectId: project.id, title: 'Card', prompt: 'Do it' });
   const backup = await board.exportBackup(), before = structuredClone(await board.state());
   board.automationMoves.set(card.id, {}); // A column script of this card is still running.
-  await assert.rejects(board.importBackup({ ...backup, projects: [] }, { replace: true }), { code: 'AUTOMATIONS_ACTIVE', status: 409 });
+  await assert.rejects(board.importBackup({ ...backup, projects: [] }, { replace: true }), { code: 'AUTOMATIONS_ACTIVE', status: 409, message: 'Stop the running column automations before you replace the board with a backup.' });
   assert.deepEqual(await board.state(), before, 'nothing was imported');
   board.automationMoves.delete(card.id);
   await board.importBackup({ ...backup, projects: [] }, { replace: true });
