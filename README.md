@@ -110,6 +110,7 @@ Each card gets its own Git branch and worktree. When a card enters a column, a f
 | Merge | Promptboard merges the reviewed, tested commit. | The target branch has it. |
 
 - **Autopilot.** Runs your queue in order. A card starts only after its prerequisites are merged, so each task builds on the code before it.
+- **Scheduled cards.** Recurring cards land in To Do on a repeat, for example a nightly dependency update or a weekly docs or security sweep, and can run through Autopilot ([Schedules](docs/schedules.md)).
 - **Every agent knows its task.** It gets the card's exact text, its place in the plan ("task 2 of 3"), and what its prerequisites did. It never gets another agent's conversation.
 - **Rework.** Blocking findings and failing tests send the card back with the details. Rework stops when the same problem keeps coming back.
 - **Safe merges.** Squash or fast-forward, only if the target hasn't moved. Otherwise the work is tested again. Conflicts go to a resolver agent, then review and tests again. Nothing is pushed unless you open a pull request.
