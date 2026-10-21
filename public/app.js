@@ -1553,8 +1553,9 @@ async function boardCall(method, path, body, timeoutMs = 60000) {
   return data;
 }
 
-/** Every state write raises the board revision. A slow older answer never replaces a newer board. */
-function acceptBoard(next) { if (!board || !Number.isInteger(next?.revision) || next.revision >= board.revision) board = next; }
+/** Every state write raises the board revision. A slow older answer never replaces a newer board; a restarted app's
+ * board (a new instance, perhaps restored from an older copy) always does. */
+function acceptBoard(next) { if (!board || !Number.isInteger(next?.revision) || next.revision >= board.revision || next.instance !== board.instance) board = next; }
 
 async function loadBoard({ ifChanged = false } = {}) {
   if (!token) return;

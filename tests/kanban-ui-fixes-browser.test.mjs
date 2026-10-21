@@ -138,3 +138,23 @@ test('board feedback shows on the board on a phone and with the sidebar collapse
   assert.equal(await browser.layout(shown('Shown on the board.')), true);
   assert.deepEqual(exceptions(browser), []);
 });
+
+test('an open page takes the board of a restarted app whose board was restored from its last good copy', { skip: !chrome, timeout: 90000 }, async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-kanban-ui-'));
+  const options = { executor: null, dataDir, detector: async () => [], catalogReader: async provider => ({ provider, source: 'test fixture', models: [] }) };
+  let app = await startServer({ ...options, port: 0 });
+  t.after(async () => { await app.close().catch(() => {}); await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+  const browser = await launch(); assert.ok(browser); t.after(() => browser.close());
+  const project = await app.board.createProject({ name: 'Recover' });
+  await app.board.createTask({ projectId: project.id, title: 'Kept', prompt: 'a' });
+  await app.board.createTask({ projectId: project.id, title: 'Lost in the damaged write', prompt: 'b' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelectorAll('.kanban-card').length === 2`, 'two cards');
+  const { port } = new URL(app.url);
+  await app.close();
+  // The store sets the damaged file aside and restores state.json.bak, one revision older than the page's board.
+  await writeFile(join(dataDir, 'state.json'), '{ damaged');
+  app = await startServer({ ...options, port: Number(port) });
+  await browser.until(`!document.querySelector('#kanban-load-warning').hidden && document.querySelectorAll('.kanban-card').length === 1`, 'the restored board', 15000);
+  assert.deepEqual(await browser.eval(`return [...document.querySelectorAll('.kanban-card .kanban-open')].map(node => node.textContent);`), ['Kept']);
+  assert.match(await browser.eval(`return document.querySelector('#kanban-load-warning').textContent;`), /last good copy was restored/);
+});
