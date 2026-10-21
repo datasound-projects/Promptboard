@@ -244,7 +244,7 @@ window.PromptboardOrigin = (() => {
       projectId = id; record = null; loadError = null; open = null; connectFrom = null; planSelection = new Set(); lastHandoff = '';
       views = { map: null, canvas: null }; mapLinkFrom = null; selectedLink = null; flowConnect = null; flowStep = null; taskMilestone = ''; contextView = { itemId: null, open: false, loading: false, revision: 0, data: null, error: '' };
       contextStatus = { revision: -1, loading: false, map: new Map() };
-      changeCount = savedCount = 0; dirtySince = 0; saveState = 'saved'; showNotice(''); showError(''); hideUndo();
+      changeCount = savedCount = 0; dirtySince = 0; saveState = 'saved'; saveMessage = ''; showNotice(''); showError(''); hideUndo();
       renderDrawer(); void contextPanel.reset(id); void researchPanel.reset(id);
       if (!id) { render(); return null; }
       main.replaceChildren(el('p', 'origin-empty-note', 'Loading blueprint…')); main.setAttribute('aria-busy', 'true');
