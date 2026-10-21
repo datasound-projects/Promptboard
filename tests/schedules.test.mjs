@@ -292,6 +292,24 @@ test('a card made just before the app stopped says on its schedule that it was n
   assert.deepEqual([card.column, saved.lastTaskId, saved.lastAutopilot], ['todo', card.id, { at: w.now, ok: false, text: 'Not handed to Autopilot (Promptboard stopped first), so the card waits in To Do' }]);
 });
 
+test('after a clock that ran ahead is set right, the schedule makes cards again and shows the right next time; a small step back makes no second card', async t => {
+  const w = await world(t, at(2026, 10, 20, 12));
+  await w.add();
+  const night = async (time, done = true) => { w.set(time); await w.schedules.tick(); const task = (await w.read()).tasks.at(-1); if (done && task?.column === 'todo') await w.board.completeTask(task.id, { kind: 'no_changes', details: {} }); };
+  await night(at(2026, 10, 21, 2) + 30000);
+  await night(at(2026, 10, 22, 2) + 30000);
+  // The clock goes back a minute: the night before is not made again.
+  await night(at(2026, 10, 22, 1, 59));
+  assert.equal((await w.read()).tasks.length, 2);
+  // The clock is a year ahead for a while, then set right.
+  await night(at(2027, 10, 22, 2) + 30000);
+  assert.equal((await w.read()).tasks.length, 3);
+  w.set(at(2026, 10, 22, 12));
+  assert.equal((await w.schedules.list(w.project.id)).schedules[0].next, at(2026, 10, 23, 2), 'not a year ahead');
+  await night(at(2026, 10, 23, 2) + 30000);
+  assert.equal((await w.read()).tasks.length, 4, 'it makes cards again');
+});
+
 test('schedule changes are checked: the project revision, the fields, and at most 50 per project', async t => {
   const w = await world(t);
   await assert.rejects(w.schedules.create(w.project.id, { title: 'x', prompt: 'y', cadence: { kind: 'daily', time: '02:00' } }), { code: 'REVISION_REQUIRED' });

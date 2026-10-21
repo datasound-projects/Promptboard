@@ -20,6 +20,10 @@ const PROMPT_LIMIT = 20000;
 const MAX_WAIT = 60000;
 const LATE_MS = 2 * 60000; // A card made later than this after its time says when it was due.
 const DAY = 86400000;
+// ponytail: a clock set back by up to an hour still counts the slots it used, so it makes no second card. Times later than
+// that were written by a clock that ran ahead and are ignored; the first check after it is set right may then make the
+// latest slot's card again (the no pile-up rule still applies). Record slots per day if that ever matters.
+const CLOCK_MARGIN = 3600000;
 const ID = /^[A-Za-z0-9_-]{1,100}$/;
 
 const fail = (message, code = 'INVALID_SCHEDULE', status = 400) => { throw Object.assign(new Error(message), { code, status }); };
@@ -60,13 +64,18 @@ export function nextFire(cadence, after) {
   return null;
 }
 
+/** A recorded time, unless it lies ahead of `now`: then it was written while the clock was wrong, and is ignored. */
+const recorded = (at, now) => (Number.isFinite(at) && at <= now + CLOCK_MARGIN ? at : null);
 // Slots count from the last one used, or from the last change: a schedule switched back on, or given a new time, does
-// not catch up on the slots before.
-const since = schedule => Math.max(schedule.lastSlot ?? 0, schedule.updatedAt ?? schedule.createdAt ?? 0);
+// not catch up on the slots before. With neither known, counting starts now.
+const since = (schedule, now) => {
+  const known = [recorded(schedule.lastSlot, now), recorded(schedule.updatedAt ?? schedule.createdAt, now)].filter(at => at !== null);
+  return known.length ? Math.max(...known) : now;
+};
 
 /** The slot a schedule is due for at `now`, or null. Of several missed slots only the latest counts: one card, not one per slot. */
 function dueSlot(schedule, now) {
-  let slot = nextFire(schedule.cadence, since(schedule));
+  let slot = nextFire(schedule.cadence, since(schedule, now));
   if (slot === null || slot > now) return null;
   for (let next = nextFire(schedule.cadence, Math.max(slot, now - 32 * DAY)); next !== null && next <= now; next = nextFire(schedule.cadence, next)) slot = next;
   return slot;
@@ -142,7 +151,7 @@ export class Schedules {
         if (!schedule.enabled) continue;
         const slot = dueSlot(schedule, now);
         if (slot !== null) await this.fire(project.id, schedule.id, { slot }).catch(() => {});
-        wait = Math.min(wait, nextFire(schedule.cadence, Math.max(since(schedule), now)) - now);
+        wait = Math.min(wait, nextFire(schedule.cadence, Math.max(since(schedule, now), now)) - now);
       }
     } finally {
       this.busy = false;
@@ -154,7 +163,7 @@ export class Schedules {
   async #project(projectId) {
     return (await this.board.state()).projects.find(item => item.id === projectId) || fail('This project does not exist. Reload the board.', 'NOT_FOUND', 404);
   }
-  #view(schedule, now) { return { ...schedule, next: schedule.enabled ? nextFire(schedule.cadence, Math.max(since(schedule), now)) : null }; }
+  #view(schedule, now) { return { ...schedule, next: schedule.enabled ? nextFire(schedule.cadence, Math.max(since(schedule, now), now)) : null }; }
 
   async list(projectId) {
     const project = await this.#project(projectId), now = this.now();
@@ -205,7 +214,7 @@ export class Schedules {
       const schedule = (project.schedules || []).find(item => item.id === scheduleId);
       if (!schedule) return manual ? fail('This schedule no longer exists. Reload the board.', 'NOT_FOUND', 404) : null;
       if (!manual) {
-        if (!schedule.enabled || (schedule.lastSlot ?? -1) >= slot) return null;
+        if (!schedule.enabled || (recorded(schedule.lastSlot, now) ?? -1) >= slot) return null;
         schedule.lastSlot = slot;
         const open = openCard(project, schedule.lastTaskId);
         if (open) { schedule.lastSkip = { at: now, reason: `previous card #${open.number} is still open` }; return null; }
