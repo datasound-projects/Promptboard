@@ -131,7 +131,9 @@ export function resolveConfig(stage, config = {}) {
   if (model && !SAFE_MODEL.test(model)) throw new AgentError('Use a model ID with no spaces or command flags.', 'INVALID_MODEL');
   const effort = config.effort ? String(config.effort) : '';
   try { validateEffort(provider, effort); } catch { throw new AgentError('This CLI does not support that effort setting.', 'INVALID_EFFORT'); }
-  const stageEngine = { ...(config.stageEngine === true ? { stageEngine: true } : {}), ...(config.trustWorkspace === true ? { trustWorkspace: true } : {}) };
+  // Docker mode (src/sandbox.mjs) runs only the CLIs whose sign-in and lifecycle were verified in a container.
+  if (config.sandbox === 'docker' && !['claude', 'codex'].includes(provider)) throw new AgentError('Docker mode supports Claude Code and Codex.', 'SANDBOX_PROVIDER_UNSUPPORTED', 409);
+  const stageEngine = { ...(config.stageEngine === true ? { stageEngine: true } : {}), ...(config.trustWorkspace === true ? { trustWorkspace: true } : {}), ...(config.sandbox === 'docker' ? { sandbox: 'docker' } : {}) };
   if (policy) {
     const interaction = config.interaction || 'ask', filesystem = config.filesystem;
     const permissionMode = readOnly ? 'plan' : adapter.policyModes?.[interaction]?.[filesystem];

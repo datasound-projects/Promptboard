@@ -469,7 +469,7 @@ export function effectiveWorkflow(project, globalAgent = null, state = null, tas
     const explicit = execution.kind !== 'custom' || Object.values(execution.sources).some(source => source !== 'default');
     return [column.id, { ...settings, kind: execution.kind, completion: execution.completion,
       ...(explicit ? { interaction: execution.interaction, filesystem: execution.filesystem } : {}), ...(execution.stage ? { stageEngine: true } : {}),
-      ...(project.execution?.workspaceTrust === 'task_workspaces' ? { trustWorkspace: true } : {}) }];
+      ...(project.execution?.workspaceTrust === 'task_workspaces' ? { trustWorkspace: true } : {}), ...(project.execution?.sandbox === 'docker' ? { sandbox: 'docker' } : {}) }];
   }));
   const global = state ? profileDefaults(state, state.settings?.agentProfileId, globalAgent || {}) : globalAgent;
   const projectAgent = state ? profileDefaults(state, project?.agentProfileId, project?.agentDefaults || {}) : project?.agentDefaults;
@@ -1309,7 +1309,8 @@ export class Board {
     if (project.workflowMode !== 'pipeline') throw conflict('Switch this board to a column pipeline in Columns first.', 'PIPELINE_REQUIRED');
     const typed = this.#withoutPolicyOverrides(withSeededKinds(project.pipeline));
     const saved = await this.#setPipeline(id, { pipeline: typed, expectedRevision });
-    await this.setExecutionPolicy(id, { policy: { interaction: 'autonomous', filesystem: 'workspace_write', completion: 'automatic', maxRework: 2, mergeMethod: 'squash', workspaceTrust: 'task_workspaces' }, expectedRevision: saved.revision });
+    // Where agents run (Docker mode) is the owner's own choice; the preset keeps it.
+    await this.setExecutionPolicy(id, { policy: { interaction: 'autonomous', filesystem: 'workspace_write', completion: 'automatic', maxRework: 2, mergeMethod: 'squash', workspaceTrust: 'task_workspaces', ...(project.execution?.sandbox ? { sandbox: project.execution.sandbox } : {}) }, expectedRevision: saved.revision });
     return this.store.update(state => {
       const current = this.#project(state, id);
       const previous = current.autopilot || {};
@@ -3685,7 +3686,8 @@ export class Board {
     const previous = saved && state.runs.find(item => item.id === saved.currentRunId);
     const resume = saved?.nativeSessionId && saved.provider === config.provider && previous?.promptRevision === (task.contentRevision ?? 1)
       && ['suspended', 'orphaned', 'exited'].includes(saved.status) && previous.config.pipeline === true
-      && !previous.stageKind; // A typed stage's own session is never continued by a custom column; it starts fresh.
+      && !previous.stageKind // A typed stage's own session is never continued by a custom column; it starts fresh.
+      && (previous.config.sandbox || '') === (config.sandbox || ''); // A conversation in Docker keeps its history there, not on this computer.
     const nativeSessionId = resume ? validateResumeId(saved.nativeSessionId) : null;
     if (requireResume && !resume) throw conflict('This task has no unchanged native conversation to resume.', 'SESSION_NOT_RESUMABLE');
     const workspace = await this.ensureTaskWorktree(taskId);

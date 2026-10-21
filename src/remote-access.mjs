@@ -335,7 +335,8 @@ function localOnly(method, path) {
   if (method === 'GET' || method === 'HEAD') return /^\/api\/remote(\/|$)/.test(path) || path === '/api/editors';
   return /^\/api\/remote(\/|$)/.test(path) || path === '/api/editors' || /^\/api\/auth\/(login|logout|cancel)$/.test(path) || /^\/api\/github\/login(\/cancel)?$/.test(path) || path === '/api/folder/choose' || /^\/api\/base\/(?:mcp\/import(?:\/preview)?|markdown\/(?:scan|import))$/.test(path)
     || /^\/api\/projects\/[^/]+\/open$/.test(path) // Opens a window on the computer's screen.
-    || /^\/api\/tasks\/[^/]+\/preview$/.test(path); // Starts or stops a dev server whose link works only on the computer.
+    || /^\/api\/tasks\/[^/]+\/preview$/.test(path) // Starts or stops a dev server whose link works only on the computer.
+    || path === '/api/sandbox/claude-token'; // A CLI sign-in, like the ones above: set or removed at the computer.
 }
 /** This computer's private addresses, offered as listening addresses for Twingate. */
 function localAddresses() {

@@ -2215,6 +2215,8 @@ function renderCard(card, index, count) {
     tags.push(tag);
   }
   if (card.scheduleId) tags.push(Object.assign(document.createElement('span'), { className: 'schedule-tag', textContent: 'Scheduled' }));
+  // Docker mode: this card's agent runs in a container that sees only its workspace (docs/docker-sandbox.md).
+  if (run && RUN_LIVE.includes(run.status) && run.config?.sandbox === 'docker') tags.push(Object.assign(document.createElement('span'), { className: 'sandbox-tag', textContent: 'In Docker' }));
   const meta = paragraph(details.join(' · '), 'kanban-meta');
   meta.title = meta.textContent;
   const context = document.createElement('details'); context.className = 'card-workspace';
@@ -2703,7 +2705,7 @@ function agentStateText(run) {
   const state = agentState(run);
   return state === 'inactive' && run?.status ? `Inactive · ${run.status.replaceAll('_', ' ')}` : AGENT_STATE_TEXT[state];
 }
-function agentModel(run) { return `${providerName(run.config?.provider)} · ${run.config?.model || 'CLI default model'}${run.config?.effort ? ` · ${run.config.effort}` : ''}`; }
+function agentModel(run) { return `${providerName(run.config?.provider)} · ${run.config?.model || 'CLI default model'}${run.config?.effort ? ` · ${run.config.effort}` : ''}${run.config?.sandbox === 'docker' ? ' · In Docker' : ''}`; }
 function agentActivity(run) {
   if (run?.lifecycle === 'suspending' && RUN_LIVE.includes(run.status)) return 'Pausing the agent; waiting for its process to exit…';
   if (run?.lifecycle === 'initial-input-not-ready' && RUN_LIVE.includes(run.status)) return run.waitingReason;
@@ -3042,7 +3044,7 @@ function readAgentFields(root) {
   const permissionMode = value('permissionMode');
   return { provider: value('provider'), model: (value('model') === '__custom__' ? value('model-custom') : value('model')).trim(), effort: value('effort'), ...(permissionMode && permissionMode !== 'plan' ? { permissionMode } : {}) };
 }
-const agentText = agent => agent?.provider ? `${providerName(agent.provider)} · ${agent.model || 'CLI default model'}${agent.effort ? ` · ${agent.effort}` : ''}` : '';
+const agentText = agent => agent?.provider ? `${providerName(agent.provider)} · ${agent.model || 'CLI default model'}${agent.effort ? ` · ${agent.effort}` : ''}${agent.sandbox === 'docker' ? ' · In Docker' : ''}` : '';
 
 function locationFact(label, value) {
   const row = document.createElement('div'); row.className = 'location-fact';
@@ -5067,9 +5069,10 @@ const stepByStep = policy => (policy.interaction || 'ask') === 'ask' && (policy.
 const EXECUTION_CHOICES = {
   interaction: [['ask', 'Ask for approval'], ['autonomous', 'Autonomous: never pause for approval']],
   filesystem: [['read_only', 'Read only'], ['workspace_write', 'Write in the task workspace'], ['full', 'Full access']],
+  sandbox: [['docker', 'Yes: only the card’s workspace']],
   completion: [['manual', 'Manual: you complete each stage'], ['automatic', 'Automatic when the turn is done and its checks pass']],
 };
-const EXECUTION_DEFAULT_TEXT = { interaction: 'Ask for approval', filesystem: 'Write in the task workspace', completion: 'Manual' };
+const EXECUTION_DEFAULT_TEXT = { interaction: 'Ask for approval', filesystem: 'Write in the task workspace', sandbox: 'No, on this computer', completion: 'Manual' };
 const testCommandsText = project => (project?.testCommands || []).map(item => item.argv.map(arg => /[\s"']/.test(arg) ? JSON.stringify(arg) : arg).join(' ')).join('\n');
 
 /** "How it runs": one choice between hands-off and step by step, the test command, and the detailed policy under Advanced (column pipelines only). */
@@ -5154,7 +5157,9 @@ function renderExecutionPolicy() {
   };
   updateWarning();
   const grid = document.createElement('div'); grid.className = 'execution-grid';
-  grid.append(select('interaction', 'Agent questions'), select('filesystem', 'Workspace access'), select('completion', 'Stage completion'),
+  const docker = select('sandbox', 'Run agents in Docker');
+  docker.append(Object.assign(document.createElement('small'), { textContent: 'Claude Code and Codex only. Set Docker up first in Settings → Docker sandbox.' }));
+  grid.append(select('interaction', 'Agent questions'), select('filesystem', 'Workspace access'), docker, select('completion', 'Stage completion'),
     field('Pause when a problem comes back (times, 0–5)', rework), field('Merge method', merge), field('CLI folder-trust question', trust));
   const repository = $('#columns-repository-actions'); repository.hidden = !columnsDraft.pipeline;
   nodes.push(columnsSection('advanced', 'Advanced', paragraph('Every column uses these unless it sets its own. Planning and Code Review are always read-only. Saving starts nothing.', 'note'), grid, allLabel, warning, repository));
@@ -6225,6 +6230,8 @@ const previewView = window.PromptboardPreview?.create({ api, boardCall, announce
 // Project memory: lessons from merged cards, reviewed in task details and the Project memory dialog (public/lessons.js).
 window.PromptboardLessonsView = window.PromptboardLessons?.create({ api, announce, project: () => currentProject(), projects: () => board?.projects || [], openTask: taskId => void openTaskDetails(taskId),
   openKanban: (projectId, then) => { setSelectedProject(projectId); location.hash = '#/kanban'; setTimeout(then, 0); } }) || null;
+// Settings → Docker sandbox: Docker's status, the image build, and Claude Code's token for containers.
+window.PromptboardSandbox?.create({ api, announce });
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();
