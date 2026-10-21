@@ -5,7 +5,7 @@
  * cards. See docs/insights.md.
  */
 import { ADAPTERS } from './agents.mjs';
-import { BoardError, columnStage, projectColumns, runStage } from './board.mjs';
+import { BoardError, columnStage, projectColumns, runStage, STARTUP_LIFECYCLES } from './board.mjs';
 
 const RUN_LIMIT = 5000;
 const LOG_LIMIT = 100; // TRANSITION_LOG_LIMIT in board.mjs: a full move log has lost its oldest moves.
@@ -60,16 +60,21 @@ export function staysOf(task, now) {
 /**
  * Tokens and price of one card. Usage is cumulative per native conversation (a resumed run reads it from the start),
  * so each conversation counts once, at its highest numbers. Dollars are Claude Code's own estimate; any other agent
- * leaves the price unknown, with the reason.
+ * leaves the price unknown, with the reason. So does a run that worked (a finished turn, or signs of its session)
+ * but left no usage record: its tokens are missing, so a price would be too low.
  */
 export function cardCost(runs) {
-  const sessions = new Map(), unpriced = new Set();
+  const sessions = new Map(), unpriced = new Set(), unrecorded = new Set();
   for (const run of runs) {
     const provider = run.config?.provider;
     if (!run.startedAt || !provider) continue;
     if (NO_USAGE.has(provider)) { unpriced.add(provider); continue; }
     const usage = run.usage;
-    if (!usage) continue; // Claude Code and Codex report as they work; a run without a report adds nothing.
+    if (!usage) {
+      // A run that never showed a sign of its session (a startup question, a failed start) spent nothing.
+      if (run.turns > 0 || (run.lifecycle && !STARTUP_LIFECYCLES.has(run.lifecycle))) unrecorded.add(provider);
+      continue;
+    }
     const key = `${provider}:${run.providerSessionId || run.id}`, row = sessions.get(key) || { provider, input: 0, output: 0, cached: 0, usd: null };
     row.input = Math.max(row.input, count(usage.inputTokens)); row.output = Math.max(row.output, count(usage.outputTokens)); row.cached = Math.max(row.cached, count(usage.cachedTokens));
     if (Number.isFinite(usage.costUSD) && usage.costUSD >= 0) row.usd = Math.max(row.usd ?? 0, usage.costUSD);
@@ -77,8 +82,9 @@ export function cardCost(runs) {
   }
   let tokens = 0, cached = 0, usd = 0;
   for (const row of sessions.values()) { tokens += row.input + row.output; cached += row.cached; if (row.usd === null) unpriced.add(row.provider); else usd += row.usd; }
-  const known = sessions.size > 0 && !unpriced.size;
-  return { tokens, cachedTokens: cached, usd: known ? usd : null, priceNote: known ? '' : unpriced.size ? [...unpriced].map(id => NO_PRICE[id]).join(' ') : 'No agent usage was recorded.' };
+  const known = sessions.size > 0 && !unpriced.size && !unrecorded.size;
+  const notes = [...[...unrecorded].map(id => `${ADAPTERS[id]?.name || id} left no usage record for one of its runs, so tokens and price are incomplete.`), ...[...unpriced].map(id => NO_PRICE[id])];
+  return { tokens, cachedTokens: cached, usd: known ? usd : null, priceNote: known ? '' : notes.join(' ') || 'No agent usage was recorded.' };
 }
 
 /** A card's template: its Origin blueprint's template, else the saved prompt it came from. */

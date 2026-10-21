@@ -100,6 +100,23 @@ test('a Claude Code price is summed per conversation; Codex, Gemini and a Claude
   assert.deepEqual(cardCost([]), { tokens: 0, cachedTokens: 0, usd: null, priceNote: 'No agent usage was recorded.' });
   // A run that never started spent nothing.
   assert.deepEqual(cardCost([{ ...gemini, startedAt: null }, claude('1', 'a', 0.2)]).usd, 0.2);
+  // A run that worked but left no usage record: its tokens are missing, so the price is unknown, with the reason.
+  const silent = { ...run('s', 't', 'executing', 'claude', 1, null), turns: 2, lifecycle: 'events-received' };
+  assert.deepEqual(cardCost([claude('1', 'a', 0.2), silent]), { tokens: 11, cachedTokens: 0, usd: null, priceNote: 'Claude Code left no usage record for one of its runs, so tokens and price are incomplete.' });
+  assert.equal(cardCost([claude('1', 'a', 0.2), { ...silent, turns: 0 }]).usd, null, 'Signs of its session are enough, even before a finished turn.');
+  // One that never showed a sign of its session (a startup question, a failed start) spent nothing.
+  assert.equal(cardCost([claude('1', 'a', 0.2), { ...silent, turns: 0, lifecycle: 'no-events-yet' }]).usd, 0.2);
+});
+
+test('stage history rounds: review findings and failed tests, a tester that changed or committed files, and tests failing again at Merge; a moved target or a resolved conflict is no round', () => {
+  const task = { stageHistory: [history(1, 'code_review', 'changes_required'), history(2, 'testing', 'changes_required', { code: 'TESTER_CHANGED_FILES' }),
+    history(3, 'testing', 'changes_required', { code: 'TESTER_COMMITTED' }), history(4, 'merge', 'changes_required', { code: 'VERIFICATION_FAILED' }),
+    history(5, 'merge', 'changes_required', { code: 'TARGET_MOVED' }), history(6, 'merge', 'changes_required'), history(7, 'testing', 'failed', { code: 'TEST_COMMAND_NOT_FOUND' })] };
+  const rounds = new Map(roundsOf({ workflowMode: 'pipeline' }, task).map(round => [round.at, round.kind]));
+  assert.equal(rounds.get(2), 'tests', 'TESTER_CHANGED_FILES');
+  assert.equal(rounds.get(3), 'tests', 'TESTER_COMMITTED');
+  assert.equal(rounds.get(4), 'tests', 'merge-stage VERIFICATION_FAILED');
+  assert.deepEqual([...rounds], [[1, 'review'], [2, 'tests'], [3, 'tests'], [4, 'tests']]);
 });
 
 test('the cards that fail review most: rounds in the range, finished or not, with the latest reason and a template grouping', () => {
