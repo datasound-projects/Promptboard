@@ -21,6 +21,7 @@ import { TerminalInputObservation } from './terminal-input-observation.mjs';
 import { supportsWorkspaceTrust, TRUST_KEYS, WorkspaceTrust } from './workspace-trust.mjs';
 import { nativeMessageInputReadiness, sendOwnedNativeMessage } from './native-message-input.mjs';
 import { untilStopped } from './native-message-common.mjs';
+import { lessonsPrompt } from './lessons.mjs';
 
 const RING_BYTES = 1024 * 1024; // Live scrollback kept per run for reconnects.
 const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
@@ -236,10 +237,12 @@ export class Supervisor {
     const planDir = planRunId && join(this.dataDir, 'runs', planRunId);
     const plan = planRunId ? await readFile(join(planDir, 'approved-plan.md'), 'utf8').catch(() => run.planSha256 ? null : readFile(join(planDir, 'plan.md'), 'utf8')).catch(() => null) : null;
     if (planRunId && (plan === null || (run.planSha256 && createHash('sha256').update(plan).digest('hex') !== run.planSha256))) throw new AgentError('The approved plan is missing or changed after it was approved. Run Planning again.', 'PLAN_UNAVAILABLE');
+    // Approved project lessons go to every new conversation; a resumed one already has them.
+    const lessons = run.resumeFrom ? '' : await lessonsPrompt(this.dataDir, run.projectId);
     // Custom pipeline columns send the task envelope; legacy stages and typed columns send stage instructions with a handoff.
     const message = run.config.pipeline && !run.stageKind
-      ? [run.resumeFrom ? continuation || '' : firstPrompt, (!run.resumeFrom || run.baseChanged) ? baseDelivery.sections : ''].filter(Boolean).join('\n\n')
-      : run.resumeFrom ? continuation || '' : composeMessage(run.stageKind || run.stage, task.prompt, plan, run.config.instructions || '', extra || '', baseDelivery.sections);
+      ? [run.resumeFrom ? continuation || '' : firstPrompt, lessons, (!run.resumeFrom || run.baseChanged) ? baseDelivery.sections : ''].filter(Boolean).join('\n\n')
+      : run.resumeFrom ? continuation || '' : composeMessage(run.stageKind || run.stage, task.prompt, plan, run.config.instructions || '', extra || '', baseDelivery.sections, lessons);
     // Stage instructions, the exact task text, and the plan are stored with the run.
     await writeFile(join(runDir, 'prompt.md'), message, { mode: 0o600 });
     await writeFile(join(runDir, 'task-prompt.txt'), task.prompt, { mode: 0o600 });

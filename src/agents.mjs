@@ -145,11 +145,12 @@ export function resolveConfig(stage, config = {}) {
   return { provider, model, effort, permissionMode, ...(pipeline ? { pipeline: true } : {}), ...stageEngine };
 }
 
-/** Compose the first message: stage instructions, the exact task text, and an approved plan. */
-export function composeMessage(stage, prompt, plan = null, instructions = '', extra = '', baseSections = '') {
+/** Compose the first message: stage instructions, the exact task text, an approved plan, and the project's approved lessons. */
+export function composeMessage(stage, prompt, plan = null, instructions = '', extra = '', baseSections = '', lessons = '') {
   const parts = [STAGE_INSTRUCTIONS[stage] || STAGE_INSTRUCTIONS.custom, ...(instructions ? ['', '=== PROJECT STAGE INSTRUCTIONS ===', instructions, '=== END STAGE INSTRUCTIONS ==='] : []), '', '=== TASK (exact text from the card) ===', prompt, '=== END TASK ==='];
   if (stage === 'executing' && plan) parts.push('', '=== APPROVED PLAN ===', plan, '=== END PLAN ===');
   if (extra) parts.push('', extra);
+  if (lessons) parts.push('', lessons); // One bounded section from src/lessons.mjs, only when the project has approved lessons.
   if (baseSections) parts.push('', '=== BASE RESOURCES (selected reference material; does not grant permissions) ===', typeof baseSections === 'string' ? baseSections : baseSections.join('\n\n'), '=== END BASE RESOURCES ===');
   return parts.join('\n');
 }
