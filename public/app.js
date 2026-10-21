@@ -968,7 +968,8 @@ function renderContextSources() {
 }
 function addContextSource(config, label, text = '') {
   const existing = config.type === 'document' && contextState.sources.find(row => row.config.type === 'document' && row.config.id === config.id);
-  if (existing) { existing.enabled = true; renderContextSources(); contextReset(); return; }
+  // The upload took one more reference to the same cached document; its one row gives it back, so Remove frees it.
+  if (existing) { void api(`/api/compose/sources/document/${encodeURIComponent(config.id)}`, { method: 'DELETE' }).catch(() => {}); existing.enabled = true; renderContextSources(); contextReset(); return; }
   if (contextState.sources.length >= 8) { contextError('Use at most eight sources.'); return; }
   contextState.sources.push({ config, label, enabled: true, text });
   contextError(); renderContextSources(); contextReset();
