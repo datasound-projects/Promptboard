@@ -42,6 +42,7 @@ import { streamResearch } from './research-cli.mjs';
 import { PromptStore, createBoardProject, nameTaken, projectsRoute } from './projects.mjs';
 import { Coordinator, CoordinatorError, coordinatorRoute } from './coordinator.mjs';
 import { BatchError, ComposeBatches, batchRoute } from './compose-batch.mjs';
+import { Sandbox, sandboxRoute } from './sandbox.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -64,6 +65,7 @@ const assets = new Map([
   ['/coordinator.js', ['coordinator.js', 'text/javascript; charset=utf-8']],
   ['/compose-batch.js', ['compose-batch.js', 'text/javascript; charset=utf-8']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
+  ['/sandbox.js', ['sandbox.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal assets, served from the installed packages by exact path only (no CDN,
 // no directory browsing). Missing files (no npm install) return 404 and the dock falls back.
@@ -337,7 +339,10 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const usage = usageReader || new UsageDashboard({ dataDir });
   const notifications = new PipelineNotifications();
   const board = new Board({ dataDir, ...(projectsDir ? { projectsDir } : {}), automationActions: new PipelineActions({ notifier: (message, options) => notifications.deliver(message, options) }) });
-  board.executor = executor === 'auto' ? new Supervisor({ board, dataDir }) : executor;
+  // Docker mode for card agents: one per data folder. Containers a crash left behind are removed before any run starts.
+  const sandbox = new Sandbox({ dataDir });
+  void sandbox.sweep();
+  board.executor = executor === 'auto' ? new Supervisor({ board, dataDir, sandbox }) : executor;
   board.folderPicker = folderPicker;
   board.projectOpener = projectOpener; // Opens a project's folder, a terminal or index.html (tests pass a fake).
   // Code editors on this computer: found where they install, or added by hand; the last one used is remembered.
@@ -480,6 +485,10 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     if (/^\/api\/coordinator(?:\/|$)/.test(pathname)) {
       try { return await coordinatorRoute({ coordinator, runner, track, claim, req, res, pathname, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The Coordinator request failed. Project data is unchanged.', { status: 500, code: 'COORDINATOR_FAILED' }); }
+    }
+    if (/^\/api\/sandbox(?:\/|$)/.test(pathname)) {
+      try { return await sandboxRoute({ sandbox, req, res, pathname, jsonBody, send }); }
+      catch (error) { return sendFailure(res, error, 'The Docker sandbox request failed. Nothing was changed.', { status: 500, code: 'SANDBOX_FAILED' }); }
     }
     if (/^\/api\/shared-projects(?:\/|$)/.test(pathname)) {
       try { return await projectsRoute({ origin, board, prompts, req, res, pathname, jsonBody, send }); }
