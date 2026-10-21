@@ -48,7 +48,7 @@ test('the Project lane follows Done only for a linked project; it is not a card,
 });
 
 /** The explorer on a fake server: `files` maps folders to entries, `disk` maps files to text. */
-function explorer(t, { files, disk, status = {}, editors = { editors: [], preferred: null } } = {}) {
+function explorer(t, { files, disk, status = {}, editors = { editors: [], preferred: null }, hold } = {}) {
   const dom = new JSDOM('<body></body>', { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://127.0.0.1:4318/' });
   t.after(() => dom.window.close());
   const win = dom.window, calls = [], versions = new Map();
@@ -60,6 +60,7 @@ function explorer(t, { files, disk, status = {}, editors = { editors: [], prefer
   const request = async (url, signal, { method = 'GET', body } = {}) => {
     const parsed = new URL(url, 'http://local'), action = parsed.pathname.split('/').pop(), path = parsed.searchParams.get('path');
     calls.push({ method, action, path, body: body && JSON.parse(JSON.stringify(body)) }); // A plain copy of the page's object.
+    await hold?.(calls.at(-1)); // A test can make a request reach the fake server later.
     const refuse = (message, code) => { throw Object.assign(new Error(message), { code }); };
     if (action === 'git-status') return { project: { id: 'p1', name: 'Shop' }, folder: 'shop', branch: 'main', target: 'main', head: { subject: 'Add the cart', at: Date.now() - 60000 }, mergeBlocked: false, status: { entries: [] }, scopeVersion: 'scope', ...status };
     if (action === 'editors') return editors;
@@ -221,6 +222,24 @@ test('Open in IDE opens the remembered editor, or lets the owner choose one', as
   assert.equal(choose.$('.explorer-menu').hidden, false);
   choose.press('Visual Studio Code'); await settle();
   assert.deepEqual(choose.calls.filter(call => call.action === 'open').map(call => call.body), [{ target: 'editor', editor: 'code' }]);
+});
+
+test('a refresh that reads the file during its save never calls the owner’s own save a change on disk', async t => {
+  let release, holding = false;
+  const held = new Promise(resolve => { release = resolve; });
+  const { $, row, key, type, press } = explorer(t, { ...shop(), hold: call => holding && call.action === 'file' && call.method === 'GET' ? held : undefined });
+  await settle(); row('src').click(); await settle(); row('src/cart.js').click(); await settle();
+  type('export const total = 2;\n');
+  // The refresh's read reaches the disk only after the save replaced the file, and its answer comes after the save's.
+  holding = true; press('Refresh'); await settle();
+  key($('.explorer .file-editor'), 's', { metaKey: true }); await settle();
+  assert.equal($('.explorer-status').textContent, 'Saved.');
+  release(); await settle();
+  assert.equal($('.explorer-status').textContent, 'Saved.');
+  type('export const total = 3;\n'); await settle();
+  assert.doesNotMatch($('.explorer').textContent, /changed on disk/);
+  holding = false; key($('.explorer .file-editor'), 's', { metaKey: true }); await settle();
+  assert.equal($('.explorer-status').textContent, 'Saved.');
 });
 
 test('Refresh shows files a merge added, updates clean tabs and flags a changed file that has unsaved edits', async t => {

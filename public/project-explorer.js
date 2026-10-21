@@ -275,7 +275,8 @@ window.PromptboardExplorer = (() => {
       try {
         const data = await api('file', { path: tab.path, version: tab.version });
         tab.error = '';
-        if (data.unchanged) return;
+        // A save of ours that is running or ended meanwhile is newer than this read; the server checks the disk before it replaces.
+        if (data.unchanged || tab.saving || data.version === tab.version) return;
         if (dirty(tab)) tab.conflict = true;
         else { Object.assign(tab, { text: data.text, draft: data.text, version: data.version, scopeVersion: data.scopeVersion, notice: 'Updated from disk.' }); if (tab === active) paint(true); }
       } catch (error) { tab.error = error.message; }
