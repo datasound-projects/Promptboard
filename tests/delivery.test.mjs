@@ -368,6 +368,16 @@ test('Merge: entering prepares the card; one click merges and removes the clean 
   assert.equal(git(w.root, 'rev-parse', 'trunk'), clicked.task.completion.mergedCommit);
   assert.ok(!git(w.root, 'worktree', 'list').includes(workspace.path), 'The clean worktree is removed.');
   assert.ok(git(w.root, 'branch', '--list', workspace.branch).includes(workspace.branch), 'The task branch is kept.');
+  // The completion is written once: completing the Done card again is refused and keeps the merge record.
+  await assert.rejects(w.delivery.completeNoChanges(first.id, { confirm: true }), { code: 'NOT_ALLOWED_IN_DONE' });
+  const kept = await w.current(first.id);
+  assert.deepEqual([kept.completion, kept.transitions.length], [clicked.task.completion, clicked.task.transitions.length]);
+  await assert.rejects(w.board.checkCompletable(first.id), { code: 'NOT_ALLOWED_IN_DONE' }, 'A merge asks first, so a Done card never moves the target.');
+  // Only a merge or a merged pull request may follow Done without merging: the code reached the target after all.
+  await w.board.store.update(state => { state.projects[0].tasks.find(item => item.id === first.id).completion = { kind: 'unmerged', at: Date.now() }; });
+  await w.board.checkCompletable(first.id);
+  assert.equal((await w.board.completeTask(first.id, { kind: 'pull_request', details: { url: 'https://github.com/example/repo/pull/7', mergedAt: '2026-10-21T12:00:00Z' } })).completion.kind, 'pull_request');
+  await assert.rejects(w.board.completeTask(first.id, { kind: 'pull_request', details: {} }), { code: 'NOT_ALLOWED_IN_DONE' });
   // Merge automatically: the target moved on without conflicts. The card brings it in, reruns the tests on the
   // merge commit, and merges only after they pass for exactly that commit.
   await w.board.setWorkflow(w.project.id, { workflow: { merge: { policy: 'start' } }, expectedRevision: await revision() });

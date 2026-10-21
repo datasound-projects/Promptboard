@@ -1955,16 +1955,27 @@ export class Board {
    * target branch moved with the card still in Merge.
    */
   async checkCompletable(id, { owner = null } = {}) {
-    const state = await this.state(), { task } = this.#task(state, id);
+    const state = await this.state(), { project, task } = this.#task(state, id);
+    this.#refuseCompletedAgain(project, task);
     this.#requireAutomationsStopped(task, { owner });
     if (this.#activeRun(state, id)) throw conflict('This card has an active run. Stop it before you merge.', 'RUN_ACTIVE');
   }
   /** The automation move that owns this card's automatic merge, if it is running and not blocked. */
   mergeOwner(id) { const job = this.automationMoves.get(id); return job && !job.blocked ? job.key : null; }
 
+  /**
+   * Done is written once: a second completion would replace the first (a merge record, say). Only Done without merging may
+   * still be completed by a merge or a merged pull request (Check pull request on the card), as its code then reached the target.
+   */
+  #refuseCompletedAgain(project, task, kind = 'merged') {
+    const done = project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'done').id : 'done';
+    if (task.column === done && !(task.completion?.kind === 'unmerged' && ['merged', 'pull_request'].includes(kind))) throw conflict('This card is already done. Its completion stays as it is.', 'NOT_ALLOWED_IN_DONE');
+  }
+
   async completeTask(id, { kind, details, transitionId, owner = null }) {
     const saved = await this.store.update(state => {
       const { project, task } = this.#task(state, id);
+      this.#refuseCompletedAgain(project, task, kind);
       this.#requireAutomationsStopped(task, { owner });
       if (this.#activeRun(state, id)) throw conflict('This card has an active run.', 'RUN_ACTIVE');
       const done = project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'done').id : 'done';
