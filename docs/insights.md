@@ -21,6 +21,7 @@ A finished card is a card in Done. Merged means merged into the target branch, o
 4. **Cost per merged card**: input plus output tokens, cached input on its own, and the price.
    - Token usage is cumulative per native conversation (a resumed run reads the conversation from its start), so each conversation counts once, at its highest numbers, and the conversations of a card are added up.
    - The price is Claude Code's own estimate from its status line, copied onto the run while it works. Promptboard has no price table and never estimates one. Codex reports no price, and Gemini CLI and Antigravity report neither tokens nor price: the price then shows “—”, and its tooltip says why. Runs from before this version have no price either.
+   - A run that worked (it finished a turn or showed signs of its session) but left no usage record also makes the price “—”: its tokens are missing, so any price would be too low. A run that never got that far (a startup question, a failed start) spent nothing and is left out.
    - The ten costliest merged cards are listed; the rest are under **More**.
 5. **Cards that fail review most**: the ten cards with the most review and test failure rounds in the range, finished or not, with the latest reason. When the cards come from more than one template, a short grouping by template follows. A card name opens that card's details on its board.
 
@@ -29,3 +30,9 @@ A finished card is a card in Done. Merged means merged into the target branch, o
 - Route: `GET /api/projects/:id/insights?days=30|90|all` (30 when left out). It passes the app's usual local checks and session token. A paired phone can read it too: it only reads.
 - `src/insights.mjs` holds `computeInsights(state, projectId, { days, now, originLookup, promptLookup })`, a pure function: one pass over the project's newest 5,000 runs and its cards. With more runs than that, the dialog says the figures are based on the newest 5,000.
 - Stored data: Claude runs gain `usage.costUSD` when Claude Code's status line reports a price for the same session. Nothing else is stored; older boards load unchanged.
+
+## Known limits
+
+- Whether Claude Code keeps adding to a conversation's price when Promptboard resumes it is not verified. Insights takes the highest price reported for each conversation. If Claude Code starts the price again from zero after a resume, the price shown covers only the most expensive part and is too low.
+- The figures come from the board's own bounded records: the newest 5,000 runs, the last 50 stage results and the last 100 moves of each card.
+- Stays in columns that were later removed from the board are left out.
