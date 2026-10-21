@@ -266,6 +266,9 @@ test('answers are validated: at most six lessons of known kinds and lengths, no 
   assert.equal(parsed[1].evidence.length, 200);
   assert.deepEqual(parseLessons('[]'), []);
   assert.deepEqual(parseLessons('Nothing new [none] here: []'), [], 'the last list in the text is read');
+  // Words after the list may hold brackets too, and so may the lessons' own text.
+  assert.equal(parseLessons('[{"kind":"command","text":"Run the tests with npm test.","evidence":"npm test exited 0."}]\n\nI left out generic advice [as asked].').length, 1);
+  assert.equal(parseLessons('Here: [{"kind":"gotcha","text":"A list like [1, 2] needs a ] check.","evidence":"\\"]\\""}] and [notes].')[0].text, 'A list like [1, 2] needs a ] check.');
   assert.throws(() => parseLessons('The work looks fine.'), { code: 'INVALID_OUTPUT' });
   assert.throws(() => parseLessons('{"kind":"command"}'), { code: 'INVALID_OUTPUT' });
   assert.deepEqual(parseLessons(JSON.stringify([{ kind: 'gotcha', text: 'Build in /Users/me/work/shop first; token=abc123 is in .env', evidence: '' }]))[0].text, 'Build in …/shop first; token=[redacted] is in .env');

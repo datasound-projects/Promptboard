@@ -73,11 +73,22 @@ export async function lessonsPrompt(dataDir, projectId) {
   return data ? lessonsSection(data.lessons) : '';
 }
 
-/** The first JSON array in a model's answer: all of it, a fenced block, or the text from one of its first "[" to its last "]". */
+/** The text from the "[" at `at` to its matching "]" (brackets inside JSON strings do not count), or '' when it never closes. */
+function closing(raw, at) {
+  for (let i = at, depth = 0, quoted = false; i < raw.length; i++) {
+    const c = raw[i];
+    if (quoted) { if (c === '\\') i++; else if (c === '"') quoted = false; }
+    else if (c === '"') quoted = true;
+    else if (c === '[') depth++;
+    else if (c === ']' && --depth === 0) return raw.slice(at, i + 1);
+  }
+  return '';
+}
+/** The first JSON array in a model's answer: all of it, a fenced block, or the list that starts at one of its first "[". */
 function arrayIn(raw) {
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(raw)?.[1], end = raw.lastIndexOf(']') + 1, starts = [];
-  for (let at = raw.indexOf('['); at >= 0 && at < end && starts.length < 50; at = raw.indexOf('[', at + 1)) starts.push(at);
-  for (const candidate of [raw, fenced, ...starts.map(at => raw.slice(at, end))]) { try { const value = JSON.parse(candidate); if (Array.isArray(value)) return value; } catch {} }
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(raw)?.[1], starts = [];
+  for (let at = raw.indexOf('['); at >= 0 && starts.length < 50; at = raw.indexOf('[', at + 1)) starts.push(at);
+  for (const candidate of [raw, fenced, ...starts.map(at => closing(raw, at))]) { try { const value = JSON.parse(candidate); if (Array.isArray(value)) return value; } catch {} }
   return null;
 }
 /**
