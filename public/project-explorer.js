@@ -3,7 +3,7 @@
 // Project card and explorer: the project checkout, where merged cards land, as a file tree and a tabbed editor. It opens
 // in a board dialog or in its own window (project.html). Saves are explicit; nothing here runs an agent or a model.
 window.PromptboardExplorer = (() => {
-  const { el: node, button, pref, setPref } = window.PromptboardDom;
+  const { el: node, button, pref, setPref, ago } = window.PromptboardDom;
   const { codeLines, language, draftText } = window.PromptboardFiles;
   const TREE_KEY = 'promptboard.explorer.tree', MAX_TABS = 12, MAX_OPEN_FOLDERS = 64;
   const OFFLINE = 'Promptboard isn’t responding. Check that it is still running, then reload.';
@@ -26,8 +26,6 @@ window.PromptboardExplorer = (() => {
   }
   const iconButton = (name, label, action) => { const el = button('', action, 'icon-button explorer-action', label); el.setAttribute('aria-label', label); el.append(icon(name, '')); return el; };
   const fileKind = name => /\.(?:png|jpe?g|gif|webp|ico|bmp|avif|pdf)$/i.test(name) ? 'media' : ({ JSON: 'data', YAML: 'data', TOML: 'data', XML: 'data', Markdown: 'doc', Text: 'doc', HTML: 'markup', CSS: 'markup' })[language(name)] || 'code';
-  const relative = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
-  const ago = at => { const seconds = (at - Date.now()) / 1000; for (const [unit, size] of [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]]) if (Math.abs(seconds) >= size) return relative.format(Math.round(seconds / size), unit); return 'just now'; };
   const parentOf = path => path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
   const joinPath = (dir, name) => (dir ? `${dir}/${name}` : name);
   const MARKS = { M: 'Modified', A: 'Added', U: 'Untracked: not in Git yet', '•': 'Has changes inside' };
@@ -470,12 +468,17 @@ window.PromptboardExplorer = (() => {
     const projectId = new URLSearchParams(location.search).get('project') || '';
     let token = '', remote = false;
     const fail = text => host.replaceChildren(node('p', 'explorer-page-note', text));
+    // Like app.js readSession, which lives in the board page's own scope. Every failure has words a person can act on.
+    const refused = text => Object.assign(new Error(text), { code: 'SESSION_UNAVAILABLE' });
     async function session() {
-      const response = await fetch('/api/session', { cache: 'no-store' });
+      let response;
+      try { response = await fetch('/api/session', { cache: 'no-store' }); } catch { throw new Error(OFFLINE); }
       if (response.status === 401) { location.replace('/remote'); return false; } // A paired phone that must pair again.
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw refused(`${typeof data?.error === 'string' ? data.error : 'Promptboard could not start this window.'} Reload it in a moment.`);
       token = typeof data.token === 'string' ? data.token : ''; remote = Boolean(data.remote);
-      return Boolean(token);
+      if (!token) throw refused('Promptboard did not return a session for this window. Reload it in a moment.');
+      return true;
     }
     async function request(path, signal, { method = 'GET', body } = {}) {
       const send = () => fetch(path, { method, signal, cache: 'no-store', headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -484,14 +487,14 @@ window.PromptboardExplorer = (() => {
         response = await send();
         // A restarted app has a new token: read the session again and send once more (the server checks the token first).
         if (response.status === 403 && (await response.clone().json().catch(() => null))?.code === 'SESSION_EXPIRED' && await session()) response = await send();
-      } catch (error) { throw error?.name === 'AbortError' ? error : new Error(OFFLINE); }
+      } catch (error) { throw error?.name === 'AbortError' || error?.code === 'SESSION_UNAVAILABLE' ? error : new Error(OFFLINE); }
       const data = await response.json().catch(() => ({}));
       if (response.status === 401 && data?.code === 'REMOTE_PAIRING_REQUIRED') location.replace('/remote');
       if (!response.ok) throw Object.assign(new Error(typeof data?.error === 'string' ? data.error : 'The request failed. Nothing was changed.'), { code: data?.code });
       return data;
     }
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(projectId)) return fail('Open this window from the Project card on a Kanban board.');
-    try { if (!await session()) return; } catch { return fail(OFFLINE); }
+    try { if (!await session()) return; } catch (error) { return fail(error.message); }
     const view = explorer({ projectId, request, remote: () => remote, onInfo: info => { document.title = `${info.project.name} — Promptboard`; } });
     host.replaceChildren(view.root);
     await view.refresh();
