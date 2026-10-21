@@ -19,6 +19,7 @@ A schedule makes the same card again and again: it lands in To Do on a repeat, f
 - **No pile-up.** While the previous card of a schedule is not in Done (still in To Do, or in progress), its next time is skipped and the list says why. The skipped time is used up; the next one tries again.
 - Each time makes at most one card: the time is recorded in the same board write that creates the card, so a check that runs twice never makes a second card.
 - A schedule switched off and on again, or given a new repeat, starts counting from that change: it does not catch up on the times before.
+- Clock changes: a clock set back by up to an hour makes no second card for a time already used. Times recorded while the clock ran ahead are ignored once it is right again, so the schedule goes on at its real next time (the first check may then make the latest time's card again, unless the previous card is still open).
 - **Run now** makes a card at once, through the same path, even while the previous card is open (you asked for it), and leaves the next time as it was.
 - Cards are made through the board's normal card path: the same checks, task number, priority and labels as a card you add. They carry a small **Scheduled** marker, and their details name the schedule and the time they were made for.
 
@@ -27,9 +28,11 @@ A schedule makes the same card again and again: it lands in To Do on a repeat, f
 - Available only when the project has a code folder. Switching it on for a schedule asks once whether agents may work on its cards without asking you; that confirm is your consent, and the server refuses the switch without it.
 - When a card is made:
   - **Autopilot running:** the card joins the end of its queue. Autopilot's own rules still decide when it runs (prerequisites, one card at a time); the cards it already finished stay finished.
-  - **Autopilot off or finished:** Autopilot starts for this one card, the way **Start Autopilot** does in its dialog, with its saved steps (or the dialog's default steps) and its own checks.
+  - **Autopilot off or finished:** Autopilot starts for this one card, the way **Start Autopilot** does in its dialog, with its saved steps (or the dialog's default steps) and its own checks. Its activity log says which schedule started it.
+  - **Autopilot off, with a queue you saved** (cards still waiting in To Do): that queue is yours. It is not replaced or started; the card waits in To Do and the schedule says "Autopilot has a queue you saved, so the card waits in To Do. Start Autopilot yourself".
   - **Autopilot paused by you:** it is not resumed. The card waits in To Do, and the schedule says "Autopilot is paused, so the card waits in To Do".
   - If Autopilot's checks refuse to start (for example a column without an instruction), the card stays in To Do and the schedule shows the reason.
+  - Cards are handed to Autopilot one at a time, so two at once (a scheduled time and **Run now**) both reach it. If Promptboard stops between making a card and handing it over, the card waits in To Do and the schedule says so after the next start.
 - Without **Run with Autopilot**, a schedule only makes cards: no agent starts and no tokens are spent until you start one.
 
 ## Backups
