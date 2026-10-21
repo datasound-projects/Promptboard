@@ -120,17 +120,26 @@ export class RemoteAccess {
     if (this.settings.method !== 'local') await this.changes(() => this.listen().catch(() => {}));
     return this;
   }
-  #save() { return this.queue(() => writeAtomic(this.path, JSON.stringify({ schema: SCHEMA, version: VERSION, settings: this.settings, sessions: this.sessions }))); }
+  #write() { return writeAtomic(this.path, JSON.stringify({ schema: SCHEMA, version: VERSION, settings: this.settings, sessions: this.sessions })); }
+  #save() { return this.queue(() => this.#write()); }
+  /** Changes settings or sessions one at a time; a change that cannot be saved is undone, so none comes back after a restart. */
+  #commit(change) {
+    return this.queue(async () => {
+      const { settings, sessions } = this;
+      if (change() === false) return;
+      try { await this.#write(); }
+      catch { this.settings = settings; this.sessions = sessions; throw new RemoteError('Remote access could not be saved. Check free disk space and folder permissions. Nothing was changed.', 'REMOTE_SAVE_FAILED', 500); }
+    });
+  }
 
   // ---- Settings and listener ----
   configure(input) {
     return this.changes(async () => {
       const next = remoteSettings({ ...this.settings, ...input }, { localPort: this.localPort });
       const changed = JSON.stringify(next) !== JSON.stringify(this.settings);
-      this.settings = next;
+      await this.#commit(() => { this.settings = next; });
       // Saving again also retries a listener that could not start (a port that was busy).
       if (changed || (!this.server && next.method !== 'local')) { await this.close(); if (next.method !== 'local') await this.listen().catch(() => {}); }
-      await this.#save();
       return this.status();
     });
   }
@@ -179,10 +188,10 @@ export class RemoteAccess {
     const secret = randomBytes(32).toString('base64url');
     const session = { id: randomUUID(), hash: hash(secret), name: String(name || 'Phone').replace(/[\u0000-\u001f]/g, '').slice(0, REMOTE_LIMITS.name) || 'Phone',
       createdAt: now, lastSeenAt: now, expiresAt: now + REMOTE_LIMITS.sessionDays * 86400000 };
-    const all = [...this.sessions, session];
-    this.sessions = all.slice(-REMOTE_LIMITS.sessions);
-    for (const old of all.slice(0, -REMOTE_LIMITS.sessions)) { for (const res of this.open.get(old.id) || []) res.destroy(); this.open.delete(old.id); }
-    await this.#save();
+    let dropped = [];
+    await this.#commit(() => { const all = [...this.sessions, session]; this.sessions = all.slice(-REMOTE_LIMITS.sessions); dropped = all.slice(0, -REMOTE_LIMITS.sessions); })
+      .catch(error => { this.pairing ??= pairing; throw error; }); // Not paired: the same code can be tried again, unless a new one was made.
+    for (const old of dropped) { for (const res of this.open.get(old.id) || []) res.destroy(); this.open.delete(old.id); }
     return { secret, session: publicSession(session) };
   }
   authenticate(req) {
@@ -194,13 +203,12 @@ export class RemoteAccess {
     return session;
   }
   async revoke(id) {
-    const before = this.sessions.length, gone = this.sessions.filter(row => id === 'all' || row.id === id);
     if (id === 'all') this.pairing = null; // A code shown earlier does not pair a device after Revoke all either.
-    this.sessions = this.sessions.filter(row => !gone.includes(row));
+    let gone = [];
+    await this.#commit(() => { gone = this.sessions.filter(row => id === 'all' || row.id === id); this.sessions = this.sessions.filter(row => !gone.includes(row)); return gone.length > 0; });
     // Its live streams end at once: a revoked device sees nothing more.
     for (const row of gone) { for (const res of this.open.get(row.id) || []) res.destroy(); this.open.delete(row.id); }
-    if (this.sessions.length !== before) await this.#save();
-    return before - this.sessions.length;
+    return gone.length;
   }
 
   // ---- What the Settings page shows ----
@@ -245,7 +253,8 @@ export class RemoteAccess {
     const host = String(hostHeader || '').toLowerCase();
     const { method, port, bind } = this.settings;
     const names = new Set([`127.0.0.1:${port}`, `localhost:${port}`]); // A reverse proxy on this computer; pairing is still required.
-    if (method === 'tailscale' && this.tailscale?.state?.name) for (const suffix of ['', ':443', ':8443']) names.add(`${this.tailscale.state.name}${suffix}`);
+    const tailscale = method === 'tailscale' ? this.tailscale?.state : null; // Also the port Serve forwards from, when it is not 443 or 8443.
+    if (tailscale?.name) for (const suffix of ['', ':443', ':8443', ...(tailscale.serving ? [`:${tailscale.servePort}`] : [])]) names.add(`${tailscale.name}${suffix}`);
     if (method === 'twingate') { for (const name of [this.settings.host, bind].filter(Boolean)) { names.add(`${name}:${port}`); names.add(name); } }
     return names.has(host);
   }
@@ -273,7 +282,7 @@ export class RemoteAccess {
         const { secret, session } = await this.pair(body.code, body.name);
         res.setHeader('Set-Cookie', `${COOKIE}=${secret}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${REMOTE_LIMITS.sessionDays * 86400}${secure ? '; Secure' : ''}`);
         return reply(res, 200, { paired: true, session });
-      } catch (error) { return reply(res, error.status || 400, { error: error.message, code: error.code }); }
+      } catch (error) { if (!(error instanceof RemoteError)) throw error; return reply(res, error.status, { error: error.message, code: error.code }); }
     }
     const session = this.authenticate(req);
     if (!session) {
@@ -319,7 +328,7 @@ export async function remoteRoute(remote, req, res, pathname, { jsonBody, send }
     return send(res, 404, { error: 'This route does not exist.' });
   } catch (error) {
     const status = error.status || 500; // Expected refusals carry their own fixed text; anything else stays generic.
-    return send(res, status, { error: status < 500 ? error.message : 'Remote access could not be changed.', code: error.code || 'REMOTE_FAILED', ...(error.link ? { link: error.link } : {}) });
+    return send(res, status, { error: status < 500 || error instanceof RemoteError ? error.message : 'Remote access could not be changed.', code: error.code || 'REMOTE_FAILED', ...(error.link ? { link: error.link } : {}) });
   }
 }
 

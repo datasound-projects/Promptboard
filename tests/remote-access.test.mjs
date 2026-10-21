@@ -7,7 +7,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:net';
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { privateAddress, remoteSettings, RemoteAccess, tailscaleState } from '../src/remote-access.mjs';
@@ -413,4 +413,50 @@ test('Tailscale Serve not enabled for the tailnet: the refusal carries Tailscale
   const access = await new RemoteAccess({ dataDir, localPort: 1, handle: () => {}, cli }).load(); t.after(() => access.close());
   access.settings = { ...access.settings, method: 'tailscale', port: 4319 };
   await assert.rejects(access.setServe(true), error => error.code === 'REMOTE_TAILSCALE_NOT_ENABLED' && error.link === 'https://login.tailscale.com/f/serve?node=abc123');
+});
+
+test('a change that cannot be saved is undone and reported plainly: pairing, revoking and settings match what a restart loads', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-remote-unsaved-'));
+  t.after(async () => { await chmod(dataDir, 0o700); await rm(dataDir, { recursive: true, force: true }); });
+  const port = await freePort();
+  const make = () => new RemoteAccess({ dataDir, localPort: 1, handle: (req, res) => { res.writeHead(200); res.end(); } }).load();
+  const access = await make(); t.after(() => access.close());
+  await access.configure({ method: 'twingate', port, bind: '127.0.0.1' });
+  const paired = await request(port, '/api/remote/pair', { method: 'POST', body: { code: access.newPairing().code } });
+  assert.equal(paired.status, 200);
+  const jar = { Cookie: paired.headers['set-cookie'][0].split(';')[0] };
+  await chmod(dataDir, 0o500); // The data folder can no longer be written (full disk, permissions, a sync tool).
+  // A phone pairing now gets a plain answer, never a local path or an errno, and no session that nobody holds.
+  const { code } = access.newPairing();
+  const refused = await request(port, '/api/remote/pair', { method: 'POST', body: { code } });
+  assert.deepEqual([refused.status, refused.json.code], [500, 'REMOTE_SAVE_FAILED']);
+  assert.match(refused.json.error, /could not be saved\. Check free disk space and folder permissions/);
+  assert.ok(!refused.body.includes(dataDir) && !/EACCES|EPERM/.test(refused.body), refused.body);
+  assert.equal(access.sessions.length, 1);
+  assert.equal((await access.status()).pairing !== null, true, 'the code was not used up: the phone can try it again');
+  // A revoke that is not saved leaves the device paired, here and after a restart.
+  await assert.rejects(access.revoke('all'), { code: 'REMOTE_SAVE_FAILED' });
+  assert.equal((await access.status()).sessions.length, 1);
+  assert.equal((await request(port, '/', { headers: jar })).status, 200, 'the device still works, as Settings shows');
+  // Settings that are not saved are not used: the listener stays as it was.
+  await assert.rejects(access.configure({ method: 'local' }), { code: 'REMOTE_SAVE_FAILED' });
+  assert.deepEqual([access.settings.method, Boolean(access.server)], ['twingate', true]);
+  await chmod(dataDir, 0o700);
+  const restarted = await make(); t.after(() => restarted.close());
+  assert.deepEqual([restarted.settings.method, restarted.sessions.length], ['twingate', 1]);
+});
+
+test('Tailscale Serve on another HTTPS port (443 and 8443 are taken): the address Settings shows is let through to pairing', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-remote-ts-port-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const port = await freePort();
+  // As Settings tells the user to do then: tailscale serve --bg --https=10000 http://127.0.0.1:<port>
+  const serve = { Web: { 'mac.tail1234.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3000' } } }, 'mac.tail1234.ts.net:8443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3001' } } },
+    'mac.tail1234.ts.net:10000': { Handlers: { '/': { Proxy: `http://127.0.0.1:${port}` } } } } };
+  const cli = { run: async args => JSON.stringify(args[0] === 'status' ? { BackendState: 'Running', Self: { DNSName: 'mac.tail1234.ts.net.', Online: true }, CertDomains: ['mac.tail1234.ts.net'] } : serve) };
+  const access = await new RemoteAccess({ dataDir, localPort: 1, handle: (req, res) => { res.writeHead(200); res.end('app'); }, cli }).load(); t.after(() => access.close());
+  assert.equal((await access.configure({ method: 'tailscale', port })).url, 'https://mac.tail1234.ts.net:10000');
+  // Tailscale Serve keeps the browser's Host header, port included.
+  const opened = await request(port, '/', { host: 'mac.tail1234.ts.net:10000' });
+  assert.deepEqual([opened.status, opened.headers.location], [302, '/remote'], opened.body);
+  assert.equal((await request(port, '/', { host: 'mac.tail1234.ts.net:10001' })).status, 403, 'another port of that name is still refused');
 });

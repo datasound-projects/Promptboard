@@ -10,6 +10,7 @@ export class DataDirInUse extends Error {
   constructor(message, url = '') { super(message); this.code = 'DATA_DIR_IN_USE'; this.url = url; }
 }
 const inUse = (url = '') => new DataDirInUse(`Promptboard is already running with this data folder${url ? ` at ${url}` : ''}. Open that one, or stop it first.`, url);
+const stillStopping = () => new DataDirInUse('Promptboard is still stopping with this data folder. Try again in a few seconds.');
 const held = new Set(); // Locks this process holds: a second server here on the same folder is refused too.
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
 /** A process ID can be reused after a crash: the lock counts only while that app still answers on its port. */
@@ -19,7 +20,7 @@ async function answers(port) {
   catch { return false; }
 }
 
-/** Claim `dataDir` for this app. Returns { path, setPort(port), release() }; throws DataDirInUse while another app uses it. */
+/** Claim `dataDir` for this app. Returns { path, setPort(port), markStopping(), release() }; throws DataDirInUse while another app uses it. */
 export async function lockDataDir(dataDir) {
   const path = join(dataDir, 'instance.lock');
   if (held.has(path)) throw new DataDirInUse('Promptboard is already running with this data folder in this process.');
@@ -36,14 +37,16 @@ async function take(dataDir, path) {
       const handle = await open(path, 'wx', 0o600);
       try { await handle.writeFile(JSON.stringify(lock)); } finally { await handle.close(); }
       let released = false;
+      // Only our own lock is changed or removed, never one that a later app took over.
+      const ours = async () => { const current = await readFile(path, 'utf8').then(JSON.parse).catch(() => null); return current?.pid === process.pid && current.startedAt === lock.startedAt; };
       return {
         path,
         async setPort(port) { lock.port = port; await writeFile(path, JSON.stringify(lock), { mode: 0o600 }).catch(() => {}); },
+        /** Before the port stops answering at shutdown: a start meanwhile is refused instead of taking the folder. */
+        async markStopping() { if (await ours()) { lock.stoppingAt = Date.now(); await writeFile(path, JSON.stringify(lock), { mode: 0o600 }).catch(() => {}); } },
         async release() {
           if (released) return; released = true; held.delete(path);
-          // Only our own lock is removed, never one that a later app took over.
-          const current = await readFile(path, 'utf8').then(JSON.parse, () => null);
-          if (current?.pid === process.pid && current.startedAt === lock.startedAt) await rm(path, { force: true }).catch(() => {});
+          if (await ours()) await rm(path, { force: true }).catch(() => {});
           if (created) await rmdir(dataDir).catch(() => {}); // Fails, as it should, once anything else is in it.
         },
       };
@@ -53,9 +56,11 @@ async function take(dataDir, path) {
       let other = null; try { other = JSON.parse(raw); } catch {}
       const url = other?.port ? `http://127.0.0.1:${other.port}` : '';
       const starting = other && other.port === 0 && Date.now() - other.startedAt < 30000;
+      // An app that is stopping no longer answers on its port, but still saves its board and stops its agents.
+      const stopping = other && Math.abs(Date.now() - other.stoppingAt) < 15000;
       // A lock that another app created this moment has no content yet: it is not one left behind.
       const writing = !other && raw !== null && Date.now() - await stat(path).then(info => info.mtimeMs, () => 0) < 5000;
-      if (attempt > 2 || writing || (other && other.pid !== process.pid && alive(other.pid) && (starting || await answers(other.port)))) throw inUse(url);
+      if (attempt > 2 || writing || (other && other.pid !== process.pid && alive(other.pid) && (starting || stopping || await answers(other.port)))) throw stopping ? stillStopping() : inUse(url);
       if (raw === null) continue; // Removed meanwhile.
       // Left by an app that is no longer running. Of apps starting together, only the one that claims this stale lock
       // removes it, and only while it is still that lock. A claim left by a crash expires after 10 s.

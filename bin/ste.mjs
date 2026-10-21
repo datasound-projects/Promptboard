@@ -41,7 +41,7 @@ Options:
 
 Use Node.js 22.13 or later. Sign in to your CLI first. Generation uses your CLI plan.
 Only prompts that pass the available checks are printed by default.
-Exit codes: 0 done, 1 error, 2 review needed, 130 or 143 cancelled.
+Exit codes: 0 done, 1 error, 2 review needed, 129, 130 or 143 cancelled.
 A human must still check meaning and STE use.
 `;
 
@@ -120,11 +120,11 @@ async function main() {
     detail: options.detail || 'concise', task: options.task || 'build' });
   if (options.instructions) return process.stdout.write(buildPrompt(request) + '\n');
   const controller = new AbortController();
-  let stopCode = 0;
-  const interrupt = () => { stopCode = 130; controller.abort(); };
-  const terminate = () => { stopCode = 143; controller.abort(); };
-  process.once('SIGINT', interrupt);
-  process.once('SIGTERM', terminate);
+  let stopCode = 0, settled = false;
+  // The first signal cancels the run; a second one, or one after the run, exits at once through the exit handler below.
+  // Kept until exit: without a handler Node ends at once and leaves the CLI process group and its temporary folder.
+  const stop = code => () => { if (stopCode || settled) process.exit(stopCode || code); stopCode = code; controller.abort(); };
+  for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143], ...(process.platform === 'win32' ? [] : [['SIGHUP', 129]])]) process.on(signal, stop(code));
   try {
     const result = await generate(request, { signal: controller.signal });
     const passed = result.verification?.status === 'checks-passed';
@@ -149,10 +149,7 @@ async function main() {
     if (!stopCode) throw error;
     process.stderr.write('Generation cancelled.\n');
     process.exitCode = stopCode;
-  } finally {
-    process.removeListener('SIGINT', interrupt);
-    process.removeListener('SIGTERM', terminate);
-  }
+  } finally { settled = true; }
 }
 
 // Last line of defense on any exit path: stop owned CLI process groups and remove owned temp folders.
