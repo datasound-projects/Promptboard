@@ -4805,8 +4805,12 @@ function renderAutopilotDialog() {
   const project = currentProject();
   const draft = autopilotDraft;
   if (!project || !draft) return;
+  // Another window can delete a queued card or a route column while the dialog is open.
+  const stages = autopilotStages(project), route = draft.route.filter(id => stages.includes(id));
+  draft.route = route.length ? route : [...stages];
+  draft.order = draft.order.filter(id => project.tasks.some(task => task.id === id));
   const running = project.autopilot?.status === 'running', pipeline = pipelineBoard(project);
-  $('#autopilot-route').replaceWith(Object.assign(routeChips(draft.route, route => { draft.route = route; renderAutopilotDialog(); }, { disabled: running, stages: autopilotStages(project) }), { id: 'autopilot-route' }));
+  $('#autopilot-route').replaceWith(Object.assign(routeChips(draft.route, route => { draft.route = route; renderAutopilotDialog(); }, { disabled: running, stages }), { id: 'autopilot-route' }));
   $('#autopilot-dialog .select-grid').hidden = pipeline;
   $('#autopilot-route-legend').textContent = pipeline ? 'Steps' : 'Default route';
   $('#autopilot-about').hidden = pipeline; $('#autopilot-about-pipeline').hidden = !pipeline;
