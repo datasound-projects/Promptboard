@@ -240,8 +240,17 @@ window.PromptboardExplorer = (() => {
     }
 
     // ---- Tabs and the editor ----
-    function remember() { if (active) { active.scrollTop = editor.scrollTop; active.scrollLeft = editor.scrollLeft; } }
-    function show(tab, focus = false) { remember(); active = tab; renderTabs(); paint(true); if (focus && !editor.hidden) editor.focus(); }
+    // Each tab keeps its own scroll and caret; a file opened for the first time starts at the top, caret at its start.
+    function remember() {
+      if (active?.text === undefined || code.dataset.path !== active.path) return; // The editor shows another file (this one is loading).
+      Object.assign(active, { scrollTop: editor.scrollTop, scrollLeft: editor.scrollLeft, selectionStart: editor.selectionStart, selectionEnd: editor.selectionEnd });
+    }
+    function place(tab) { editor.scrollTop = code.scrollTop = tab.scrollTop || 0; editor.scrollLeft = code.scrollLeft = tab.scrollLeft || 0; }
+    function show(tab, focus = false) {
+      remember(); active = tab; renderTabs(); paint(true);
+      // Focus without scrolling to the caret, which a new value puts at the end of the file.
+      if (focus && tab?.text !== undefined) { editor.focus({ preventScroll: true }); place(tab); }
+    }
     async function openFile(path) {
       let tab = tabs.find(item => item.path === path);
       if (!tab) {
@@ -310,8 +319,12 @@ window.PromptboardExplorer = (() => {
       surface.hidden = !text; readOnly.hidden = !tab?.note; readOnlyText.textContent = tab?.note || '';
       readOnly.lastChild.hidden = remote();
       if (text && (reset || code.dataset.path !== tab.path)) {
+        remember(); // The same file again (a reload or an update from disk) keeps its place.
         code.replaceChildren(codeLines(tab.draft, language(tab.path))); code.dataset.path = tab.path;
-        editor.value = tab.draft.replace(/\r\n/g, '\n'); editor.scrollTop = code.scrollTop = tab.scrollTop || 0; editor.scrollLeft = code.scrollLeft = tab.scrollLeft || 0;
+        editor.value = tab.draft.replace(/\r\n/g, '\n');
+        const end = editor.value.length;
+        editor.setSelectionRange(Math.min(tab.selectionStart || 0, end), Math.min(tab.selectionEnd || 0, end));
+        place(tab);
       }
       if (tab) editor.setAttribute('aria-label', `Edit ${tab.path}`);
       editor.readOnly = Boolean(tab?.saving);

@@ -15,6 +15,7 @@ async function shop(t) {
   const git = (...args) => execFileSync('git', args, { cwd: root, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
   git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@example.com'); git('config', 'user.name', 'Tester');
   await mkdir(join(root, 'src')); await writeFile(join(root, 'src', 'app.js'), 'export const greeting = "hello";\n'); await writeFile(join(root, 'readme.md'), '# Shop\n');
+  await writeFile(join(root, 'src', 'long.js'), Array.from({ length: 200 }, (_, i) => `export const line${i} = ${i};`).join('\n'));
   git('add', '.'); git('commit', '-q', '-m', 'First page');
   return root;
 }
@@ -49,6 +50,16 @@ test('Project card in Chrome: open a file from the tree, edit, Cmd+S writes it t
   assert.equal(await readFile(join(root, 'src', 'app.js'), 'utf8'), 'export const greeting = "hello";\n// saved');
   await wait(`document.querySelector('.explorer-dialog [data-path="src/app.js"] .explorer-mark')?.textContent === 'M'`, 'modified marker');
   const inside = await tree('.explorer-dialog');
+  // A long file opens at its first line with the caret there, not scrolled to the end; each tab keeps its own place.
+  const place = () => ev(`const e = document.querySelector('.explorer-dialog .file-editor'); return [e.scrollTop, e.selectionStart, document.activeElement === e];`);
+  await click('.explorer-dialog [data-path="src/long.js"]');
+  await wait(`document.querySelector('.explorer-dialog .explorer-path').textContent === 'src/long.js' && document.querySelector('.explorer-dialog .file-editor').value.startsWith('export const line0')`, 'long file');
+  await browser.layout(`const e = document.querySelector('.explorer-dialog .file-editor'); return e.scrollHeight > e.clientHeight * 2;`);
+  assert.deepEqual(await place(), [0, 0, true]);
+  await ev(`const e = document.querySelector('.explorer-dialog .file-editor'); e.scrollTop = 600; e.setSelectionRange(900, 900);`);
+  await ev(`[...document.querySelectorAll('.explorer-dialog .explorer-tab-name')].find(tab => tab.textContent === 'app.js').click();`);
+  await ev(`[...document.querySelectorAll('.explorer-dialog .explorer-tab-name')].find(tab => tab.textContent === 'long.js').click();`);
+  assert.deepEqual(await place(), [600, 900, true]);
 
   // Pop out: its own page with the same tree, which works without the board page.
   await ev(`window.open = (...args) => { window.__opened = args; return null; };`);

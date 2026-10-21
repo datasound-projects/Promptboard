@@ -251,3 +251,18 @@ test('the pop-out window says why when Promptboard gives it no session, instead 
     await until(() => dom.window.document.querySelector('#project-explorer-page').textContent === text, text);
   }
 });
+
+test('a newly opened file starts at the top with the caret at its start; an open tab keeps its own place', async t => {
+  const files = shop(); files.disk['src/cart.js'] = Array.from({ length: 80 }, (_, i) => `export const line${i} = ${i};`).join('\n');
+  const { $, row, press, win } = explorer(t, files);
+  const editor = () => $('.explorer .file-editor');
+  await settle(); row('src').click(); await settle(); row('src/cart.js').click(); await settle();
+  assert.equal(win.document.activeElement, editor());
+  assert.deepEqual([editor().selectionStart, editor().selectionEnd, editor().scrollTop], [0, 0, 0], 'Not at the end of the file');
+  // A place in this file is kept while another tab is shown.
+  editor().setSelectionRange(120, 130); editor().scrollTop = 300;
+  row('readme.md').click(); await settle();
+  assert.deepEqual([editor().selectionStart, editor().scrollTop], [0, 0]);
+  press('cart.js'); await settle();
+  assert.deepEqual([editor().selectionStart, editor().selectionEnd, editor().scrollTop], [120, 130, 300]);
+});
