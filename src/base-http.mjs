@@ -2,7 +2,7 @@
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { BaseError, BASE_LIMITS, normalizeContent } from './base.mjs';
+import { BaseError, BASE_LIMITS, normalizeContent, normalizeResource } from './base.mjs';
 import { captureSources, fetchDocument, searchSources } from './base-context.mjs';
 import { CONTEXT7_PRESET, testMcp } from './base-mcp.mjs';
 import { WikiJobs } from './base-wiki.mjs';
@@ -132,13 +132,14 @@ export class BaseRoutes {
       const source = body.source ? await readMcpSource(body.source) : { path: null, text: typeof body.json === 'string' ? body.json : fail('Paste a configuration or choose Claude Desktop.') };
       if (source.text.length > 1_000_000) fail('The configuration is larger than 1 MB.');
       const library = await board.base.list(), existing = await Promise.all(library.resources.filter(resource => resource.kind === 'mcp').map(resource => board.base.detail(resource.id).catch(() => null)));
-      const parsed = parseMcpConfig(source.text, { existing: existing.filter(Boolean) });
+      const parsed = parseMcpConfig(source.text, { existing: existing.filter(Boolean) }), from = source.path ? 'Claude Desktop' : 'a pasted configuration';
+      // Base's own checks too, so the preview shows exactly what the import accepts.
+      for (const server of parsed.servers.filter(item => item.importable)) { try { normalizeResource(mcpResourceFrom(server, from)); } catch (error) { if (!(error instanceof BaseError)) throw error; server.importable = false; server.issues.push(error.message); } }
       if (pathname.endsWith('/preview')) return this.send(res, 200, { source: source.path ? 'Claude Desktop' : 'pasted configuration', path: source.path, ...parsed });
-      const wanted = new Set(Array.isArray(body.names) ? body.names : []), created = [];
-      for (const server of parsed.servers.filter(item => wanted.has(item.name))) {
-        if (!server.importable) fail(`“${server.name}” cannot be imported: ${server.duplicateOf ? `it is already in Base as “${server.duplicateOf.name}”.` : server.issues.join(' ')}`);
-        created.push(await board.base.create(mcpResourceFrom(server, source.path ? 'Claude Desktop' : 'a pasted configuration')));
-      }
+      const wanted = new Set(Array.isArray(body.names) ? body.names : []), chosen = parsed.servers.filter(item => wanted.has(item.name)), created = [];
+      // Every chosen server is checked before any is created: a refused one leaves nothing half-imported.
+      for (const server of chosen) if (!server.importable) fail(`“${server.name}” cannot be imported: ${server.duplicateOf ? `it is already in Base as “${server.duplicateOf.name}”.` : server.issues.join(' ')}`);
+      for (const server of chosen) created.push(await board.base.create(mcpResourceFrom(server, from)));
       return this.changed(res, { imported: created.map(resource => ({ id: resource.id, name: resource.name })) });
     }
     const match = pathname.match(/^\/api\/base\/resources\/([A-Za-z0-9_-]{1,100})(?:\/(test|refresh|search|revisions|avatar|deploy|override)(?:\/([0-9]+))?)?$/);

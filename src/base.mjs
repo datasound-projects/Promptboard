@@ -92,7 +92,8 @@ function envReferences(value, label, headers = false) {
   if (!object(value) || Object.keys(value).length > 40) fail(`${label} must map names to environment-variable names.`);
   const out = {};
   for (const [key, reference] of Object.entries(value)) {
-    if (!(headers ? /^[A-Za-z0-9-]{1,100}$/ : ENV).test(key) || !ENV.test(reference) || ['__proto__', 'constructor', 'prototype'].includes(key)) fail(`${label} accepts environment-variable references, never credential values.`);
+    if (!(headers ? /^[A-Za-z0-9_-]{1,100}$/ : ENV).test(key) || ['__proto__', 'constructor', 'prototype'].includes(key)) fail(`${label} names can use letters, digits${headers ? ', "-"' : ''} and "_" only.`);
+    if (!ENV.test(reference)) fail(`${label} accepts environment-variable references, never credential values.`);
     out[key] = reference;
   }
   return out;
@@ -268,7 +269,7 @@ export function validateResourceGraph(resources) {
   }
   return true;
 }
-function normalizeResource(input, previous, { imported = false, omitted = false } = {}) {
+export function normalizeResource(input, previous, { imported = false, omitted = false } = {}) {
   if (!object(input)) fail('Choose a supported Base resource type.');
   const requestedKind = input.kind || (input.type === 'agent' ? 'profile' : input.type) || previous?.kind;
   if (!BASE_KINDS.includes(requestedKind)) fail('Choose a supported Base resource type.');

@@ -222,6 +222,22 @@ test('a repository’s skill already in Base is skipped, and a file Base refuses
   assert.equal((await call('/api/base')).json.resources.filter(resource => resource.kind === 'skill').length, 1);
 });
 
+test('the MCP import preview agrees with the import, and a refused server leaves nothing half-imported', async t => {
+  const app = await startTestServer(t, { port: 0, executor: null });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const call = (path, method = 'GET', body) => fetch(`${app.url}${path}`, { method, headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(async r => ({ status: r.status, json: await r.json() }));
+  const json = JSON.stringify({ mcpServers: { alpha: { url: 'https://alpha.example.com/mcp' }, beta: { url: 'https://beta.example.com/mcp', headers: { X_Api_Key: 'abc123' } },
+    gamma: { url: 'https://gamma.example.com/mcp', headers: { 'X.Team': '${TEAM}' } } } });
+  const preview = (await call('/api/base/mcp/import/preview', 'POST', { json })).json;
+  assert.deepEqual(preview.servers.map(server => [server.name, server.importable]), [['alpha', true], ['beta', true], ['gamma', false]], 'a header name with "_" is legal HTTP');
+  assert.match(preview.servers[2].issues.join(' '), /names can use letters, digits, "-" and "_" only/);
+  const refused = await call('/api/base/mcp/import', 'POST', { json, names: ['alpha', 'gamma'] });
+  assert.deepEqual([refused.status, /gamma/.test(refused.json.error), (await call('/api/base')).json.resources.length], [400, true, 0], 'nothing was imported');
+  const done = (await call('/api/base/mcp/import', 'POST', { json, names: ['alpha', 'beta'] })).json;
+  assert.deepEqual(done.imported.map(resource => resource.name), ['alpha', 'beta']);
+  assert.deepEqual((await call(`/api/base/resources/${done.imported[1].id}`)).json.resource.configuration.headers, { X_Api_Key: 'MCP_BETA_X_API_KEY' });
+});
+
 test('Base routes: import a repository’s files and an MCP configuration, deploy a trusted file, give a project its own version', async t => {
   const repo = await temp(t);
   const git = (...args) => execFileSync('git', args, { cwd: repo, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
