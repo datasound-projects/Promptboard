@@ -58,6 +58,12 @@ test('Project card in Chrome: open a file from the tree, edit, Cmd+S writes it t
   assert.deepEqual(await tree('.explorer'), inside);
   await click('[data-path="src/app.js"]');
   await wait(`document.querySelector('.file-editor').value.endsWith('// saved')`, 'saved file in the window');
+  // The split between tree and editor resizes from the keyboard too, and the width is remembered.
+  const width = () => ev(`return Math.round(document.querySelector('.explorer-side').getBoundingClientRect().width);`), before = await width();
+  await ev(`document.querySelector('.explorer-sash').focus();`);
+  await browser.key('ArrowRight', 'ArrowRight', 39); await browser.key('ArrowRight', 'ArrowRight', 39);
+  assert.equal(await width(), before + 32);
+  assert.equal(await ev(`return localStorage.getItem('promptboard.explorer.tree');`), String(before + 32));
   for (const theme of ['light', 'dark']) {
     await browser.resize(390, 800);
     await ev(`document.documentElement.dataset.theme = ${JSON.stringify(theme)};`);
