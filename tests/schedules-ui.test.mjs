@@ -5,8 +5,9 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { JSDOM } from 'jsdom';
-import { Board } from '../src/board.mjs';
+// schedules.mjs loads before board.mjs here (schedules.test.mjs loads them the other way): the two import each other.
 import { Schedules, scheduleRoute } from '../src/schedules.mjs';
+import { Board } from '../src/board.mjs';
 
 process.env.TZ = 'Europe/Warsaw';
 const domSource = await readFile(new URL('../public/dom.js', import.meta.url), 'utf8');

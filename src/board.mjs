@@ -1112,8 +1112,8 @@ export class Board {
     });
   }
 
-  /** Start (confirmed), pause, resume, stop, or skip the current card. The engine does the work. */
-  async controlAutopilot(id, { action, confirm }) {
+  /** Start (confirmed), pause, resume, stop, or skip the current card. The engine does the work. `by` names who started it in the log. */
+  async controlAutopilot(id, { action, confirm, by = 'you' }) {
     const state = await this.state(), project = this.#project(state, id);
     if (project.workflowMode === 'pipeline' && (action === 'start' || action === 'resume')) {
       if (action === 'start' && confirm !== true) throw new BoardError('Confirm what Autopilot will do before you start it.', 'CONFIRMATION_REQUIRED');
@@ -1140,7 +1140,7 @@ export class Board {
       const ap = current.autopilot;
       if (!ap) throw new BoardError('Save the Autopilot settings first.', 'AUTOPILOT_EMPTY');
       const log = text => { ap.log = [...(ap.log || []), { at: Date.now(), text: clip(text, 500) }].slice(-200); };
-      if (action === 'start') Object.assign(ap, { status: 'running', current: null, done: [], reason: '', startedAt: Date.now() }), log('Autopilot started by you.');
+      if (action === 'start') Object.assign(ap, { status: 'running', current: null, done: [], reason: '', startedAt: Date.now() }), log(`Autopilot started by ${by}.`);
       else if (action === 'pause') { if (ap.status !== 'running') throw conflict('Autopilot is not running.', 'AUTOPILOT_NOT_RUNNING'); ap.status = 'paused'; ap.reason = 'Paused by you.'; log('Paused by you.'); }
       else if (action === 'resume') { if (ap.status !== 'paused') throw conflict('Autopilot is not paused.', 'AUTOPILOT_NOT_PAUSED'); ap.status = 'running'; ap.reason = ''; if (ap.current) ap.current.step = 'resume'; log('Resumed by you.'); }
       else if (action === 'skip') {
