@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ComposeDocuments, pageRange, documentMeta, extractPdf, UPLOAD_BYTES } from '../src/compose-documents.mjs';
+import { ComposeDocuments, pageRange, documentMeta, extractPdf, markdownSections, UPLOAD_BYTES } from '../src/compose-documents.mjs';
 import { pdfFixture, questText } from './helpers/compose-fixtures.mjs';
 import { search } from '../src/compose-retrieval.mjs';
 
@@ -36,6 +36,11 @@ test('the same file added in Research and in Compose stays for Research when Com
   assert.match(docs.get(research.id).pages[0].text, /logical replication/);
   docs.delete(research.id);
   assert.throws(() => docs.get(research.id), /expired/);
+});
+
+test('a Markdown document with Windows line endings keeps its sections', () => {
+  const text = '# Intro\nWords.\n\n## Database setup\nUse PostgreSQL 16.\n\n```\n# not a heading\n```\n'.replace(/\n/g, '\r\n');
+  assert.deepEqual(markdownSections(text).map(page => page.section), ['Intro', 'Database setup']);
 });
 
 test('empty/scanned, malformed and spoofed PDFs fail clearly; malicious text remains data', async () => {

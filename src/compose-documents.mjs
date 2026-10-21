@@ -42,7 +42,7 @@ export function markdownSections(text) {
   const pages = []; let fence = null, offset = 0, start = 0, section = '';
   const push = end => { const slice = text.slice(start, end); if (slice.trim()) pages.push({ page: 1, text: slice, offset: start, section }); };
   for (const line of text.match(/[^\n]*\n|[^\n]+$/g) || []) {
-    const plain = line.replace(/\n$/, ''), marker = plain.match(/^ {0,3}(`{3,}|~{3,})(.*)$/), heading = !fence && !marker && plain.match(/^ {0,3}#{1,6}[ \t]+(.+?)[ \t#]*$/);
+    const plain = line.replace(/\r?\n$/, ''), marker = plain.match(/^ {0,3}(`{3,}|~{3,})(.*)$/), heading = !fence && !marker && plain.match(/^ {0,3}#{1,6}[ \t]+(.+?)[ \t#]*$/);
     if (fence) { if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null; }
     else if (marker) fence = marker[1];
     if (heading) { push(offset); start = offset; section = heading[1].replace(/\\(.)/g, '$1').slice(0, 120); }
