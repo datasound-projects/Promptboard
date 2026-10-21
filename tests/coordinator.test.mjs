@@ -110,7 +110,7 @@ test('a question whose client left while the job slot was claimed is cancelled, 
   // The close event fired before the route could listen for it; only res.destroyed records it.
   const res = Object.assign(new EventEmitter(), { destroyed: true, writableEnded: false }), job = { controller: new AbortController() };
   let aborted = null, released = false;
-  await coordinatorRoute({ coordinator: { ask: async (_, __, { signal }) => { aborted = signal.aborted; return {}; } }, runner: async () => ({}), track: work => work,
+  await coordinatorRoute({ coordinator: { ask: async (_, __, { claim }) => { aborted = (await claim()).job.controller.signal.aborted; return {}; } }, runner: async () => ({}), track: work => work,
     claim: async () => ({ job, release: () => { released = true; } }), req: { method: 'POST' }, res, pathname: '/api/coordinator/p1/ask',
     jsonBody: async () => ({ question: 'Where is checkout?', provider: 'codex' }), send: () => {} });
   assert.equal(aborted, true);

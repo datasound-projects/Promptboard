@@ -572,6 +572,24 @@ test('the owner’s own CLI work gets the slot as soon as a lessons run has stop
   assert.ok(await scenario(5500) >= 5000, 'a slow stop is waited for, not answered with BUSY');
 });
 
+test('a request refused before any CLI work leaves the lessons run alone: an invalid or switched-off Coordinator question, an empty Generate or Split', { timeout: 60000 }, async t => {
+  let held = null;
+  const runner = async call => { if (!call.prompt.startsWith('# Promptboard project memory')) return { text: 'Not expected.' }; held = call; return untilStopped(call); };
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [], runner });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token, headers = { 'x-ste-token': token, 'Content-Type': 'application/json' };
+  const call = async (path, body, method = 'POST') => { const response = await fetch(`${app.url}${path}`, { method, headers, body: JSON.stringify(body) }); return { status: response.status, json: await response.json() }; };
+  const project = await app.board.createProject({ name: 'Shop' });
+  const card = await app.board.createTask({ projectId: project.id, title: 'Merged card', prompt: 'Done already.' });
+  await app.board.completeTask(card.id, { kind: 'merged', details: { targetBranch: 'trunk', commits: 1 } });
+  await until(() => held, 'the lessons run holds the slot');
+  const ask = `/api/coordinator/${project.id}/ask`, statuses = [];
+  for (const [path, body] of [[ask, { question: '', provider: 'claude' }], [ask, { question: 'Status?', provider: 'agy' }], ['/api/generate', { input: '', provider: 'claude' }], ['/api/split', { prompt: '', provider: 'claude' }]]) statuses.push((await call(path, body)).status);
+  assert.equal((await call(`/api/coordinator/${project.id}`, { enabled: false }, 'PATCH')).status, 200);
+  statuses.push((await call(ask, { question: 'Status?', provider: 'claude' })).status);
+  assert.deepEqual(statuses, [400, 400, 400, 400, 409]);
+  assert.deepEqual([held.signal.aborted, (await call(`/api/projects/${project.id}/lessons`, undefined, 'GET')).json.jobs[0].status], [false, 'running'], 'the lessons run was never stopped');
+});
+
 test('HTTP routes: views and changes need the session token and the current revision, unknown projects are refused, owner work takes the slot first, and deleting a project removes its memory', { timeout: 60000 }, async t => {
   let held = null;
   const runner = async call => {

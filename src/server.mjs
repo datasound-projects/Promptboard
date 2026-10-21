@@ -673,13 +673,14 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       const abort = () => { if (!res.writableEnded) claimed?.job.controller.abort(); };
       res.once('close', abort);
       try {
-        claimed = await claimCompose(req, res);
-        const { job } = claimed;
-        job.controller.signal.throwIfAborted();
+        // Validated before the slot is taken: a refused request never stops the background lessons run.
         const body = await jsonBody(req, 2_097_152);
         let value;
         try { value = validateRequest({ input: body?.prompt, provider: body?.provider, model: body?.model, effort: body?.effort, language: body?.language }, { maxInputChars: COMPOSE_PROMPT_CHARS }); validateEffort(value.provider, value.effort); }
         catch (error) { throw Object.assign(error, { status: 400 }); }
+        claimed = await claimCompose(req, res);
+        const { job } = claimed;
+        job.controller.signal.throwIfAborted();
         Object.assign(job, { provider: value.provider, stage: 'split' });
         const cwd = await makeTempDir('ste-split-');
         const started = Date.now();
@@ -704,13 +705,14 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       const abort = () => { if (!res.writableEnded) claimed?.job.controller.abort(); };
       res.once('close', abort);
       try {
-        claimed = await claimCompose(req, res);
-        const { job } = claimed;
-        job.controller.signal.throwIfAborted();
+        // Validated before the slot is taken: a refused request never stops the background lessons run.
         const body = await jsonBody(req);
         let value;
         try { value = validateRequest(body); }
         catch (error) { throw Object.assign(error, { status: 400 }); }
+        claimed = await claimCompose(req, res);
+        const { job } = claimed;
+        job.controller.signal.throwIfAborted();
         job.provider = value.provider;
         const result = await track(generate(value, { runner: call => track(runner(call)), signal: job.controller.signal, catalogReader: provider => getCatalog(provider, { maxAgeMs: Infinity }),
           onStage: stage => { job.stage = stage; } }));
