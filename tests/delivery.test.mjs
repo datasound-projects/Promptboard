@@ -59,6 +59,10 @@ async function world(t) {
   return { board, supervisor, root, remote, project, task, current, move, workspace, review, tests, delivery: board.delivery };
 }
 
+test('a saved test command that is not an object is refused as invalid, not a server error', async () => {
+  for (const item of [null, 'npm test', 7]) await assert.rejects(new Delivery(null).setTestCommands('p1', { commands: [item] }), { code: 'INVALID_COMMAND', status: 400 });
+});
+
 test('command parsing never uses a shell; review findings are parsed from the stated JSON format', () => {
   assert.deepEqual(parseCommand(`npm test -- --grep "two words" 'single' a\\b`), ['npm', 'test', '--', '--grep', 'two words', 'single', 'a\\b']);
   assert.deepEqual(parseCommand('node -e "process.exit(1)"'), ['node', '-e', 'process.exit(1)']);

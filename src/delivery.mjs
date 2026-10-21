@@ -294,7 +294,7 @@ export class Delivery {
     if (!Array.isArray(commands) || commands.length > 20) throw fail('Configure at most 20 test commands.', 'INVALID_INPUT', 400);
     const clean = [];
     for (const [index, item] of commands.entries()) {
-      const argv = Array.isArray(item.argv) ? item.argv.map(String) : parseCommand(item.command);
+      const argv = Array.isArray(item?.argv) ? item.argv.map(String) : parseCommand(item?.command);
       if (!argv.length || argv.some(arg => arg.length > 1000 || arg.includes('\0'))) throw fail(`Test command ${index + 1} is not valid.`, 'INVALID_COMMAND', 400);
       // A sentence typed here would run as a program called “You”; say so now instead of failing every test run.
       if (!(await installed(argv[0]))) throw fail(`“${argv[0].slice(0, 60)}” is not a program installed on this computer, so test command ${index + 1} cannot run. Enter a command such as npm test, or leave it empty: the Testing agent then finds and runs the project's tests itself.`, 'COMMAND_NOT_FOUND', 400);

@@ -155,6 +155,7 @@ test('Stop cancels only the selected task before task locks and pipeline edits c
   const beat = id => readFile(join(w.fixture, 'heartbeat-' + id), 'utf8').catch(() => null);
   await until(async () => (await beat(a.id)) && (await beat(b.id)));
   await assert.rejects(w.board.deleteProject(w.projectId, { expectedRevision: (await w.projectNow()).revision }), { code: 'AUTOMATIONS_ACTIVE' });
+  await assert.rejects(w.board.importBackup(await w.board.exportBackup(), { replace: true }), { code: 'AUTOMATIONS_ACTIVE' });
   await assert.rejects(w.board.deleteTask(a.id, { expectedRevision: (await w.taskNow(a.id)).revision }), { code: 'AUTOMATIONS_ACTIVE' });
   await assert.rejects(w.board.removeTaskWorktree(a.id), { code: 'AUTOMATIONS_ACTIVE' });
   await assert.rejects(w.board.completeTask(a.id, { kind: 'fixture', details: {} }), { code: 'AUTOMATIONS_ACTIVE' });

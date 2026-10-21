@@ -90,7 +90,7 @@ function promptText(value, label, allowBlank = false) {
   if (typeof value !== 'string' || (!allowBlank && !value.trim()) || value.length > MAX_PROMPT) throw new BoardError(`${label} needs ${allowBlank ? 'a text prompt of at most' : 'a prompt of 1 to'} ${MAX_PROMPT.toLocaleString('en-US')} characters.`, 'INVALID_INPUT');
   return value;
 }
-const clip = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
+const clip = (value, max) => typeof value === 'string' ? value.slice(0, max).replace(/[\uD800-\uDBFF]$/, '') : ''; // Never half an emoji.
 /** Earlier rework rounds of the task, so a fix that undoes an earlier one is noticed (the last entry is the current round). */
 function earlierRounds(history = []) {
   if (history.length < 2) return '';
@@ -189,6 +189,17 @@ export function originSourceOf(value) {
 }
 // Export keeps going past a malformed reference saved by an older version; it just leaves it out.
 const validOrigin = value => { try { return value !== undefined && Boolean(originSourceOf(value)); } catch { return false; } };
+/**
+ * How a Done card was completed, as backups keep it ({ completion } or nothing): prerequisiteMet reads it. Only the kind, time
+ * and short branch, commit and pull request details; never the summary or run IDs. Older backups have none and count as before.
+ */
+const COMPLETION_DETAILS = ['branch', 'taskCommit', 'uncommittedChanges', 'targetBranch', 'previousTarget', 'mergedCommit', 'method', 'squash', 'commits', 'trigger', 'url', 'number', 'base', 'mergedAt'];
+function backupCompletion(value) {
+  if (!['merged', 'pull_request', 'no_changes', 'unmerged', 'closed'].includes(value?.kind)) return {};
+  const kept = { kind: value.kind, at: time(value.at) }; // A restore is not a merge: it queues no lessons job (completeTask).
+  for (const key of COMPLETION_DETAILS) if (typeof value[key] === 'string' ? value[key].length <= 2048 : typeof value[key] === 'boolean' || Number.isFinite(value[key])) kept[key] = value[key];
+  return { completion: kept };
+}
 /** Prerequisite cards: other cards of the same project that must be done before this one starts. */
 /** The first prerequisite loop reachable from `startId` (card IDs, ending where it began), or null. */
 function prerequisiteLoop(cards, startId) {
@@ -296,10 +307,10 @@ function parseBackupData(data) {
       ...(v3 ? backupBaseScopes(project, false, columnIds) : {}),
       repositoryPath: v2 && typeof project.repository?.path === 'string' ? project.repository.path.slice(0, 4096) : null,
       targetBranch: v2 && typeof project.targetBranch?.name === 'string' ? project.targetBranch.name.slice(0, 255) : null,
-      // Imported workflow settings (including legacy automation) are kept for confirmation only.
-      workflow: v2 && project.workflow && typeof project.workflow === 'object' ? project.workflow : v2 && project.automation?.autoRun === true ? { executing: { policy: 'start' } } : null,
+      // Imported workflow settings (including legacy automation) are kept for confirmation only, validated like saved ones.
+      workflow: importedWorkflow(v2 && project.workflow && typeof project.workflow === 'object' ? project.workflow : v2 && project.automation?.autoRun === true ? { executing: { policy: 'start' } } : null),
       // Imported test commands never run until the user confirms them.
-      testCommands: v2 && Array.isArray(project.testCommands) && project.testCommands.length ? project.testCommands.slice(0, 20) : null,
+      testCommands: v2 && Array.isArray(project.testCommands) ? importedTestCommands(project.testCommands) : null,
       preview: v2 ? previewSettings(project.preview) : null, // Like test commands, it runs only once the import is confirmed.
       // The execution policy and Autopilot route also wait for confirmation; Autopilot always comes back off.
       execution: pipeline && project.execution && Object.keys(project.execution).length ? normalizeExecutionPolicy(project.execution) : null,
@@ -318,16 +329,15 @@ function parseBackupData(data) {
           ...(data.version >= 6 ? { number: card.number } : {}),
           labelIds: data.version >= 8 ? taskLabelIds(card.labelIds, labels) : [],
           priority: data.version >= 7 ? taskPriority(card.priority) : 0, source: normalizeSource(card.source), ...(data.version >= 10 && card.externalSource !== undefined ? { externalSource: externalIssueSource(card.externalSource) } : {}),
-          ...(data.version >= 10 && card.originSource !== undefined ? { originSource: originSourceOf(card.originSource) } : {}), ...(data.version >= 10 && card.dependsOn !== undefined ? { dependsOn: card.dependsOn } : {}), column: v2 && columnIds.has(card.column) ? card.column : 'todo', ...(v3 ? backupBaseScopes(card, true, columnIds) : {}),
+          ...(data.version >= 10 && card.originSource !== undefined ? { originSource: originSourceOf(card.originSource) } : {}), ...(data.version >= 10 && card.dependsOn !== undefined ? { dependsOn: card.dependsOn } : {}), ...(v2 ? backupCompletion(card.completion) : {}), column: v2 && columnIds.has(card.column) ? card.column : 'todo', ...(v3 ? backupBaseScopes(card, true, columnIds) : {}),
           ...(pipeline && data.version >= 5 ? normalizePipelineTaskSelection(pipeline, { profileId: card.profileId, agentOverride: card.agentOverride }) : {}) };
       }),
     };
   });
-  // Prerequisites point only at cards of the same project in the backup.
+  // Prerequisites are card IDs. One whose card was deleted before the export stays, as on the board: the card waits until it is cleared.
   for (const project of projects) {
-    const ids = new Set(project.tasks.map(task => task.id));
     for (const task of project.tasks) if (task.dependsOn !== undefined) {
-      try { task.dependsOn = prerequisiteIds(task.dependsOn, ids, task.id); } catch { throw new BoardError(`${project.name || 'A project'}: a card refers to a missing prerequisite.`, 'INVALID_BACKUP'); }
+      try { task.dependsOn = prerequisiteIds(task.dependsOn, { has: recordId }, task.id); } catch { throw new BoardError(`${project.name || 'A project'}: a card's prerequisites are not valid.`, 'INVALID_BACKUP'); }
     }
     const cards = new Map(project.tasks.map(task => [task.id, task]));
     if (project.tasks.some(task => prerequisiteLoop(cards, task.id))) throw new BoardError(`${project.name || 'A project'}: its cards' prerequisites form a loop.`, 'INVALID_BACKUP');
@@ -365,10 +375,10 @@ function backupBaseScopes(entity, task = false, columnIds) {
 function newProject({ id = randomUUID(), name, createdAt = Date.now(), nextTaskNumber = 1, labels = [] }) {
   return { id, name, createdAt, nextTaskNumber, labels: taskLabels(labels), labelRevision: 0, revision: 1, repository: null, targetBranch: null, workflowMode: 'legacy', workflow: {}, pendingImport: null, tasks: [] };
 }
-function newTask({ id = randomUUID(), title, prompt, source = null, checksOutdated = false, createdAt = Date.now(), updatedAt = createdAt, column = 'todo', number, priority = 0, labelIds = [], externalSource, originSource, dependsOn }) {
+function newTask({ id = randomUUID(), title, prompt, source = null, checksOutdated = false, createdAt = Date.now(), updatedAt = createdAt, column = 'todo', number, priority = 0, labelIds = [], externalSource, originSource, dependsOn, completion }) {
   // contentRevision changes only when the title or prompt changes; plan approvals refer to it.
   return { id, title, prompt, source, ...(externalSource === undefined ? {} : { externalSource: externalIssueSource(externalSource) }),
-    ...(originSource === undefined ? {} : { originSource: originSourceOf(originSource) }), ...(dependsOn?.length ? { dependsOn: [...dependsOn] } : {}), checksOutdated, createdAt, updatedAt, column, ...(number === undefined ? {} : { number }), priority: taskPriority(priority), labelIds: taskLabelIds(labelIds), revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] };
+    ...(originSource === undefined ? {} : { originSource: originSourceOf(originSource) }), ...(dependsOn?.length ? { dependsOn: [...dependsOn] } : {}), ...(completion ? { completion } : {}), checksOutdated, createdAt, updatedAt, column, ...(number === undefined ? {} : { number }), priority: taskPriority(priority), labelIds: taskLabelIds(labelIds), revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] };
 }
 
 // Autopilot routes: stages a card visits, in board order. Executing is required (it does the work).
@@ -391,7 +401,7 @@ function freeName(incoming, originProjects, boardNames) {
   const taken = name => boardNames.some(used => nameKey(used) === nameKey(name))
     || originProjects.some(record => record.id !== incoming.id && record.kanbanProjectId !== incoming.id && nameKey(record.name) === nameKey(name));
   let name = incoming.name;
-  for (let n = 2; taken(name); n++) name = `${incoming.name.slice(0, 74)} (${n})`;
+  for (let n = 2; taken(name); n++) name = `${clip(incoming.name, 74)} (${n})`;
   return name;
 }
 /**
@@ -404,6 +414,16 @@ function autopilotSettings(value, project) {
     if (!Number.isInteger(maxRework) || maxRework < 0 || maxRework > (pipeline ? 5 : 3) || (!pipeline && !['merge', 'pull_request'].includes(value.finish))) return null;
     return pipeline ? { route: pipelineAutopilotRoute(project, value.route), finish: 'done', maxRework } : { route: normalizeRoute(value.route, value.finish), finish: value.finish, maxRework };
   } catch { return null; }
+}
+// A backup's workflow and test commands keep only the fields the board uses, so no unchecked value is ever stored.
+// Settings this version cannot use, or none at all, leave nothing to confirm.
+function importedWorkflow(value) {
+  try { const workflow = value ? normalizeWorkflow(value) : null; return workflow && Object.keys(workflow).length ? workflow : null; } catch { return null; }
+}
+function importedTestCommands(list) {
+  const commands = list.filter(item => Array.isArray(item?.argv) && item.argv.length && item.argv.every(arg => typeof arg === 'string' && arg.length <= 1000 && !arg.includes('\0'))).slice(0, 20)
+    .map(item => ({ label: (typeof item.label === 'string' && item.label || item.argv.join(' ')).slice(0, 80), argv: item.argv.slice(0, 50), timeoutSec: Number.isInteger(item.timeoutSec) && item.timeoutSec >= 1 && item.timeoutSec <= 3600 ? item.timeoutSec : 600 }));
+  return commands.length ? commands : null;
 }
 
 /** Validate workflow overrides. Unknown stages and fields are dropped; invalid values are refused. */
@@ -2045,9 +2065,14 @@ export class Board {
   /** Apply settings that came from an import only after the user confirms them. */
   async confirmImport(id, { accept, expectedRevision }) {
     const state = await this.state();
-    const pending = this.#project(state, id).pendingImport;
+    const { pendingImport: pending, repository: linked } = this.#project(state, id);
     if (!pending) throw new BoardError('There are no imported settings to confirm.', 'NOTHING_PENDING');
-    const repository = accept && pending.repositoryPath ? await validateRepository(pending.repositoryPath) : null;
+    // Restored on another computer, the imported path may not be a repository here: the project's own link then stays.
+    const repository = accept && pending.repositoryPath ? await validateRepository(pending.repositoryPath).catch(error => {
+      if (linked) return null;
+      error.message += ' Link the project to its code on this computer, then confirm again.';
+      throw error;
+    }) : null;
     return this.store.update(draft => {
       const project = this.#project(draft, id);
       checkRevision(project, expectedRevision, 'This project');
@@ -2074,7 +2099,7 @@ export class Board {
           draft.base.revision++;
         }
         if (pending.preview) project.preview = previewSettings(pending.preview);
-        if (pending.testCommands) project.testCommands = pending.testCommands.filter(item => Array.isArray(item?.argv) && item.argv.length && item.argv.every(arg => typeof arg === 'string' && arg.length <= 1000 && !arg.includes('\0'))).slice(0, 20).map(item => ({ label: String(item.label || item.argv.join(' ')).slice(0, 80), argv: item.argv.slice(0, 50), timeoutSec: Number.isInteger(item.timeoutSec) && item.timeoutSec >= 1 && item.timeoutSec <= 3600 ? item.timeoutSec : 600 }));
+        if (pending.testCommands) project.testCommands = importedTestCommands(pending.testCommands) || [];
       }
       project.pendingImport = null;
       project.revision++;
@@ -2290,7 +2315,7 @@ export class Board {
       const { project, task } = this.#task(state, id);
       if (project.tasks.length >= TASK_LIMIT) throw new BoardError(`A project can have at most ${TASK_LIMIT} cards.`, 'LIMIT');
       // A copy is a new card: it keeps its prerequisites but not the Origin identity of the original.
-      const copy = newTask({ title: `${task.title.slice(0, 113)} (copy)`, prompt: task.prompt, source: structuredClone(task.source), checksOutdated: task.checksOutdated, priority: task.priority, labelIds: task.labelIds, ...(task.dependsOn?.length ? { dependsOn: task.dependsOn } : {}), ...(task.externalSource === undefined ? {} : { externalSource: structuredClone(task.externalSource) }) });
+      const copy = newTask({ title: `${clip(task.title, 113)} (copy)`, prompt: task.prompt, source: structuredClone(task.source), checksOutdated: task.checksOutdated, priority: task.priority, labelIds: task.labelIds, ...(task.dependsOn?.length ? { dependsOn: task.dependsOn } : {}), ...(task.externalSource === undefined ? {} : { externalSource: structuredClone(task.externalSource) }) });
       if (project.workflowMode === 'pipeline') copy.column = project.pipeline.columns.find(column => column.role === 'todo').id;
       if (project.workflowMode === 'pipeline' && (task.profileId || task.agentOverride)) Object.assign(copy, normalizePipelineTaskSelection(project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }));
       if (task.baseBinding) copy.baseBinding = structuredClone(task.baseBinding);
@@ -2429,22 +2454,26 @@ export class Board {
       projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt, nextTaskNumber: project.nextTaskNumber, labels: taskLabels(project.labels),
         ...(project.workflowMode === 'pipeline' ? { workflowMode: 'pipeline', pipeline: project.pipelineImport || project.pipeline } : {}),
         ...backupBaseScopes({ ...project.pendingImport, ...project, ...(project.baseBinding ? {} : project.pendingImport?.baseBinding ? { baseBinding: project.pendingImport.baseBinding } : {}) }),
-        repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
-        agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
-        preview: project.preview || null,
+        // Imported settings that still wait for confirmation are kept, as the execution policy and Autopilot route are.
+        repository: project.repository ? { path: project.repository.path } : project.pendingImport?.repositoryPath ? { path: project.pendingImport.repositoryPath } : null,
+        targetBranch: project.targetBranch ? { name: project.targetBranch.name } : project.pendingImport?.targetBranch ? { name: project.pendingImport.targetBranch } : null,
+        agentDefaults: project.agentDefaults || project.pendingImport?.agentDefaults || null, workflow: Object.keys(project.workflow || {}).length ? project.workflow : project.pendingImport?.workflow || {},
+        testCommands: project.testCommands?.length ? project.testCommands : project.pendingImport?.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
+        preview: project.preview || project.pendingImport?.preview || null,
         ...(memory[project.id] ? { lessons: memory[project.id] } : {}),
         ...(project.workflowMode === 'pipeline' && (project.execution || project.pendingImport?.execution) ? { execution: project.execution || project.pendingImport.execution } : {}),
         ...(project.autopilot?.route || project.pendingImport?.autopilot ? { autopilot: project.autopilot?.route ? { route: project.autopilot.route, finish: project.autopilot.finish, maxRework: project.autopilot.maxRework } : project.pendingImport.autopilot } : {}),
         ...(project.schedules?.length ? { schedules: exportSchedules(project.schedules) } : {}),
         // Workspaces and runs are machine-specific and are not exported.
         tasks: project.tasks.map(task => ({ id: task.id, number: task.number, title: task.title, prompt: task.prompt, priority: taskPriority(task.priority), labelIds: taskLabelIds(task.labelIds, project.labels), source: task.source, ...(task.externalSource === undefined ? {} : { externalSource: externalIssueSource(task.externalSource) }),
-          ...(validOrigin(task.originSource) ? { originSource: originSourceOf(task.originSource) } : {}), ...(task.dependsOn?.length ? { dependsOn: [...task.dependsOn] } : {}), checksOutdated: task.checksOutdated,
+          ...(validOrigin(task.originSource) ? { originSource: originSourceOf(task.originSource) } : {}), ...(task.dependsOn?.length ? { dependsOn: [...task.dependsOn] } : {}), ...backupCompletion(task.completion), checksOutdated: task.checksOutdated,
           createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column, ...backupBaseScopes(task, true),
           ...(project.workflowMode === 'pipeline' ? normalizePipelineTaskSelection(project.pipelineImport || project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }) : {}) })) })) };
   }
 
   #importRefusal(state, replace) {
     if (state.projects.length && !replace) throw conflict('Confirm that the import replaces the current board.', 'CONFIRMATION_REQUIRED');
+    for (const project of state.projects) for (const task of project.tasks) this.#requireAutomationsStopped(task); // As deleteProject.
     if (this.#hasWorkspaceOrRun(state)) throw conflict('Tasks on the current board own worktrees or runs. Remove those worktrees before you replace the board.', 'WORKSPACES_EXIST');
   }
 
