@@ -112,3 +112,26 @@ test('a starter flow is worked on once an arrow moves, and older starters still 
   older.nodes[0].label = 'Edited';
   assert.equal(M.blockWorked(older), true);
 });
+
+test('a project from any blueprint is "Not started" until something is written, and real content of every kind starts it', () => {
+  for (const template of T.TEMPLATES) {
+    const bp = make(template.id);
+    assert.equal(bp.blocks.some(M.blockWorked), false, `${template.id}: starter blocks are untouched`);
+    assert.deepEqual([M.readiness(bp).state, M.issues(bp).length, M.sectionStates(bp).overview], ['not_started', 0, 'empty'], `${template.id}: its scaffolding is not work`);
+    const question = bp.questions[0], block = bp.blocks.find(entry => entry.type === 'notes') || bp.blocks[0], section = bp.customSections[0];
+    const written = [
+      ['idea', copy => { copy.idea = 'A clinic portal'; }],
+      ['a Vision answer', copy => { copy.vision.problem = 'Bookings are lost'; }],
+      ['a record', copy => { copy.requirements.push({ ...M.RECORD_DEFAULTS.requirements('Sign in'), id: 'r1', origin: 'human', key: 'REQ-001' }); }],
+      ['an answered question', copy => { copy.answers[question.id] = 'Clinicians and patients'; }],
+      ['a section description', copy => { copy.customSections[0].description = 'What we owe regulators'; }],
+      ['a worked starter block', copy => { const own = copy.blocks.find(entry => entry.id === block.id); if (own.type === 'notes') own.text = 'Ours'; else if (own.type === 'flow') own.nodes[0].label = 'Ours'; else if (own.type === 'qa') own.entries[0].answer = 'Ours'; else if (own.type === 'checklist') own.checks[0].text = 'Ours'; else own.rows.push({ id: 'row-own', cells: { [own.columns[0].id]: 'Ours' } }); }],
+      ['a new block with text', copy => { copy.blocks.push({ ...M.RECORD_DEFAULTS.blocks('Notes', section.id, 'notes'), id: 'own-block', origin: 'human', text: 'Ours' }); }],
+    ];
+    for (const [what, write] of written) {
+      const copy = structuredClone(bp); write(copy);
+      assert.notEqual(M.readiness(M.normalizeBlueprint(copy).blueprint).state, 'not_started', `${template.id}: ${what} starts the project`);
+    }
+  }
+  assert.equal(M.readiness(M.emptyBlueprint()).state, 'not_started', 'the general start too');
+});
