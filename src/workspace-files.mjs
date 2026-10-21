@@ -137,7 +137,8 @@ export async function saveWorkspaceFile(board, projectId, value, { signal } = {}
   if (!/^[a-f0-9]{64}$/.test(version || '') || !/^[a-f0-9]{64}$/.test(scopeVersion || '')) fail('Read the current file before saving.', 'FILE_VERSION_INVALID');
   const parts = parsePath(path);
   if (!parts.length) fail('Choose an existing file.', 'FILE_PATH_INVALID');
-  const ctx = await context(board, projectId, workspace).catch(unavailable), lock = join(ctx.root, ...parts);
+  const ctx = await context(board, projectId, workspace).catch(unavailable), joined = join(ctx.root, ...parts);
+  const lock = await realpath(joined).catch(() => joined); // One lock per file however it is spelled (NOTES.TXT is notes.txt on macOS and Windows).
   if (createHash('sha256').update(ctx.root).digest('hex') !== scopeVersion) fail('The project folder changed. Reload this file before saving.', 'FILE_CONFLICT', 409);
   const previous = saves.get(lock) || Promise.resolve();
   const pending = previous.catch(() => {}).then(async () => {
