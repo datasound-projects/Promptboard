@@ -6204,6 +6204,9 @@ coordinatorView = window.PromptboardCoordinator?.create({ api, announce, project
   copy: text => navigator.clipboard.writeText(text).then(() => announce('Commit ID copied.'), () => announce(`Commit ${text}`)) }) || null;
 // Schedules: recurring To Do cards of the open project. Its button sits in the board actions; nothing runs until a schedule's time.
 const schedulesView = window.PromptboardSchedules?.create({ api, announce, project: () => currentProject(), acceptBoard: next => { acceptBoard(next); renderBoard(); } }) || null;
+// Insights: a read-only dialog from the top bar. A card in it opens that card's details on its Kanban board.
+window.PromptboardInsights?.create({ api, ensureBoard: loadBoard, projects: () => board?.projects || [], currentProject,
+  openTask: (projectId, taskId) => { if (currentProject()?.id !== projectId) selectProject(projectId); location.hash = '#/kanban'; setTimeout(() => void openTaskDetails(taskId), 0); } });
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();

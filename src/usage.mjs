@@ -7,7 +7,7 @@
  * - Gemini CLI: its hooks give no usage, so none is reported.
  * Only numbers and model IDs are read; message text is never kept.
  */
-import { open } from 'node:fs/promises';
+import { open, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join } from 'node:path';
 import { locateCodexRollout } from './codex-rollout-locator.mjs';
@@ -70,6 +70,14 @@ export function addCodexRecord(acc, record) {
 export function usageSummary(acc) {
   const { messages, ...rest } = acc;
   return { ...rest, updatedAt: Date.now() };
+}
+
+/** The price Claude Code's status line reported for this session (src/usage-status.mjs writes the file), or null. */
+export async function reportedCost(path, sessionId) {
+  try {
+    const value = JSON.parse(await readFile(path, 'utf8'));
+    return value?.sessionId === sessionId && Number.isFinite(value.costUSD) && value.costUSD >= 0 ? value.costUSD : null;
+  } catch { return null; }
 }
 
 /** Claude reports its transcript path; accept it only for the session ID Promptboard assigned. */

@@ -13,7 +13,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { ADAPTERS, AgentError, buildSession, composeMessage, interpretEvent, resolveConfig } from './agents.mjs';
 import { CLAUDE_ERRORS, cliEnv, FAILURE_MESSAGES, killPidGroup, resolveExecutable, trackPid, untrackPid } from './providers.mjs';
-import { addClaudeRecord, addCodexRecord, claudeTranscript, findCodexRollout, newUsage, readNewLines, usageSummary } from './usage.mjs';
+import { addClaudeRecord, addCodexRecord, claudeTranscript, findCodexRollout, newUsage, readNewLines, reportedCost, usageSummary } from './usage.mjs';
 import { prepareBase } from './base-context.mjs';
 import { BaseDeliveryError, checkBaseRevocations } from './base-resolver.mjs';
 import { SessionActivity } from './session-activity.mjs';
@@ -559,6 +559,9 @@ export class Supervisor {
       const { usage } = session;
       for (const record of await readNewLines(usage.tail)) (session.provider === 'claude' ? addClaudeRecord : addCodexRecord)(usage.acc, record);
       const summary = usageSummary(usage.acc);
+      // Claude Code's own price estimate, from its status line, rides on the usage so Insights never reads run files.
+      const costUSD = session.provider === 'claude' ? await reportedCost(join(session.runDir, 'usage-status.json'), session.sessionId) : null;
+      if (costUSD !== null) summary.costUSD = costUSD;
       const key = JSON.stringify({ ...summary, updatedAt: 0 });
       if (key === usage.last || (!summary.inputTokens && !summary.outputTokens)) return;
       usage.last = key;
