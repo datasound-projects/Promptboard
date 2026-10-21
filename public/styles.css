@@ -2070,6 +2070,9 @@ dialog.origin-modal.wide { width: min(980px, calc(100vw - 32px)); max-width: non
 @media (max-width: 1100px) { .origin-panels { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 730px) {
   .origin-header { padding: 10px 16px; }
+  /* The project menu opens under its button but from the header's edge, so a long project name cannot push it off screen. */
+  #origin-project-menu { position: static; }
+  #origin-project-menu .origin-menu-list { top: auto; left: 16px; margin-top: 6px; }
   .origin-link-pill { max-width: 170px; }
   .origin-header-status .origin-save span:not(.origin-save-dot) { display: none; }
   .origin-research-label { display: none; }
