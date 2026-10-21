@@ -229,6 +229,33 @@ test('a slow request that started earlier never clears the feedback of a later a
   assert.equal(await browser.eval(`return document.querySelector('#project-detail').hidden;`), true);
 });
 
+test('after an import that waits for confirmation, the board message leads to "Check and apply" on a phone and with the sidebar collapsed', { skip: !chrome, timeout: 120000 }, async t => {
+  const { app, browser } = await open(t, {}, { width: 390, height: 844 });
+  const project = await linked(app, 'Imported');
+  await app.board.createTask({ projectId: project.id, title: 'Card', prompt: 'c' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('.kanban-card')`, 'board');
+  const backup = await browser.eval(`const { data } = await api('/api/board/export'); return JSON.stringify(data);`);
+  await app.board.deleteProject(project.id, { expectedRevision: (await app.board.state()).projects[0].revision });
+  await browser.until(`board.projects.length === 0`, 'empty board');
+  await browser.eval(`document.querySelector('#menu-toggle').click();`); await browser.until(`document.querySelector('#sidebar').classList.contains('open')`, 'drawer open');
+  await browser.eval(`const files = new DataTransfer(); files.items.add(new File([${JSON.stringify(backup)}], 'backup.json', { type: 'application/json' }));
+    const input = document.querySelector('#import-file'); input.files = files.files; input.dispatchEvent(new Event('change'));`);
+  await browser.until(`/wait for your confirmation/.test(document.querySelector('#project-detail').textContent)`, 'import waits for confirmation', 20000);
+  assert.ok((await app.board.state()).projects[0].pendingImport);
+  const review = `[...document.querySelectorAll('#project-detail button')].find(button => button.textContent === 'Review in Project settings')`;
+  const confirmShown = `const node = document.querySelector('#import-confirm'), r = node.getBoundingClientRect();
+    for (let item = node; item; item = item.parentElement) { const style = getComputedStyle(item); if (item.hidden || style.visibility === 'hidden' || style.display === 'none') return false; }
+    return document.activeElement === node && r.width > 0 && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;`;
+  for (const [width, height] of [[390, 844], [1440, 900]]) {
+    await browser.resize(width, height);
+    if (width > 730) await browser.eval(`if (document.documentElement.dataset.sidebar !== 'collapsed') document.querySelector('#menu-toggle').click(); if (!document.querySelector('#project-settings').hidden) document.querySelector('#project-settings-close').click();`);
+    assert.equal(await browser.layout(shown('Review in Project settings')), true, `${width}: the pointer shows on the board`);
+    await browser.eval(`${review}.click();`);
+    assert.equal(await browser.layout(confirmShown), true, `${width}: Check and apply is shown and focused`);
+  }
+  assert.deepEqual(exceptions(browser), []);
+});
+
 test('an open page takes the board of a restarted app whose board was restored from its last good copy', { skip: !chrome, timeout: 90000 }, async t => {
   const dataDir = await mkdtemp(join(tmpdir(), 'pb-kanban-ui-'));
   const options = { executor: null, dataDir, detector: async () => [], catalogReader: async provider => ({ provider, source: 'test fixture', models: [] }) };

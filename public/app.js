@@ -4068,8 +4068,16 @@ async function importBoard() {
     catch (error) { failed(error.message); return; }
     setSelectedProject(board.projects.find(project => project.id === data.selectedProjectId)?.id || board.projects[0]?.id || '');
     renderBoard();
-    const message = `Backup imported: ${boardCounts(board.projects)}. No agent runs were started.${board.projects.some(project => project.pendingImport) ? ' Imported repository paths and workflow settings wait for your confirmation.' : ''}`;
-    showProjectDetail(paragraph(message));
+    const pending = board.projects.find(project => project.pendingImport);
+    const message = `Backup imported: ${boardCounts(board.projects)}. No agent runs were started.${pending ? ' Imported repository paths and workflow settings wait for your confirmation.' : ''}`;
+    // That confirmation is in Project settings, in the sidebar (a closed drawer on a phone).
+    const review = pending && detailButton('Review in Project settings', () => {
+      if (currentProject()?.id !== pending.id) selectProject(pending.id);
+      if (isMobile()) setSidebar(true); else if (sidebarCollapsed()) setSidebarCollapsed(false);
+      setProjectCollapsed(false, false);
+      $('#import-confirm').scrollIntoView({ block: 'center' }); $('#import-confirm').focus();
+    });
+    showProjectDetail(paragraph(message), ...(review ? [detailActions(review)] : []));
     announce(message);
   };
   if (!board.projects.length) { await replace(false); return; }
