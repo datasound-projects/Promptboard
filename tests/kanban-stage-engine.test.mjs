@@ -429,6 +429,24 @@ test('an Enter on an empty prompt after a finished turn still lets the stage com
   });
 });
 
+test('a diff with a terminal control character reaches each typed Code Review CLI exactly', { skip, timeout: 120000 }, async t => {
+  for (const provider of ['claude', 'codex', 'gemini']) await t.test(provider, async t => {
+    const w = await world(t, { agents: { code_review: provider } }), received = join(w.state, 'received-prompt.txt'), old = process.env.FAKE_AGENT_PROMPT_FILE;
+    process.env.FAKE_AGENT_PROMPT_FILE = received;
+    t.after(() => { if (old === undefined) delete process.env.FAKE_AGENT_PROMPT_FILE; else process.env.FAKE_AGENT_PROMPT_FILE = old; });
+    const card = await w.board.createTask({ projectId: w.project.id, title: 'Page break', prompt: 'Edit page.c. WRITE_FILE:feature.txt' });
+    const executing = (await w.go(card.id, 'executing')).run;
+    await w.finished(executing.id);
+    // C, Python and Emacs Lisp sources can hold a form feed (a page break).
+    await writeFile(join(executing.workspacePath, 'page.c'), 'int a;\n\x0c\nint b;\n');
+    const review = (await w.go(card.id, 'code_review')).run;
+    await w.finished(review.id);
+    const prompt = await readFile(join(w.dataDir, review.artifactsDir, 'prompt.md'), 'utf8');
+    assert.ok(prompt.includes('+\x0c\n'));
+    await until(async () => await readFile(received, 'utf8').catch(() => '') === prompt, 'the CLI received the exact message');
+  });
+});
+
 test('an autonomous long prompt still waiting for its CLI to show readiness is reported as a startup stall too', { skip, timeout: 120000 }, async t => {
   const w = await world(t);
   await w.board.setExecutionPolicy(w.project.id, { policy: { interaction: 'autonomous', completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });

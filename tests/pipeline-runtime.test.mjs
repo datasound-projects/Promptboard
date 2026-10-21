@@ -10,7 +10,7 @@ import { Store, emptyState, STATE_VERSION } from '../src/store.mjs';
 import { attachSession } from '../src/sessions.mjs';
 import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { pipelineTaskEnvelope } from '../src/pipeline-templates.mjs';
-import { buildSession, resolveConfig } from '../src/agents.mjs';
+import { buildSession, composeMessage, resolveConfig } from '../src/agents.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' } }).trim();
@@ -217,6 +217,28 @@ test('pipeline Planning and Review deliver selected Base MCPs, retain stable ass
 test('pipeline input rejects terminal escape sequences before argv or bracketed-paste delivery', async t => {
   const runDir = await temp(t), config = resolveConfig('executing', { pipeline: true });
   await assert.rejects(buildSession({ provider: 'claude', stage: 'executing', config, message: 'x'.repeat(100001) + '\x1b[201~injected\r', runDir }), { code: 'INVALID_PIPELINE_INPUT' });
+});
+
+test('typed columns pass controls from a diff or test output exactly in argv and as visible escapes in a paste', async t => {
+  const runDir = await temp(t), output = '+int a;\n+\x0c\n+int b;\n\x1b[31m✖ adds numbers\x1b[39m\x1b[201~\r\tend';
+  const gemini = arg => JSON.parse(arg.split('\n').slice(1).join('\n'));
+  for (const provider of ['claude', 'codex', 'gemini']) for (const [stage, filesystem] of [['code_review', 'read_only'], ['executing', 'workspace_write']]) {
+    const config = resolveConfig(stage, { provider, pipeline: true, stageEngine: true, filesystem });
+    const build = message => buildSession({ provider, stage, config, message, runDir, eventsFile: join(runDir, 'events.jsonl'), sessionId: 's' });
+    const label = `${provider} ${stage}`;
+    const short = composeMessage(stage, 'Do it.', null, '', output), { args, paste } = await build(short);
+    assert.equal(paste, null, label);
+    if (provider === 'gemini') assert.equal(gemini(args[args.indexOf('--prompt-interactive') + 1]), short, label);
+    else assert.deepEqual(args.slice(-2), ['--', short], label);
+    // A NUL cannot be an argv character; a long message cannot be one argument. Both are pasted with visible escapes.
+    for (const message of [composeMessage(stage, 'Do it.', null, '', `${output}\x00`), composeMessage(stage, 'x'.repeat(100001), null, '', output)]) {
+      const built = await build(message);
+      if (provider === 'gemini' && message.length < 100001) { assert.equal(gemini(built.args[built.args.indexOf('--prompt-interactive') + 1]), message, label); continue; }
+      assert.doesNotMatch(built.paste, /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/, label);
+      if (provider === 'gemini') assert.equal(gemini(built.paste), message, label);
+      else assert.ok(built.paste.includes('+\\x0c\n+int b;\n\\x1b[31m✖ adds numbers\\x1b[39m\\x1b[201~\r\tend'), label);
+    }
+  }
 });
 
 test('an edit during asynchronous run validation cannot launch an obsolete Composer prompt', async t => {
