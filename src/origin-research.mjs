@@ -185,7 +185,7 @@ export class ResearchStore {
 }
 
 const sha = text => createHash('sha256').update(text).digest('hex');
-const titleFrom = text => { const line = text.trim().split('\n')[0].replace(/\s+/g, ' '); return line.length > 60 ? `${line.slice(0, 59)}…` : line; };
+const titleFrom = text => { const line = text.trim().split('\n')[0].replace(/\s+/g, ' '); return line.length > 60 ? `${line.slice(0, 59).replace(/[\uD800-\uDBFF]$/, '')}…` : line; }; // Never half an emoji.
 /** A message the page can show. Provider details stay on the server; only fixed messages leave it. */
 export function publicError(error) {
   if (error instanceof ResearchError) return { code: error.code, message: error.message };

@@ -762,7 +762,7 @@ export class ComposeBatches {
           const body = Model.taskBody({ ...built, instruction: part.prompt }, { projectName: record.name, itemId });
           // The snapshot records what the card got, so Origin compares and protects the approved prompt, not the raw task.
           const snapshot = await this.origin.snapshot(originId, { ...built, instruction: part.prompt, body, compose: { batchId: originId, itemId, childId: part.childId || '', versionId: item.current, promptHash: part.promptHash } }, record.revision);
-          entries.push({ originTaskId: part.originTaskId, key: part.key, title: `${part.key} ${part.title}`.slice(0, 120), prompt: body, snapshotId: snapshot.id, hash: snapshot.hash,
+          entries.push({ originTaskId: part.originTaskId, key: part.key, title: `${part.key} ${part.title}`.slice(0, 120).replace(/[\uD800-\uDBFF]$/, ''), prompt: body, snapshotId: snapshot.id, hash: snapshot.hash,
             dependsOnTaskIds: previous ? [] : before.filter(row => row.card).map(row => row.card), dependsOnOrigin: previous ? [previous] : before.filter(row => row.origin).map(row => row.origin) });
           links.push({ itemId, childId: part.childId, snapshotId: snapshot.id, hash: snapshot.hash, originTaskId: part.originTaskId });
           previous = part.originTaskId;

@@ -504,7 +504,7 @@ async function handoff({ origin, board, originId, input }) {
   for (const [id, context] of built) snapshots.set(id, await origin.snapshot(originId, context, record.revision));
   const entries = [...built.keys()].map(id => {
     const item = items.get(id), snapshot = snapshots.get(id), before = item.dependsOn.map(dep => items.get(dep));
-    return { originTaskId: id, key: item.key, title: `${item.key} ${item.title.trim() || 'Untitled task'}`.slice(0, 120), prompt: built.get(id).body, snapshotId: snapshot.id, hash: snapshot.hash,
+    return { originTaskId: id, key: item.key, title: `${item.key} ${item.title.trim() || 'Untitled task'}`.slice(0, 120).replace(/[\uD800-\uDBFF]$/, ''), prompt: built.get(id).body, snapshotId: snapshot.id, hash: snapshot.hash,
       dependsOnTaskIds: before.filter(dep => !built.has(dep.id)).map(dep => cardOf(dep).id), dependsOnOrigin: before.filter(dep => built.has(dep.id)).map(dep => dep.id) };
   });
   const made = new Map((entries.length ? await board.createOriginTasks(destination.id, { originProjectId: originId, tasks: entries }) : []).map(result => [result.originTaskId, result]));
