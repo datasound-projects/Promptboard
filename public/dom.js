@@ -18,6 +18,15 @@ window.PromptboardDom = (() => {
   }
   /** A short, readable duration: "45s", "3:05", "1 h 20 min". */
   const duration = ms => { const s = Math.max(0, Math.round(ms / 1000)), m = Math.round(s / 60); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : `${Math.floor(m / 60)} h ${m % 60} min`; };
+  const relativeTime = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  /** How long ago a time (ms) was, in words: "just now", "5 minutes ago", "yesterday". */
+  const ago = at => {
+    const seconds = (at - Date.now()) / 1000;
+    for (const [unit, size] of [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]]) {
+      if (Math.abs(seconds) >= size) return relativeTime.format(Math.round(seconds / size), unit);
+    }
+    return 'just now';
+  };
   /** Minutes left in words, rounded up: "less than a minute", "about 12 min". */
   const left = ms => (ms < 60000 ? 'less than a minute' : `about ${Math.ceil(ms / 60000)} min`);
   /**
@@ -42,5 +51,5 @@ window.PromptboardDom = (() => {
     };
     return bar.set(0);
   }
-  return { el, button, pref, setPref, plural, clip, safeUrl, download, duration, left, estimate, remaining, meter };
+  return { el, button, pref, setPref, plural, clip, safeUrl, download, duration, ago, left, estimate, remaining, meter };
 })();
