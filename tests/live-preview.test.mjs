@@ -16,10 +16,11 @@ const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) 
 async function until(fn, label, ms = 20000) { const end = Date.now() + ms; for (;;) { const value = await fn(); if (value) return value; if (Date.now() > end) assert.fail(`Timed out: ${label}`); await new Promise(resolve => setTimeout(resolve, 50)); } }
 
 // print: listens on a port of its own and prints it in colour, as Vite does. quiet: listens on PORT and prints no address.
-// hang: never listens. crash: exits with an error.
+// hang: never listens. crash: exits with an error. fork: starts a quiet server with its output and exits, as a launcher does.
 const SERVER = `const http = require('node:http');
 const mode = process.argv[2] || 'print';
 console.log('pid=' + process.pid + ' env PORT=' + process.env.PORT + ' HOST=' + process.env.HOST + ' BROWSER=' + process.env.BROWSER);
+if (mode === 'fork') require('node:child_process').spawn(process.execPath, [__filename, 'quiet'], { stdio: 'inherit' }).unref();
 if (mode === 'crash') { console.error("Error: Cannot find module 'vite'"); console.log('npm notice: see the log'); process.exit(1); }
 if (mode === 'hang') setInterval(() => {}, 1000);
 if (mode === 'print' || mode === 'quiet') {
@@ -157,6 +158,32 @@ test('a server that never answers fails after the wait with a plain reason, and 
   await Promise.all(board.previews.items.get(id).closing);
   assert.equal((await board.previews.status(id)).preview.message, 'No address appeared within 2 minutes.', 'The exit that follows does not replace the reason.');
   assert.deepEqual(board.previews.list(), [], 'A failed preview does not count as running.');
+});
+
+test('what a preview command leaves running in its process group ends with it: a launcher’s server, a setup command’s helper', { skip: process.platform === 'win32' }, async t => {
+  const { board, card, configure, settled, task } = await world(t);
+  const left = [];
+  t.after(() => { for (const pid of left) try { process.kill(pid, 'SIGKILL'); } catch {} });
+  const pids = (preview, pattern = /pid=(\d+)/g) => [...preview.output.join('\n').matchAll(pattern)].map(match => Number(match[1]));
+  // About 2 s after the launcher exits its output closes and the preview says it stopped: the server goes with it.
+  const id = await card('Launcher');
+  await configure('node server.js fork');
+  await board.previews.start(id, { confirm: true });
+  const failed = await until(async () => { const { preview } = await board.previews.status(id); return preview.status === 'failed' && preview; }, 'the launcher exit is reported');
+  left.push(...pids(failed));
+  assert.match(failed.message, /^The preview stopped/); assert.equal(left.length, 2, 'the launcher and its server');
+  await until(() => !left.some(alive), 'the server the launcher started was stopped');
+  // A setup command that leaves a helper running in its process group: the helper ends with the setup command, so
+  // nothing outlives Stop or shutdown, which only know the commands still running.
+  const other = await card('Setup');
+  await writeFile(join((await task(other)).workspace.path, 'helper.js'), `const helper = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); helper.unref(); require('node:fs').mkdirSync('node_modules'); console.log('helper=' + helper.pid);`);
+  await configure('node server.js quiet', ['node helper.js']);
+  await board.previews.start(other, { confirm: true });
+  const ready = await settled(other);
+  const [helper] = pids(ready, /helper=(\d+)/g);
+  left.push(helper);
+  assert.equal(ready.status, 'ready'); assert.ok(helper > 0);
+  await until(() => !alive(helper), 'the helper the setup command left was stopped');
 });
 
 test('a crash shows the last error line, and the next start replaces the failed preview', async t => {
