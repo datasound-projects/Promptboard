@@ -60,6 +60,10 @@ test('opening uses the project’s own folder: Finder or a Terminal on macOS, Ex
   assert.deepEqual(calls.at(-1), ['explorer.exe', ['C:\\work\\app\\index.html'], false], 'paths join the way the computer opening them writes them');
   await assert.rejects(openProject(project, 'terminal', { platform: 'win32', launch }), { code: 'OPEN_UNSUPPORTED' });
   await assert.rejects(openProject({ repository: null }, 'folder', { platform: 'darwin', launch }), { code: 'REPOSITORY_REQUIRED' });
+  // Names every object has are not open targets either, and nothing is launched for them.
+  calls.length = 0;
+  for (const target of ['__proto__', 'constructor', 'toString', 'valueOf', 'hasOwnProperty']) await assert.rejects(openProject(project, target, { platform: 'darwin', launch }), { code: 'OPEN_UNSUPPORTED' }, target);
+  assert.deepEqual(calls, []);
 });
 
 test('the run-info and open routes use the stored project; the page cannot name a path', async t => {
