@@ -2587,3 +2587,4 @@ button.origin-context-badge { cursor: pointer; }
 .sandbox-more { margin-top: 12px; }
 .sandbox-more > summary { color: var(--muted); font-size: 13px; cursor: pointer; }
 .sandbox-tag { display: inline-block; margin-left: 6px; padding: 2px 7px; border-radius: 5px; background: color-mix(in srgb, #0ea5e9 16%, transparent); color: var(--ink); font: 600 11px/1.5 var(--mono); }
+@media (pointer: coarse) { .sandbox-more > summary { padding: 13px 0; } }
