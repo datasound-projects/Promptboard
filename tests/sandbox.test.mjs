@@ -209,6 +209,10 @@ test('a Codex card in Docker runs through the docker client: hooks run there, us
   assert.equal(await readFile(join(home, 'codex', 'auth.json'), 'utf8'), '', 'Only an empty mount point is in the run folder.');
   assert.deepEqual([done.usage.inputTokens, done.usage.cachedTokens, done.usage.outputTokens, done.usage.model], [8000, 7000, 100, 'gpt-test'], 'Usage is read from the conversation’s own Codex home.');
   assert.deepEqual((await docker.agents()).map(agent => agent.cwd), [run.workspacePath]);
+  // Typing in the terminal reaches the CLI inside the container.
+  w.board.executor.input(run.id, 'one more thing\r');
+  await until(async () => (await w.run(run.id)).turns === 2, 'a second turn from terminal input');
+  assert.match(await w.board.executor.artifact(run.id, 'output'), /you said: one more thing/);
   // Pause removes the container; Resume continues the same Codex thread with the first run's home.
   await w.board.pauseRun(run.id, { confirm: true });
   await until(async () => (await docker.calls()).some(item => item.args.join(' ') === `rm -f pb-run-${run.id}`), 'Pausing removes the container, not only the docker client.');
@@ -311,4 +315,18 @@ test('the Docker status says what is missing, and an image of your own replaces 
   assert.equal((await sandbox.status()).image.custom, false);
   setEnv(t, 'PATH', dirname(process.execPath));
   assert.equal((await sandbox.status()).docker, 'missing');
+});
+
+test('in Docker a Planning card gets a read-only worktree, and Workspace trust still answers the CLI’s folder-trust menu', { skip, timeout: 120000 }, async t => {
+  const docker = await fakes(t), w = await boxed(t);
+  await docker.setState({ images: [w.image] });
+  await w.board.setExecutionPolicy(w.project.id, { policy: { sandbox: 'docker', workspaceTrust: 'task_workspaces' }, expectedRevision: (await w.now()).revision });
+  const run = await w.start('Boxed plan', 'TRUST_SCREEN Plan the cart page.', 'planning');
+  const planned = await until(async () => { const value = await w.run(run.id); return value.turnComplete && value; }, 'planned after the trust menu');
+  assert.equal(planned.hasPlan, true);
+  assert.match(await w.board.executor.artifact(run.id, 'output'), /Trust this folder\?[\s\S]*trusted/, 'The menu named the worktree and was answered.');
+  const args = runCalls(await docker.calls())[0].args;
+  assert.ok(values(args, '-v').includes(`${run.workspacePath}:${run.workspacePath}:ro`), 'The worktree is read-only for Planning.');
+  assert.ok(values(args, '-v').filter(mount => mount.includes('.git')).every(mount => mount.endsWith(':ro')), 'So is all Git data.');
+  assert.deepEqual(args.slice(args.indexOf('--sandbox'), args.indexOf('--sandbox') + 4), ['--sandbox', 'danger-full-access', '--ask-for-approval', 'never']);
 });

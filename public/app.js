@@ -5054,7 +5054,7 @@ const stepByStep = policy => (policy.interaction || 'ask') === 'ask' && (policy.
 const EXECUTION_CHOICES = {
   interaction: [['ask', 'Ask for approval'], ['autonomous', 'Autonomous: never pause for approval']],
   filesystem: [['read_only', 'Read only'], ['workspace_write', 'Write in the task workspace'], ['full', 'Full access']],
-  sandbox: [['docker', 'Yes: each agent sees only its card’s workspace']],
+  sandbox: [['docker', 'Yes: only the card’s workspace']],
   completion: [['manual', 'Manual: you complete each stage'], ['automatic', 'Automatic when the turn is done and its checks pass']],
 };
 const EXECUTION_DEFAULT_TEXT = { interaction: 'Ask for approval', filesystem: 'Write in the task workspace', sandbox: 'No, on this computer', completion: 'Manual' };

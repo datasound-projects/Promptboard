@@ -109,7 +109,7 @@ test('Columns → How agents work turns Docker mode on for the project, and the 
   $('#columns-open').click(); await ctx.idle();
   $('#columns-tab-board').click(); await ctx.idle();
   const select = $('#execution-sandbox');
-  assert.deepEqual([...select.options].map(item => [item.value, item.textContent]), [['', 'Default: No, on this computer'], ['docker', 'Yes: each agent sees only its card’s workspace']]);
+  assert.deepEqual([...select.options].map(item => [item.value, item.textContent]), [['', 'Default: No, on this computer'], ['docker', 'Yes: only the card’s workspace']]);
   assert.match(select.closest('label').textContent, /^Run agents in Docker.*Claude Code and Codex only\. Set Docker up first in Settings → Docker sandbox\.$/);
   const grid = [...$('.execution-grid').children].map(node => node.querySelector('select, input')?.id);
   assert.equal(grid.indexOf('execution-sandbox'), grid.indexOf('execution-filesystem') + 1, 'Next to Workspace access.');
