@@ -1,6 +1,6 @@
 /** Bounded file access within explicitly linked project folders/worktrees. */
 import { constants } from 'node:fs';
-import { access, lstat, open, opendir, realpath, rename, unlink } from 'node:fs/promises';
+import { access, lstat, mkdir, open, opendir, realpath, rename, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { git, listWorktrees } from './git.mjs';
@@ -62,7 +62,7 @@ async function context(board, projectId, workspace) {
     if (await realpath(common) !== project.repository.commonDir) fail('This folder belongs to another repository.', 'FILE_WORKSPACE_UNAVAILABLE', 409);
     root = join(task.workspace.path, relative(repositoryRoot, selected)); scope = scopes.find(s => s.id === workspace);
   }
-  return { root, scopes, project: { id: project.id, name: project.name }, workspace: scope };
+  return { root, repositoryRoot, target: project.targetBranch?.name || '', scopes, project: { id: project.id, name: project.name }, workspace: scope };
 }
 
 /** Filesystem and Git failures while resolving or reading a path, as viewer errors instead of server errors. */
@@ -164,4 +164,32 @@ export async function saveWorkspaceFile(board, projectId, value, { signal } = {}
   });
   saves.set(lock, pending);
   try { return await pending; } finally { if (saves.get(lock) === pending) saves.delete(lock); }
+}
+
+/** The project checkout with the viewer's custody checks, for the project explorer's Git status. */
+export const workspaceRoot = (board, projectId) => context(board, projectId, '').catch(unavailable);
+
+/** A new empty file or folder in the project checkout. It never replaces anything: an existing name is refused. */
+export async function createWorkspaceEntry(board, projectId, value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('Choose a name for the new file or folder.', 'FILE_PATH_INVALID');
+  const { path, kind, scopeVersion } = value;
+  if (!['file', 'directory'].includes(kind)) fail('Choose a file or a folder.', 'FILE_KIND_INVALID');
+  if (!/^[a-f0-9]{64}$/.test(scopeVersion || '')) fail('Refresh the project files before adding to them.', 'FILE_VERSION_INVALID');
+  const parts = parsePath(path), name = parts.at(-1);
+  // Windows drops trailing dots and spaces and maps device names (NUL, COM1) to devices: such names are refused everywhere.
+  if (!name || /[. ]$/.test(name) || /^(?:con|prn|aux|nul|com\d|lpt\d)(?:\..*)?$/i.test(name)) fail('Choose another name.', 'FILE_PATH_INVALID');
+  try {
+    const ctx = await context(board, projectId, '');
+    if (createHash('sha256').update(ctx.root).digest('hex') !== scopeVersion) fail('The project folder changed. Refresh the files before adding to them.', 'FILE_CONFLICT', 409);
+    const parent = await target(ctx.root, parts.slice(0, -1));
+    if (!parent.info.isDirectory()) fail('This folder is unavailable.', 'FILE_NOT_FOUND', 404);
+    const full = join(parent.path, name);
+    if (kind === 'directory') await mkdir(full);
+    else await (await open(full, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o666)).close();
+    if (!same(parent.info, (await target(ctx.root, parts.slice(0, -1))).info)) fail('The folder changed while adding to it. Check the project folder.', 'FILE_CHANGED', 409);
+    return { path, kind, created: true };
+  } catch (error) {
+    if (error.code === 'EEXIST') fail('A file or folder with this name already exists.', 'FILE_EXISTS', 409);
+    unavailable(error);
+  }
 }
