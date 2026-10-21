@@ -31,6 +31,7 @@ import { PipelineAutomations } from './pipeline-automations.mjs';
 import { PipelineActions } from './pipeline-actions.mjs';
 import { NativeMessageScheduler } from './native-message-scheduler.mjs';
 import { readRepositoryPipeline, resolveRepositoryPipeline, RepositoryPipelineError } from './pipeline-repository.mjs';
+import { backupSchedules, exportSchedules } from './schedules.mjs';
 
 export const COLUMNS = Object.freeze([
   { id: 'todo', title: 'To Do', agent: false },
@@ -303,6 +304,7 @@ function parseBackupData(data) {
       // The user's timeline notes. Malformed entries are dropped; system events are rebuilt from the board.
       timelineNotes: v2 && Array.isArray(project.timelineNotes) ? project.timelineNotes.slice(0, 500).flatMap(note => note && typeof note.title === 'string' && note.title.trim() && Number.isFinite(note.at)
         ? [{ id: typeof note.id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(note.id) ? note.id : randomUUID(), title: note.title.trim().slice(0, 120), text: typeof note.text === 'string' ? note.text.slice(0, 2000) : '', at: note.at, taskId: typeof note.taskId === 'string' ? note.taskId : null, createdAt: time(note.createdAt) }] : []) : [],
+      schedules: v2 ? backupSchedules(project.schedules, labels) : [], // They come back switched off (schedules.mjs).
       tasks: cards.map((card, cardIndex) => {
         const cardLabel = `${label}, card ${cardIndex + 1}`;
         if (!card || typeof card !== 'object') throw new BoardError(`${cardLabel} is not valid.`, 'INVALID_BACKUP');
@@ -1153,6 +1155,19 @@ export class Board {
       if (!project.autopilot) return null;
       change(project.autopilot, text => { project.autopilot.log = [...(project.autopilot.log || []), { at: Date.now(), text: clip(text, 500) }].slice(-200); }, project);
       return project.autopilot;
+    });
+  }
+
+  /**
+   * One project write for scheduled cards (schedules.mjs owns their rules). A settings change passes the project's
+   * `expectedRevision`, which is checked and bumped; the scheduler's own bookkeeping passes null and leaves it, as creating
+   * a card does. `change(project, createTask)` may create cards through the normal card path, in the same write.
+   */
+  writeSchedules(id, expectedRevision, change) {
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      if (expectedRevision !== null) { checkRevision(project, expectedRevision, 'This project'); project.revision++; }
+      return change(project, input => this.#createTask(state, { ...input, projectId: id }));
     });
   }
 
@@ -2377,6 +2392,7 @@ export class Board {
         agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
         ...(project.workflowMode === 'pipeline' && (project.execution || project.pendingImport?.execution) ? { execution: project.execution || project.pendingImport.execution } : {}),
         ...(project.autopilot?.route || project.pendingImport?.autopilot ? { autopilot: project.autopilot?.route ? { route: project.autopilot.route, finish: project.autopilot.finish, maxRework: project.autopilot.maxRework } : project.pendingImport.autopilot } : {}),
+        ...(project.schedules?.length ? { schedules: exportSchedules(project.schedules) } : {}),
         // Workspaces and runs are machine-specific and are not exported.
         tasks: project.tasks.map(task => ({ id: task.id, number: task.number, title: task.title, prompt: task.prompt, priority: taskPriority(task.priority), labelIds: taskLabelIds(task.labelIds, project.labels), source: task.source, ...(task.externalSource === undefined ? {} : { externalSource: externalIssueSource(task.externalSource) }),
           ...(validOrigin(task.originSource) ? { originSource: originSourceOf(task.originSource) } : {}), ...(task.dependsOn?.length ? { dependsOn: [...task.dependsOn] } : {}), checksOutdated: task.checksOutdated,
@@ -2440,6 +2456,7 @@ export class Board {
         }
         if (incoming.columnLayout) project.columnLayout = incoming.columnLayout;
         project.timelineNotes = incoming.timelineNotes.map(note => ({ ...note, taskId: project.tasks.some(task => task.id === note.taskId) ? note.taskId : null }));
+        if (incoming.schedules.length) project.schedules = incoming.schedules;
         if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands || incoming.agentDefaults || incoming.execution || incoming.autopilot || incoming.baseBinding || incoming.baseColumns || incoming.agentProfileId) {
           project.pendingImport = { repositoryPath: incoming.repositoryPath, targetBranch: incoming.targetBranch, workflow: incoming.workflow, testCommands: incoming.testCommands };
           if (incoming.agentDefaults) project.pendingImport.agentDefaults = incoming.agentDefaults;

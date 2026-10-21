@@ -42,6 +42,7 @@ import { streamResearch } from './research-cli.mjs';
 import { PromptStore, createBoardProject, nameTaken, projectsRoute } from './projects.mjs';
 import { Coordinator, CoordinatorError, coordinatorRoute } from './coordinator.mjs';
 import { BatchError, ComposeBatches, batchRoute } from './compose-batch.mjs';
+import { Schedules, scheduleRoute } from './schedules.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -64,6 +65,7 @@ const assets = new Map([
   ['/coordinator.js', ['coordinator.js', 'text/javascript; charset=utf-8']],
   ['/compose-batch.js', ['compose-batch.js', 'text/javascript; charset=utf-8']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
+  ['/schedules.js', ['schedules.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal assets, served from the installed packages by exact path only (no CDN,
 // no directory browsing). Missing files (no npm install) return 404 and the dock falls back.
@@ -164,6 +166,8 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
   const note = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/timeline\/([A-Za-z0-9_-]{1,100})$/);
   if (note && method === 'PATCH') return send(res, 200, { note: await board.updateTimelineNote(note[1], note[2], await body()) });
   if (note && method === 'DELETE') return send(res, 200, { deleted: await board.deleteTimelineNote(note[1], note[2]) ?? true });
+  const schedule = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/schedules(?:\/([A-Za-z0-9_-]{1,100})(\/run)?)?$/);
+  if (schedule) return scheduleRoute(board.schedules, { method, projectId: schedule[1], scheduleId: schedule[2], run: Boolean(schedule[3]), body, json: data => send(res, 200, data), view, searchParams });
   if (!match) return false;
   const [, kind, id, action = ''] = match;
   const expected = () => Number(searchParams.get('expectedRevision'));
@@ -347,6 +351,9 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   // Autopilot runs only for projects where the user started it; otherwise each tick does nothing.
   const autopilot = new Autopilot(board);
   if (board.executor) autopilot.start();
+  // Scheduled cards land in To Do while the app runs; agents start on them only where the owner chose Autopilot.
+  board.schedules = new Schedules(board);
+  board.schedules.start();
   const token = randomBytes(32).toString('hex');
   const catalogAbort = new AbortController();
   const catalogs = new Map(), lookups = new Map();
@@ -727,7 +734,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       server.once('error', reject);
       server.listen(port, '127.0.0.1', resolve);
     });
-  } catch (error) { autopilot.stop(); await lock.release(); throw error; }
+  } catch (error) { autopilot.stop(); board.schedules.stop(); await lock.release(); throw error; }
   await lock.setPort(server.address().port);
   // Remote access stays off unless it was turned on; a listener that cannot start is reported in Settings.
   remoteAccess = await new RemoteAccess({ dataDir, localPort: server.address().port, handle: (req, res, who) => handle(req, res, who) }).load();
@@ -750,6 +757,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     const automations = board.shutdownAutomations();
     const agents = board.executor?.shutdown ? board.executor.shutdown(Math.min(3000, graceMs)) : null;
     autopilot.stop();
+    board.schedules.stop();
     board.githubLogin.cancel('The app stopped.');
     board.delivery.stopAllTests();
     const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents, batchesClosed].filter(Boolean));

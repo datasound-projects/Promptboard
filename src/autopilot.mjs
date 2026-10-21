@@ -109,7 +109,8 @@ export class Autopilot {
     if (!ap.current) {
       const { task, waiting } = nextQueued(project, todo);
       if (waiting) return this.pause(projectId, waiting);
-      if (!task) return this.set(projectId, (a, log) => { a.status = 'finished'; a.reason = ''; log('Every queued card has been through its columns.'); });
+      // A card a schedule queued after this step read the board keeps Autopilot running (src/schedules.mjs).
+      if (!task) return this.set(projectId, (a, log, fresh) => { if (nextQueued(fresh, todo).task) return; a.status = 'finished'; a.reason = ''; log('Every queued card has been through its columns.'); });
       // A new card branches from the target as it is now, including earlier cards' work if it was merged.
       if (!task.workspace && project.targetBranch) await this.board.setTargetBranch(projectId, { branch: project.targetBranch.name, expectedRevision: project.revision });
       return this.set(projectId, (a, log) => { a.current = { taskId: task.id, stage: null, step: 'enter', turns: 0 }; log(`Started “${task.title}” (columns: ${a.route.map(name).join(' → ')}).`); });
@@ -254,7 +255,8 @@ export class Autopilot {
   async next(project) {
     const { task, waiting } = nextQueued(project, 'todo');
     if (waiting) return this.pause(project.id, waiting);
-    if (!task) return this.set(project.id, (a, log) => { a.status = 'finished'; a.reason = ''; log('Every queued card has been through its route.'); });
+    // As in pipelineStep: a card a schedule queued meanwhile keeps Autopilot running.
+    if (!task) return this.set(project.id, (a, log, fresh) => { if (nextQueued(fresh, 'todo').task) return; a.status = 'finished'; a.reason = ''; log('Every queued card has been through its route.'); });
     // A new card branches from the target as it is now, including the cards merged before it.
     if (!task.workspace && project.targetBranch) await this.board.setTargetBranch(project.id, { branch: project.targetBranch.name, expectedRevision: project.revision });
     return this.set(project.id, (a, log) => { a.current = { taskId: task.id, stage: null, step: 'start', attempts: 0, runId: null, testsId: null }; log(`Started “${task.title}” (route: ${this.route(a, task.id).map(title).join(' → ')}).`); });
