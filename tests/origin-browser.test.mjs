@@ -892,3 +892,41 @@ test('Origin flags only sent tasks whose context changed, compares, and updates 
   await saved();
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
+
+/** A Kanban-linked project whose task is on Kanban, so every save on its Tasks page also reads the cards' context status. */
+async function sentTaskPage(t) {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const kanban = await app.board.createProject({ name: 'Shop', workflowMode: 'pipeline' });
+  const store = new OriginStore(app.board.store.dir);
+  let record = await store.create({ name: 'Shop design' });
+  record = await store.link(record.id, { expectedRevision: record.revision, kanbanProjectId: kanban.id });
+  record = await store.write(record.id, { expectedRevision: record.revision, blueprint: { idea: 'Shop', sequence: { items: 1 },
+    items: [{ id: 't1', key: 'IMP-001', title: 'Build checkout', description: 'Hello world', acceptanceCriteria: 'Works' }],
+    blocks: [{ id: 'nb', origin: 'human', sectionId: 'plan', type: 'notes', title: 'Plan notes', text: '' }] } });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const sent = await fetch(`${app.url}/api/origin/projects/${record.id}/handoff`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: J({ expectedRevision: record.revision, itemIds: ['t1'] }) });
+  assert.equal(sent.status, 200);
+  const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
+  const tools = pageTools(browser);
+  await browser.goto(`${app.url}/#/origin`);
+  await tools.wait(`document.querySelector('.origin-map')`, 'map');
+  await tools.section('plan');
+  await tools.wait(`document.querySelector('.origin-block[data-type="notes"] textarea')`, 'Tasks page');
+  // A save ends with that status read and its redraw: wait for both before typing on.
+  const statusReads = () => tools.ev(`return performance.getEntriesByType('resource').filter(entry => entry.name.endsWith('/context-status')).length;`);
+  const refreshed = async before => { await tools.wait(`performance.getEntriesByType('resource').filter(entry => entry.name.endsWith('/context-status')).length > ${before}`, 'context status read'); await tools.ev(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);`); };
+  return { browser, store, record, ...tools, statusReads, refreshed };
+}
+
+test('Origin keeps the field you type in on the Tasks page when a save refreshes the sent cards’ status', { skip: !await findChrome(), timeout: 90000 }, async t => {
+  const { browser, store, record, ev, saved, statusReads, refreshed } = await sentTaskPage(t);
+  await ev(`document.querySelector('.origin-block[data-type="notes"] textarea').focus();`);
+  await browser.type('Hello ');
+  const before = await statusReads();
+  await saved(); await refreshed(before);
+  assert.equal(await ev(`return document.activeElement?.closest('.origin-block')?.dataset.block;`), 'nb', 'the notes field keeps focus after the autosave');
+  await browser.type('world');
+  await saved();
+  assert.equal((await store.read(record.id)).blueprint.blocks.find(block => block.id === 'nb').text, 'Hello world', 'no keystroke is lost');
+});
+

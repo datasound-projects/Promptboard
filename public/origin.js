@@ -172,6 +172,8 @@ window.PromptboardOrigin = (() => {
       if (renderFrame) return;
       renderFrame = requestAnimationFrame(() => { renderFrame = 0; if (main.contains(document.activeElement)) renderDerived(); else renderMain(); });
     }
+    // News from elsewhere (a card's status, a finished run) redraws the page, but never the field you are typing in.
+    function refreshMain() { if (main.contains(document.activeElement) && document.activeElement.matches('input, textarea, select')) renderDerived(); else renderMain(); }
     async function save({ force = false } = {}) {
       clearTimeout(saveTimer); saveTimer = null;
       if (saveState === 'conflict' && !force) return false; // Not saved: only Reload or Keep mine resolves it.
@@ -2803,7 +2805,7 @@ window.PromptboardOrigin = (() => {
       const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(projectId)}/context-status`, { method: 'POST', body: { expectedRevision: revision }, timeoutMs: 30000 })
         .catch(() => ({ response: { ok: false }, data: {} }));
       contextStatus = response.ok && record?.revision === revision ? { revision, loading: false, map: new Map(data.tasks.map(task => [task.itemId, task])) } : { ...contextStatus, loading: false, revision };
-      if (section === 'plan') renderMain();
+      if (section === 'plan') refreshMain();
       if (open?.collection === 'items') renderDrawer();
     }
     function sentPanel(item, message) {
@@ -3132,7 +3134,7 @@ window.PromptboardOrigin = (() => {
         const ready = run.rows.filter(row => row.state === 'ready').length, failed = run.rows.filter(row => row.state === 'failed').length;
         run.message = `${plural(ready, 'proposal')} ready to review${failed ? `; ${plural(failed, 'task')} failed` : ''}. Nothing was changed or sent.`;
         app.announce(run.message);
-        renderImprove(); renderMain(); renderDrawer();
+        renderImprove(); refreshMain(); renderDrawer();
       } else if (changes.length && dialogs['origin-improve-dialog']?.open) renderImprove();
     }
     async function cancelImprove(run) {
