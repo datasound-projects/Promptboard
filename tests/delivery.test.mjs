@@ -2,8 +2,8 @@
 // Agents are SIMULATED by tests/fixtures/fake-agent.cjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { execFileSync, spawn } from 'node:child_process';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -784,6 +784,29 @@ test('a commit hook or a merge hook that refuses says why; the task branch stays
   const head = git(ws, 'rev-parse', 'HEAD');
   await assert.rejects(w.delivery.updateBranch(task.id, { confirm: true }), error => error.code === 'MERGE_FAILED' && /policy: merges need a ticket/.test(error.message));
   assert.deepEqual([git(ws, 'rev-parse', 'HEAD'), git(ws, 'status', '--porcelain')], [head, '']);
+});
+
+test('the commit preview shows a new symlink as a link and never reads through it (a file outside the worktree, a named pipe)', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const outside = await temp(t, 'pb-del-outside-');
+  await writeFile(join(outside, 'id_rsa'), 'PRIVATE KEY OUTSIDE THE WORKTREE\n');
+  execFileSync('mkfifo', [join(outside, 'pipe')]);
+  const task = await w.task('Links', 'x');
+  const ws = await w.workspace(task.id);
+  await writeFile(join(ws, 'new.txt'), 'hello\n');
+  await symlink(join(outside, 'id_rsa'), join(ws, 'notes.txt'));
+  await symlink(join(outside, 'pipe'), join(ws, 'log.txt'));
+  const preview = await Promise.race([w.delivery.uncommitted(task.id), new Promise(resolve => setTimeout(resolve, 5000, null))]);
+  if (!preview) {
+    // Release the read blocked on the pipe (from another process), so this test process can end.
+    const releaser = spawn('/bin/sh', ['-c', ': > "$0"', join(outside, 'pipe')], { stdio: 'ignore' });
+    setTimeout(() => releaser.kill('SIGKILL'), 4000).unref();
+    assert.fail('The preview waited for a named pipe.');
+  }
+  assert.match(preview.diff, /\nnew file: new\.txt\n\+hello\n/, 'A new text file is shown as before.');
+  assert.ok(preview.diff.includes(`\nnew symlink: notes.txt -> ${join(outside, 'id_rsa')}\n`));
+  assert.ok(preview.diff.includes(`\nnew symlink: log.txt -> ${join(outside, 'pipe')}\n`));
+  assert.ok(!preview.diff.includes('PRIVATE KEY'), 'Nothing outside the worktree was read.');
 });
 
 test('on Windows, npm and npx test commands start through Node without a shell; other commands start as written', () => {

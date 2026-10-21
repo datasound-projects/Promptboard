@@ -9,7 +9,7 @@
 import { spawn } from 'node:child_process';
 import { gh } from './github.mjs';
 import { createWriteStream, existsSync } from 'node:fs';
-import { access, constants, mkdir, readFile } from 'node:fs/promises';
+import { access, constants, lstat, mkdir, open, readlink } from 'node:fs/promises';
 import { delimiter, dirname, join } from 'node:path';
 import { git, headBranch, ignoredFiles, lines, listWorktrees, untrackedInTheWay } from './git.mjs';
 import { nestedRepositoryProblem } from './sandbox.mjs';
@@ -33,6 +33,22 @@ export class DeliveryError extends Error {
   constructor(message, code, status = 409) { super(message); this.code = code; this.status = status; }
 }
 const fail = (message, code, status) => new DeliveryError(message, code, status);
+
+/**
+ * A regular file's bytes (at most `limit`), or null for anything else. Never reads through a symlink (it may point
+ * outside the worktree) and never opens a named pipe or a device (a read there can wait forever).
+ */
+async function readRegular(path, limit = Infinity) {
+  if (!(await lstat(path).catch(() => null))?.isFile()) return null;
+  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0)).catch(() => null);
+  if (!handle) return null;
+  try {
+    if (!(await handle.stat()).isFile()) return null; // Replaced after the check.
+    if (limit === Infinity) return await handle.readFile();
+    const { buffer, bytesRead } = await handle.read(Buffer.alloc(limit), 0, limit, 0);
+    return buffer.subarray(0, bytesRead);
+  } catch { return null; } finally { await handle.close().catch(() => {}); }
+}
 
 /** Whether `program` can start: a bare name must be on PATH; a path (./gradlew) is checked when it runs. */
 export async function installed(program) {
@@ -176,8 +192,8 @@ export class Delivery {
     const changed = await names(['HEAD']);
     const unresolved = [];
     for (const file of [...new Set([...conflicts, ...changed])].slice(0, 500)) {
-      const text = await readFile(join(cwd, file), 'utf8').catch(() => null);
-      if (text !== null && /^(<{7}|>{7})( |$)/m.test(text)) unresolved.push(file);
+      const text = (await readRegular(join(cwd, file)))?.toString('utf8') ?? '';
+      if (/^(<{7}|>{7})( |$)/m.test(text)) unresolved.push(file);
     }
     return { merging, conflicts, unresolved };
   }
@@ -191,7 +207,9 @@ export class Delivery {
     const untracked = (await git(['ls-files', '--others', '--exclude-standard', '-z'], { cwd: ws.path })).split('\0').filter(Boolean);
     for (const file of untracked.slice(0, 200)) {
       if (diff.length > DIFF_LIMIT) break;
-      const content = await readFile(join(ws.path, file)).catch(() => null);
+      const path = join(ws.path, file), link = await readlink(path).catch(() => null);
+      if (link !== null) { diff += `\nnew symlink: ${file} -> ${link}\n`; continue; }
+      const content = await readRegular(path, 80 * 1024); // Enough for the 20,000 characters shown.
       if (!content) continue;
       const text = content.includes(0) ? '(binary file)' : content.toString('utf8').slice(0, 20000).split('\n').map(line => `+${line}`).join('\n');
       diff += `\nnew file: ${file}\n${text}\n`;
