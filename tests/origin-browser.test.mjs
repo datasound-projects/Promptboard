@@ -943,23 +943,27 @@ test('Origin keeps the caret where you type in the task editor when a save redra
   assert.equal((await store.read(record.id)).blueprint.items[0].description, 'Hello big! world');
 });
 
-test('Origin’s project menu opens on screen at 390 px, for a short and a long project name', { skip: !await findChrome(), timeout: 90000 }, async t => {
+test('Origin’s project menu opens next to its button and on screen from 320 to 1440 px, for a short and a long project name', { skip: !await findChrome(), timeout: 120000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const store = new OriginStore(app.board.store.dir);
   const ids = [];
   for (const name of ['A', 'Customer onboarding portal']) { const record = await store.create({ name }); await store.write(record.id, { expectedRevision: record.revision, blueprint: { idea: name } }); ids.push(record.id); }
   const browser = await launch({ width: 390, height: 844 }); assert.ok(browser); t.after(() => browser.close());
-  await browser.resize(390, 844);
   const { ev, wait } = pageTools(browser);
   await browser.goto(`${app.url}/#/origin`);
   for (const id of ids) {
     await ev(`const s = document.querySelector('#origin-project'); s.value = ${J(id)}; s.dispatchEvent(new Event('change'));`);
     await wait(`document.querySelector('#origin-project').value === ${J(id)} && document.querySelector('.origin-map')`, 'project open');
-    await ev(`document.querySelector('#origin-project-menu').open = true;`);
-    const box = await ev(`await new Promise(requestAnimationFrame); const list = document.querySelector('#origin-project-menu .origin-menu-list').getBoundingClientRect(), button = document.querySelector('#origin-project-menu summary').getBoundingClientRect();
-      return { left: Math.round(list.left), right: Math.round(list.right), below: list.top >= button.bottom, page: document.documentElement.scrollWidth };`);
-    assert.ok(box.left >= 0 && box.right <= 390 && box.below && box.page <= 390, `the menu stays on screen below its button: ${J(box)}`);
-    await ev(`document.querySelector('#origin-project-menu').open = false;`);
+    for (const width of [320, 390, 600, 700, 1440]) {
+      await browser.resize(width, 844);
+      await ev(`document.querySelector('#origin-project-menu summary').click();`);
+      // Under its button, covering it from left to right, never past the window's edge.
+      const box = await ev(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); const list = document.querySelector('#origin-project-menu .origin-menu-list').getBoundingClientRect(), button = document.querySelector('#origin-project-menu summary').getBoundingClientRect();
+        return { list: [Math.round(list.left), Math.round(list.right)], button: [Math.round(button.left), Math.round(button.right)], gap: Math.round(list.top - button.bottom), page: document.documentElement.scrollWidth };`);
+      assert.ok(box.list[0] >= 0 && box.list[1] <= width && box.page <= width && box.list[0] <= box.button[0] && box.list[1] >= box.button[1] && box.gap >= 0 && box.gap <= 12,
+        `${width} px: the menu opens next to its button and on screen: ${J(box)}`);
+      await ev(`document.querySelector('#origin-project-menu').open = false;`);
+    }
   }
 });
 
