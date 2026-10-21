@@ -2198,6 +2198,7 @@ function renderCard(card, index, count) {
   const actions = document.createElement('div');
   actions.className = 'kanban-actions';
   actions.append(toggle);
+  const preview = previewView?.cardButton(card); if (preview) actions.prepend(preview); // Shown while the card's preview runs.
   const details = [card.source ? `Prompt source: ${sourceSummary(card.source)}` : 'Written by you'];
   if (card.workspace) details.push(`Branch ${card.workspace.branch}${card.workspace.status === 'ready' ? '' : ` (${card.workspace.status})`}`);
   const pullRequest = card.evidence?.pullRequest;
@@ -3317,6 +3318,7 @@ async function openTaskDetails(taskId) {
   const delivery = document.createElement('div');
   delivery.className = 'task-delivery';
   nodes.splice(3, 0, delivery);
+  if (card.workspace?.status === 'ready' && previewView) nodes.splice(nodes.indexOf(delivery), 0, previewView.section(card, section)); // Try the change before it merges.
   // Everyday facts and actions stay in view; the technical sections wait behind one collapsed "Advanced".
   const advanced = document.createElement('details'); advanced.className = 'task-advanced'; advanced.open = keepAdvanced;
   advanced.append(Object.assign(document.createElement('summary'), { textContent: 'Advanced' }));
@@ -3898,7 +3900,7 @@ function renderRepository(project) {
   if (pending) {
     const automatic = Object.entries(pending.workflow || {}).filter(([, settings]) => settings?.policy === 'start').map(([stage]) => columnTitle(stage));
     const parts = [pending.repositoryPath && `repository ${pending.repositoryPath}`, pending.targetBranch && `target branch ${pending.targetBranch}`,
-      pending.agentDefaults && `project agent ${agentText(pending.agentDefaults)}`, pending.workflow && `workflow settings${automatic.length ? ` (automatic runs in ${automatic.join(' and ')})` : ''}`, pending.testCommands?.length && `${plural(pending.testCommands.length, 'test command')}`].filter(Boolean);
+      pending.agentDefaults && `project agent ${agentText(pending.agentDefaults)}`, pending.workflow && `workflow settings${automatic.length ? ` (automatic runs in ${automatic.join(' and ')})` : ''}`, pending.testCommands?.length && `${plural(pending.testCommands.length, 'test command')}`, pending.preview && 'a preview command'].filter(Boolean);
     $('#import-pending-text').textContent = `The imported backup suggests ${parts.join(', ')}. Nothing is applied until you confirm.`;
   }
 }
@@ -6215,6 +6217,9 @@ const schedulesView = window.PromptboardSchedules?.create({ api, announce, proje
 // Insights: a read-only dialog from the top bar. A card in it opens that card's details on its Kanban board.
 window.PromptboardInsights?.create({ api, ensureBoard: loadBoard, projects: () => board?.projects || [], currentProject,
   openTask: (projectId, taskId) => { if (currentProject()?.id !== projectId) selectProject(projectId); location.hash = '#/kanban'; setTimeout(() => void openTaskDetails(taskId), 0); } });
+// Live preview: a card's dev server in its worktree, started from its Details; its board card links to it while it runs.
+const previewView = window.PromptboardPreview?.create({ api, boardCall, announce, remote: () => Boolean(remoteSession), project: () => currentProject(),
+  previews: () => board?.previews || [], showRunning: running => { if (board) { board.previews = running; renderBoard(); } }, openDetails: taskId => void openTaskDetails(taskId) }) || null;
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();

@@ -34,7 +34,7 @@ export class DeliveryError extends Error {
 const fail = (message, code, status) => new DeliveryError(message, code, status);
 
 /** Whether `program` can start: a bare name must be on PATH; a path (./gradlew) is checked when it runs. */
-async function installed(program) {
+export async function installed(program) {
   if (/[\\/]/.test(program)) return true;
   const extensions = process.platform === 'win32' ? ['', ...(process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';')] : [''];
   for (const dir of (process.env.PATH || '').split(delimiter).filter(Boolean)) for (const extension of extensions) {

@@ -2748,3 +2748,24 @@ button.origin-context-badge { cursor: pointer; }
   .explorer-side { border-bottom: 1px solid var(--divider); }
   .explorer .explorer-message:not(:empty), .explorer .explorer-notice { padding: 6px 12px; }
 }
+/* Live preview (public/live-preview.js): a card's Preview section, and its board-card button while a preview runs */
+.task-preview .preview-body { display: grid; gap: 6px; }
+.task-preview :is(.note, .inline-error) { margin: 0; }
+.task-preview > p[role="status"] { margin: 0 0 6px; overflow-wrap: anywhere; }
+.task-preview .detail-actions { margin-top: 0; }
+.detail-actions .preview-open { display: inline-flex; align-items: center; min-height: 34px; padding: 0 12px; border: 1px solid var(--primary); border-radius: 8px; background: var(--primary); color: var(--on-primary); font-size: 13px; font-weight: 500; text-decoration: none; white-space: nowrap; }
+.detail-actions .preview-open:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+.task-preview details { margin-top: 8px; }
+.task-preview details > summary { cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 600; }
+.task-preview .preview-output pre { margin-top: 6px; }
+.preview-settings { display: grid; gap: 10px; margin-top: 8px; }
+.preview-settings .note { margin: 0; }
+.kanban-dialog .preview-settings .field-label textarea { min-height: 0; height: 64px; font-size: 12.5px; }
+.preview-settings .secondary-button { justify-self: start; }
+.preview-running { margin: 0; padding-left: 18px; font-size: 13px; }
+.kanban-card .preview-card { width: 28px; height: 28px; color: var(--sash); }
+.kanban-card .preview-card svg { width: 18px; height: 18px; }
+.preview-card.is-starting { color: var(--muted); }
+.preview-card.is-starting svg { animation: preview-pulse 1.2s ease-in-out infinite alternate; }
+@keyframes preview-pulse { to { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .preview-card.is-starting svg { animation: none; } }
