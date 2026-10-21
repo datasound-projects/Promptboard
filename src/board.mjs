@@ -2358,6 +2358,7 @@ export class Board {
         project.revision++;
       });
       await this.#removeRunFolders(removed);
+      if (RECORD_ID.test(id)) await rm(join(this.dataDir, 'tests', id), { recursive: true, force: true }).catch(() => {}); // Its test logs.
     });
   }
 

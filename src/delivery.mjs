@@ -9,7 +9,7 @@
 import { spawn } from 'node:child_process';
 import { gh } from './github.mjs';
 import { createWriteStream, existsSync } from 'node:fs';
-import { access, constants, lstat, mkdir, open, readlink } from 'node:fs/promises';
+import { access, constants, lstat, mkdir, open, readdir, readlink, rm } from 'node:fs/promises';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { git, headBranch, ignoredFiles, lines, listWorktrees, untrackedInTheWay } from './git.mjs';
 import { nestedRepositoryProblem } from './sandbox.mjs';
@@ -326,6 +326,8 @@ export class Delivery {
       await this.board.updateTaskEvidence(taskId, task => {
         task.evidence = { ...(task.evidence || {}), tests: { status: 'running', id, taskCommit: rev.taskCommit, targetCommit: rev.targetCommit, promptRevision: rev.promptRevision, results: [], startedAt: Date.now() } };
       });
+      // The card now shows this run: the logs of earlier runs (up to 5 MB per command) are no longer referenced.
+      for (const old of await readdir(dirname(dir)).catch(() => [])) if (old !== id) await rm(join(dirname(dir), old), { recursive: true, force: true }).catch(() => {});
       (async () => {
         const results = [];
         for (const [index, command] of commands.entries()) results.push(await this.#runCommand(command, ws.path, join(dir, `command-${index + 1}.log`), running));

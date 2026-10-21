@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -859,6 +859,22 @@ test('a renamed or deleted target branch is named as such in the card details, t
   await assert.rejects(w.delivery.revision(task.id), gone);
   await assert.rejects(w.delivery.mergePreview(task.id), gone);
   await assert.rejects(w.move(task.id, 'code_review'), gone);
+});
+
+test('test logs: a new run replaces the logs of earlier runs, and deleting the card removes its logs', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  await w.delivery.setTestCommands(w.project.id, { commands: [{ command: `${process.execPath} -e "console.log('x'.repeat(1000))"` }], expectedRevision: (await w.board.view()).projects[0].revision });
+  const task = await w.task('Logs', 'x');
+  const logs = () => readdir(join(w.board.dataDir, 'tests', task.id)).catch(error => error.code);
+  for (let i = 0; i < 3; i++) {
+    await w.delivery.runTests(task.id, { confirm: true });
+    await until(() => !w.delivery.testsRunning.has(task.id), 'tests recorded');
+    await new Promise(resolve => setTimeout(resolve, 2)); // A new run ID.
+  }
+  const card = await w.current(task.id);
+  assert.deepEqual(await logs(), [card.evidence.tests.id], 'Only the run the card shows keeps its logs.');
+  await w.board.deleteTask(task.id, { expectedRevision: card.revision });
+  assert.equal(await logs(), 'ENOENT');
 });
 
 test('on Windows, npm and npx test commands start through Node without a shell; other commands start as written', () => {
