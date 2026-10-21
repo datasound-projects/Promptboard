@@ -4397,8 +4397,8 @@ for (const id of ['card-dialog', 'task-dialog']) $(`#${id}`).addEventListener('c
   if (dialog.open || !opener || opener.isConnected || !(active === document.body || dialog.contains(active))) return;
   const item = cardElement(opener.closest('.kanban-card')?.dataset.id);
   const same = item ? [...item.querySelectorAll(opener.tagName)].find(control => control.className === opener.className && control.getAttribute('aria-label') === opener.getAttribute('aria-label')) : document.getElementById(opener.id);
-  same?.focus();
-  if (item && document.activeElement !== same) item.querySelector('.kanban-open')?.focus();
+  same?.focus({ preventScroll: true });
+  if (item && document.activeElement !== same) item.querySelector('.kanban-open')?.focus({ preventScroll: true });
 });
 $('#card-cancel').addEventListener('click', () => $('#card-dialog').close());
 $('#card-dialog-close').addEventListener('click', () => $('#card-dialog').close());
