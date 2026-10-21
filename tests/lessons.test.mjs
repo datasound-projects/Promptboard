@@ -413,6 +413,32 @@ test('failed test output and local paths reach the model masked, also where the 
   assert.match(prompt, /--cwd=…\/shop, then open file:\/\/…\/index\.html\./);
 });
 
+test('the model also sees the owner’s newest rejected lessons, so it does not reword them, and they keep their room when the card’s facts are long', { timeout: 60000 }, async t => {
+  const w = await world(t);
+  const lesson = (status, i) => ({ id: `${status}-${i}`, kind: 'gotcha', text: `${status} lesson ${String(i).padStart(2, '0')} ${'w'.repeat(80)}`, evidence: '', taskId: null, taskNumber: 1, status, createdAt: i, decidedAt: 1000 + i });
+  await mkdir(join(w.dataDir, 'lessons'), { recursive: true });
+  await writeFile(fileOf(w.dataDir, w.project.id), JSON.stringify({ schema: 'promptboard.lessons', version: 1, projectId: w.project.id, revision: 1, jobs: [],
+    lessons: [...Array.from({ length: 25 }, (_, i) => lesson('rejected', i)), ...Array.from({ length: 3 }, (_, i) => lesson('approved', i))] }));
+  // A card whose own facts alone are longer than the whole input.
+  const long = text => `${text} ${'z'.repeat(5000)}`;
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Long card', prompt: long('Build it.') });
+  await w.board.updateTaskEvidence(card.id, task => {
+    task.stageResults = { executing: { runId: null, summary: long('Done.') } };
+    task.evidence = { review: { verdict: 'no_issues', findings: Array.from({ length: 15 }, (_, i) => ({ severity: 'low', file: `src/f${i}.js`, line: i, explanation: long('Note.') })) },
+      tests: { status: 'failed', results: Array.from({ length: 10 }, (_, i) => ({ label: `unit ${i}`, argv: ['npm', 'test'], status: 'failed', exitCode: 1, tail: long('fail') })) } };
+    task.stageHistory = Array.from({ length: 15 }, (_, i) => ({ columnId: 'code_review', status: 'changes_required', reason: long(`round ${i}`) }));
+  });
+  await w.board.completeTask(card.id, { kind: 'merged', details: { targetBranch: 'trunk', commits: 1 } });
+  w.lessons.start();
+  await until(async () => (await w.jobOf(card.id))?.status === 'done', 'suggested');
+  const [{ prompt }] = w.calls, facts = prompt.slice(prompt.indexOf('# Facts'));
+  const rejected = prompt.slice(prompt.indexOf('The owner rejected these; do not suggest them again, even reworded:'));
+  assert.ok(facts.length <= 24100, `the input stays within its bound: ${facts.length}`);
+  assert.deepEqual([...rejected.matchAll(/rejected lesson (\d\d)/g)].map(match => Number(match[1])), Array.from({ length: 20 }, (_, i) => 24 - i), 'the newest 20, newest first');
+  assert.deepEqual([...prompt.matchAll(/approved lesson (\d\d)/g)].map(match => Number(match[1])), [2, 1, 0]);
+  assert.match(prompt, /Do not suggest again what the owner already approved or rejected, not even in other words\./);
+});
+
 test('a run stopped three times, for the owner’s own CLI work or a restart, stops coming back and waits for Suggest again', { timeout: 60000 }, async t => {
   const controllers = [];
   const w = await world(t, { claim: async () => { const claimed = slot(); controllers.push(claimed.job.controller); return claimed; },

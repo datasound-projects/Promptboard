@@ -2803,6 +2803,7 @@ button.origin-context-badge { cursor: pointer; }
 .lesson select, .lesson-edit, .lessons-more-fields input, .lessons-more-fields select { width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
 .lesson-edit { resize: vertical; line-height: 1.5; }
 .lessons-dialog { max-width: 640px; }
+.lessons-dialog h2:focus { outline: none; } /* Focused only by script, when the control that had focus is gone, as other headings. */
 .lessons-dialog h3 { margin: 18px 0 8px; color: var(--ink); font-size: 14px; }
 .lessons-dialog h4.lessons-group { margin: 12px 0 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .lessons-setting { display: grid; gap: 4px; padding: 12px 14px; border: 1px solid var(--divider); border-radius: 10px; background: var(--surface-2); }

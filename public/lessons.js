@@ -188,14 +188,14 @@ window.PromptboardLessons = (() => {
     }
     async function open(projectId) {
       ensureDialog(); dialogProject = projectId; dialogMessage = '';
-      if (!dialog.open) dialog.showModal();
       renderDialog();
+      if (!dialog.open) dialog.showModal(); // Focus starts on Close, as in the app's other dialogs.
       await load(projectId).catch(failure => { dialogMessage = failure.message; });
       if (dialogProject === projectId) renderDialog();
     }
     function renderDialog() {
       const projectId = dialogProject, data = cache.get(projectId), project = (host.projects?.() || []).find(item => item.id === projectId) || host.project();
-      const close = button('×', () => dialog.close(), 'dialog-close icon-button'); close.setAttribute('aria-label', 'Close Project memory');
+      const close = button('×', () => dialog.close(), 'dialog-close icon-button'); close.id = 'lessons-close'; close.setAttribute('aria-label', 'Close Project memory');
       const heading = el('h2', '', 'Project memory'); heading.id = 'lessons-heading';
       const nodes = [close, el('p', 'eyebrow', String(project?.name || 'PROJECT').toUpperCase()), heading,
         el('p', 'note', 'Lessons from finished cards: commands that worked, conventions, gotchas and failed approaches. Approved lessons go to every new agent in this project.')];
@@ -264,7 +264,7 @@ window.PromptboardLessons = (() => {
         el('div', 'lessons-more-fields'), save);
       more.children[2].append(field('CLI', cli), field('Model', model));
       nodes.push(more, message);
-      const active = document.activeElement, inside = dialog.contains(active), focused = inside && active.id;
+      const active = document.activeElement, inside = active !== dialog && dialog.contains(active), focused = inside && active.id;
       dialog.replaceChildren(...nodes);
       heading.tabIndex = -1;
       // Focus stays on the same control, or comes back to the heading when that control is gone.
