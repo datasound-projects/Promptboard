@@ -285,8 +285,14 @@ window.PromptboardOrigin = (() => {
         if (projectId && projects.some(item => item.id === projectId) && !(await flush())) { renderProjects(); return; }
         await load(id);
       } else if (record?.exists && saveState === 'saved' && changeCount === savedCount && (project()?.revision ?? 0) > record.revision) {
-        // Compose Batch and Kanban links save the blueprint too: with nothing unsaved here, the newer saved version is loaded.
-        await load(id, { force: true });
+        // Compose Batch and Kanban links save the blueprint too: with nothing unsaved here, the newer saved version
+        // replaces this one in place, so a record open in the editor (also one another page just asked to show) stays open.
+        const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(id)}`, { timeoutMs: 30000 }).catch(() => ({ response: { ok: false }, data: {} }));
+        if (response.ok && id === projectId && saveState === 'saved' && changeCount === savedCount) {
+          record.blueprint = data.blueprint; saveRevision(data.revision, data.project); views.map = null;
+          if (data.recovery?.restoredFromBackup) showNotice('The blueprint file was damaged, so the last good copy was restored. The damaged file was kept in the app data folder.');
+        }
+        render();
       } else {
         // An open editor is left as it is; redrawing it would drop a pending confirmation.
         renderProjects(); renderMain(); renderSave();
