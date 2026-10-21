@@ -159,9 +159,10 @@ async function boardRoute(board, req, res, pathname, searchParams, origin, promp
     if (Buffer.byteLength(JSON.stringify(backup)) > BOARD_BODY_LIMIT - 1024 * 1024) return send(res, 413, { error: `This backup would be larger than the ${BOARD_BODY_LIMIT / 1024 / 1024} MB a restore accepts. Export without Base document content, or shorten very long task prompts.`, code: 'BACKUP_TOO_LARGE' });
     return send(res, 200, backup);
   }
-  // Imported boards keep one name per project: a name an Origin project uses gets a “ (2)” suffix.
-  if (method === 'POST' && pathname === '/api/board/migrate') return view({ migrated: await board.migrateBrowserBoard((await body(BOARD_BODY_LIMIT)).board, { originProjects: await origin.list() }) });
-  if (method === 'POST' && pathname === '/api/board/import') { const data = await body(BOARD_BODY_LIMIT); return view({ imported: await board.importBackup(data.backup, { replace: data.replace === true, originProjects: await origin.list() }) }); }
+  // Imported boards keep one name per project: a name an Origin project uses gets a “ (2)” suffix. The names are
+  // read and the boards made in the one-name queue, so a project created meanwhile is never given the same name.
+  if (method === 'POST' && pathname === '/api/board/migrate') { const data = await body(BOARD_BODY_LIMIT); return view({ migrated: await oneName(async () => board.migrateBrowserBoard(data.board, { originProjects: await origin.list() })) }); }
+  if (method === 'POST' && pathname === '/api/board/import') { const data = await body(BOARD_BODY_LIMIT); return view({ imported: await oneName(async () => board.importBackup(data.backup, { replace: data.replace === true, originProjects: await origin.list() })) }); }
   if (method === 'POST' && pathname === '/api/projects') {
     const { name, folder, workflowMode = 'pipeline' } = await body();
     // New app projects use column pipelines; an explicit legacy request preserves integrations. A project

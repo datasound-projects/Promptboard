@@ -314,6 +314,16 @@ test('board import and browser migration keep the one-name rule across Origin', 
   assert.deepEqual((await app.board.state()).projects.map(project => project.name), ['shop (2)', 'SHOP (3)']);
 });
 
+test('a board import or browser migration at the same moment as an Origin or Compose create still gives one project per name', async t => {
+  const { call } = await client(t);
+  const using = async name => (await call('/api/shared-projects')).data.projects.filter(project => [project.name, project.kanban?.name].some(used => used?.toLowerCase() === name)).length;
+  for (let i = 0; i < 3; i++) {
+    await Promise.all([call('/api/board/import', 'POST', { backup: { version: 1, kind: 'kanban-backup', projects: [{ id: `imported-${i}`, name: `Shop ${i}`, cards: [] }] } }), call('/api/origin/projects', 'POST', { name: `shop ${i}` })]);
+    await Promise.all([call('/api/board/migrate', 'POST', { board: { version: 1, projects: [{ id: `browser-${i}`, name: `Blog ${i}`, cards: [] }] } }), call('/api/shared-projects', 'POST', { name: `blog ${i}` })]);
+    for (const name of [`shop ${i}`, `blog ${i}`]) assert.equal(await using(name), 1, `projects named ${name}`);
+  }
+});
+
 test('a saved prompt keeps the Compose options and terminology it was made with', async t => {
   const dataDir = await mkdtemp(join(tmpdir(), 'pb-prompts-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
   const prompts = new PromptStore(dataDir);
