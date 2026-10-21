@@ -234,8 +234,7 @@ test('a suggestion that cites a long link stays inside the Research panel at 390
   await wait(`document.querySelector('.origin-research-proposal')`, 'suggestion', 30000);
   for (const [width, height] of [[390, 844], [1440, 900]]) {
     await browser.resize(width, height);
-    const box = await ev(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
-      const body = document.querySelector('#origin-research-body'), card = document.querySelector('.origin-research-proposal').getBoundingClientRect(), panel = document.querySelector('#origin-drawer').getBoundingClientRect();
+    const box = await ev(`const body = document.querySelector('#origin-research-body'), card = document.querySelector('.origin-research-proposal').getBoundingClientRect(), panel = document.querySelector('#origin-drawer').getBoundingClientRect();
       return { body: body.scrollWidth - body.clientWidth, card: Math.round(card.right - panel.right), page: document.documentElement.scrollWidth - innerWidth };`);
     assert.ok(box.body <= 1 && box.card <= 0 && box.page <= 0, `${width} px: no sideways scroll, the card inside the panel: ${J(box)}`);
   }

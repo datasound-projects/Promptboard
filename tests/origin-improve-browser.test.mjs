@@ -117,7 +117,7 @@ test('a run that finishes while you type on another page keeps your field and ev
   await browser.type('Shops ');
   cli.release();
   await wait(`/proposal/.test(document.querySelector('#origin-improve-mini')?.textContent || '')`, 'run finished', 30000);
-  await ev(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);`);
+  // The run's end is drawn in the same step that shows its result in the card, so focus can be checked right away.
   assert.equal(await ev(`return document.activeElement?.closest('[data-vision]')?.dataset.vision;`), 'problem', 'the field keeps focus when the run finishes');
   await browser.type('are slow');
   await wait(`document.querySelector('#origin-view').dataset.save === 'saved'`, 'saved', 20000);
@@ -145,8 +145,7 @@ test('at 390 px the minimized run and the minimized Research button do not cover
   for (const [width, height] of [[390, 844], [1440, 900]]) {
     await browser.resize(width, height);
     // The element under the middle of each control is that control: nothing covers it.
-    const top = await ev(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
-      const hit = node => { const box = node.getBoundingClientRect(); return document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)?.closest('#origin-research-mini, #origin-improve-mini button') === node; };
+    const top = await ev(`const hit = node => { const box = node.getBoundingClientRect(); return document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)?.closest('#origin-research-mini, #origin-improve-mini button') === node; };
       return [hit(document.querySelector('#origin-research-mini')), ...[...document.querySelectorAll('#origin-improve-mini button')].map(hit)];`);
     assert.deepEqual(top, top.map(() => true), `${width} px: each card can be pressed`);
   }

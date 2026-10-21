@@ -911,9 +911,10 @@ async function sentTaskPage(t, { items = [{ id: 't1', key: 'IMP-001', title: 'Bu
   await tools.wait(`document.querySelector('.origin-map')`, 'map');
   await tools.section('plan');
   await tools.wait(`document.querySelector('.origin-block[data-type="notes"] textarea')`, 'Tasks page');
-  // A save ends with that status read and its redraw: wait for both before typing on.
+  // A save ends with that status read and the redraw it causes (the sidebar is always redrawn): wait for both before typing on.
+  await tools.ev(`window.__navDrawn = []; new MutationObserver(() => __navDrawn.push(performance.now())).observe(document.querySelector('#origin-nav'), { childList: true });`);
   const statusReads = () => tools.ev(`return performance.getEntriesByType('resource').filter(entry => entry.name.endsWith('/context-status')).length;`);
-  const refreshed = async before => { await tools.wait(`performance.getEntriesByType('resource').filter(entry => entry.name.endsWith('/context-status')).length > ${before}`, 'context status read'); await tools.ev(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);`); };
+  const refreshed = before => tools.wait(`(() => { const reads = performance.getEntriesByType('resource').filter(entry => entry.name.endsWith('/context-status')); return reads.length > ${before} && __navDrawn.some(time => time >= reads.at(-1).responseEnd); })()`, 'context status read and drawn');
   return { browser, store, record, ...tools, statusReads, refreshed };
 }
 
@@ -985,7 +986,7 @@ test('Origin’s project menu opens next to its button and on screen from 320 to
       await browser.resize(width, 844);
       await ev(`document.querySelector('#origin-project-menu summary').click();`);
       // Under its button, covering it from left to right, never past the window's edge.
-      const box = await ev(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); const list = document.querySelector('#origin-project-menu .origin-menu-list').getBoundingClientRect(), button = document.querySelector('#origin-project-menu summary').getBoundingClientRect();
+      const box = await ev(`const list = document.querySelector('#origin-project-menu .origin-menu-list').getBoundingClientRect(), button = document.querySelector('#origin-project-menu summary').getBoundingClientRect();
         return { list: [Math.round(list.left), Math.round(list.right)], button: [Math.round(button.left), Math.round(button.right)], gap: Math.round(list.top - button.bottom), page: document.documentElement.scrollWidth };`);
       assert.ok(box.list[0] >= 0 && box.list[1] <= width && box.page <= width && box.list[0] <= box.button[0] && box.list[1] >= box.button[1] && box.gap >= 0 && box.gap <= 12,
         `${width} px: the menu opens next to its button and on screen: ${J(box)}`);
@@ -1005,8 +1006,7 @@ test('Origin’s next steps wrap long section names and unbroken words at 390 px
   const { ev, wait, section } = pageTools(browser);
   await browser.goto(`${app.url}/#/origin`);
   await wait(`document.querySelectorAll('.origin-step').length >= 2`, 'Overview with next steps');
-  const wide = () => ev(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
-    return { page: document.documentElement.scrollWidth, past: [...document.querySelectorAll('.origin-step, .origin-step-where, .origin-next, .origin-next-text')].filter(node => node.getBoundingClientRect().right > innerWidth || node.scrollWidth > node.clientWidth + 1 && !node.matches('.origin-step-where')).map(node => node.className) };`);
+  const wide = () => ev(`return { page: document.documentElement.scrollWidth, past: [...document.querySelectorAll('.origin-step, .origin-step-where, .origin-next, .origin-next-text')].filter(node => node.getBoundingClientRect().right > innerWidth || node.scrollWidth > node.clientWidth + 1 && !node.matches('.origin-step-where')).map(node => node.className) };`);
   assert.deepEqual(await wide(), { page: 390, past: [] }, 'Overview: Next steps stay inside the page');
   await section('requirements');
   await wait(`document.querySelector('.origin-next-text')`, 'Next bar');
