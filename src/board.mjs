@@ -1806,7 +1806,7 @@ export class Board {
       let savedChanges = 0;
       if (!rev.clean) {
         savedChanges = rev.changes.length;
-        rev = await this.delivery.commit(id, { message: 'Start over: keep uncommitted work', confirm: true });
+        rev = await this.delivery.commit(id, { message: 'Start over: keep uncommitted work', confirm: true }, { anyColumn: true }); // Also from To Do.
       }
       const before = this.#task(await this.state(), id).task;
       const attempt = { branch: workspace.branch, head: rev.taskCommit, baseCommit: workspace.baseCommit, targetBranch: workspace.targetBranch, archivedAt: Date.now(),
@@ -2358,6 +2358,7 @@ export class Board {
         project.revision++;
       });
       await this.#removeRunFolders(removed);
+      if (RECORD_ID.test(id)) await rm(join(this.dataDir, 'tests', id), { recursive: true, force: true }).catch(() => {}); // Its test logs.
     });
   }
 

@@ -7,7 +7,7 @@ import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
-import { clonePath, GitHubLogin, githubRepositoryOf, githubStatus, listRepositories } from '../src/github.mjs';
+import { clonePath, fastForward, fetchAndCompare, GitHubLogin, githubRepositoryOf, githubStatus, listRepositories } from '../src/github.mjs';
 import { startServer } from '../src/server.mjs';
 import { fakeGh } from './fixtures/fake-gh.mjs';
 
@@ -88,6 +88,21 @@ test('connect: managed clone in the data folder, linked, target branch set; fetc
   assert.equal(reused.repository.root, path);
   assert.equal((await gh.log()).filter(args => args[0] === 'repo' && args[1] === 'clone').length, 1, 'The clone is made once.');
   assert.ok(!(await gh.log()).some(args => args.includes('logout')), 'Disconnecting never signs gh out.');
+});
+
+test('updating the clone never overwrites a file Git ignores there (a local .env): the refusal names it', { skip, timeout: 60000 }, async t => {
+  const base = await temp(t, 'pb-gh-ff-');
+  const seed = join(base, 'seed'), bare = join(base, 'remote.git'), clone = join(base, 'clone');
+  git(base, 'init', '-q', '-b', 'main', seed); git(seed, 'config', 'user.email', 't@example.com'); git(seed, 'config', 'user.name', 'Tester');
+  await writeFile(join(seed, '.gitignore'), '.env\n'); git(seed, 'add', '.'); git(seed, 'commit', '-q', '-m', 'ignore .env');
+  git(base, 'clone', '-q', '--bare', seed, bare); git(seed, 'remote', 'add', 'origin', bare); git(base, 'clone', '-q', bare, clone);
+  await writeFile(join(clone, '.env'), 'SECRET=mine\n');
+  // Upstream starts tracking a .env of its own.
+  await writeFile(join(seed, '.gitignore'), ''); await writeFile(join(seed, '.env'), 'SECRET=changeme\n'); git(seed, 'add', '.'); git(seed, 'commit', '-q', '-m', 'example env'); git(seed, 'push', '-q', 'origin', 'main');
+  assert.equal((await fetchAndCompare(clone, 'main')).sync, 'behind');
+  await assert.rejects(fastForward(clone, 'main'), { code: 'UNTRACKED_FILES', message: 'Updating main would overwrite files in the clone that Git does not track: .env. Promptboard does not replace them: move or rename them, then update again.' });
+  assert.equal(await readFile(join(clone, '.env'), 'utf8'), 'SECRET=mine\n');
+  assert.equal((await fetchAndCompare(clone, 'main')).sync, 'behind', 'Nothing moved.');
 });
 
 test('a rate limit is reported as one, and a repository name that reads like an error is still "not found"', { skip }, async t => {

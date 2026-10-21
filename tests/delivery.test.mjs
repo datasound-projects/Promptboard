@@ -2,8 +2,8 @@
 // Agents are SIMULATED by tests/fixtures/fake-agent.cjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { execFileSync, spawn } from 'node:child_process';
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -63,6 +63,9 @@ test('command parsing never uses a shell; review findings are parsed from the st
   assert.deepEqual(parseCommand(`npm test -- --grep "two words" 'single' a\\b`), ['npm', 'test', '--', '--grep', 'two words', 'single', 'a\\b']);
   assert.deepEqual(parseCommand('node -e "process.exit(1)"'), ['node', '-e', 'process.exit(1)']);
   assert.deepEqual(parseCommand('echo $(id) && rm -rf /'), ['echo', '$(id)', '&&', 'rm', '-rf', '/'], 'Shell syntax stays literal arguments.');
+  // Inside double quotes a backslash escapes only " and \ (as in sh), so a quoted Windows path keeps its separators.
+  assert.deepEqual(parseCommand('"C:\\Program Files\\nodejs\\node.exe" "tests\\unit dir\\run.js"'), ['C:\\Program Files\\nodejs\\node.exe', 'tests\\unit dir\\run.js']);
+  assert.deepEqual(parseCommand('node -e "console.log(\\"hi\\")" "a\\\\b"'), ['node', '-e', 'console.log("hi")', 'a\\b']);
   assert.throws(() => parseCommand('say "unclosed'), { code: 'INVALID_COMMAND' });
   const parsed = parseFindings('Notes.\n```json\n{"verdict":"changes_required","findings":[{"severity":"high","file":"a.js","line":3,"explanation":"Bug."}]}\n```');
   assert.deepEqual(parsed, { parsed: true, verdict: 'changes_required', findings: [{ severity: 'high', file: 'a.js', line: 3, explanation: 'Bug.' }] });
@@ -101,6 +104,22 @@ test('test runs: one claim per task, released on failed setup; a lost log or a b
   logIsDirectory = true; // The log cannot be opened: the run still finishes and the app keeps running.
   await delivery.runTests('t1', { confirm: true });
   assert.equal((await finished()).status, 'passed');
+});
+
+test('a process a test command leaves running (a server the suite forgot to stop) is stopped when the command ends', { skip, timeout: 60000 }, async t => {
+  const repo = await temp(t, 'pb-del-leak-'), dataDir = await temp(t, 'pb-del-leak-data-');
+  git(repo, 'init', '-q', '-b', 'main'); git(repo, '-c', 'user.name=a', '-c', 'user.email=a@b', 'commit', '-q', '--allow-empty', '-m', 'base'); git(repo, 'checkout', '-q', '-b', 'task');
+  const pidFile = join(dataDir, 'child.pid');
+  const task = { id: 't1', column: 'testing', workspace: { status: 'ready', path: repo, branch: 'task' }, evidence: {} };
+  const script = `const c = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); c.unref(); console.log('tests ok')`;
+  const project = { tasks: [task], targetBranch: { name: 'main' }, testCommands: [{ label: 'leaky', timeoutSec: 30, argv: [process.execPath, '-e', script] }] };
+  const delivery = new Delivery({ dataDir, state: async () => ({ projects: [project] }), updateTaskEvidence: async (_id, change) => { change(task); return task; } });
+  await delivery.runTests('t1', { confirm: true });
+  await until(() => !delivery.testsRunning.has('t1'), 'test run recorded');
+  const child = Number(await readFile(pidFile, 'utf8'));
+  t.after(() => { try { process.kill(child, 'SIGKILL'); } catch {} });
+  assert.equal(task.evidence.tests.status, 'passed');
+  await until(() => { try { process.kill(child, 0); return false; } catch { return true; } }, `the leftover process ${child} is stopped`, 5000);
 });
 
 test('full flow: commit, review, send back, fix, accept, test, and a confirmed fast-forward merge into a clean checkout', { skip, timeout: 120000 }, async t => {
@@ -300,6 +319,57 @@ test('merge safety: dirty target checkout, advanced target, conflict-safe branch
   assert.equal(git(w.root, 'branch', '--show-current'), 'elsewhere', 'No checkout was switched.');
 });
 
+/** The evidence a merge needs, for the task's current commits: an accepted review without findings and passing tests. */
+async function mergeEvidence(w, id) {
+  const rev = await w.delivery.revision(id);
+  await w.board.updateTaskEvidence(id, task => { task.evidence = { review: { status: 'accepted', verdict: 'no_issues', findings: [], parsed: true, taskCommit: rev.taskCommit }, tests: { status: 'passed', id: 'tests-1', taskCommit: rev.taskCommit, targetCommit: rev.targetCommit, results: [] } }; });
+  return w.delivery.mergePreview(id);
+}
+
+test('a merge never overwrites a file Git ignores in the target checkout (the owner\'s .env): the refusal names it, and the merge works once it is moved', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  await writeFile(join(w.root, '.gitignore'), '.env*\n'); git(w.root, 'add', '.gitignore'); git(w.root, 'commit', '-qm', 'ignore .env');
+  await writeFile(join(w.root, '.env'), 'API_KEY=the-owners-secret\n');
+  const task = await w.task('Ship an example env file', 'x');
+  // The task starts tracking a .env of its own (an example), so the merged commit has a file where the owner's is.
+  await writeFile(join(await w.workspace(task.id), '.gitignore'), '');
+  await writeFile(join(await w.workspace(task.id), '.env'), 'API_KEY=changeme\n');
+  await w.delivery.commit(task.id, { message: 'Track an example .env', confirm: true });
+  const preview = await mergeEvidence(w, task.id);
+  assert.equal(preview.eligible, true, preview.problems.join(' '));
+  const merge = () => w.delivery.merge(task.id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit });
+  await assert.rejects(merge(), { code: 'MERGE_FAILED', message: `The merge would overwrite files in ${w.root} that Git does not track: .env. Promptboard does not replace them: move or rename them, then merge again. Nothing was changed.` });
+  assert.equal(await readFile(join(w.root, '.env'), 'utf8'), 'API_KEY=the-owners-secret\n', 'The owner\'s file is untouched.');
+  assert.equal(git(w.root, 'rev-parse', 'trunk'), preview.targetCommit);
+  // Moved aside (still an ignored file), it no longer collides: the merge goes through and keeps it.
+  await rename(join(w.root, '.env'), join(w.root, '.env.mine'));
+  assert.equal((await merge()).column, 'done');
+  assert.deepEqual([await readFile(join(w.root, '.env'), 'utf8'), await readFile(join(w.root, '.env.mine'), 'utf8')], ['API_KEY=changeme\n', 'API_KEY=the-owners-secret\n']);
+});
+
+test('a target branch the owner is rebasing (HEAD detached) counts as checked out: the merge is refused and the rebase can finish', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  await writeFile(join(w.root, 'feature.txt'), 'A\n'); git(w.root, 'commit', '-qam', 'A');
+  const task = await w.task('Card', 'x');
+  await writeFile(join(await w.workspace(task.id), 'task.txt'), 'task\n');
+  await w.delivery.commit(task.id, { message: 'task', confirm: true });
+  // The owner rebases trunk onto another branch; the rebase stops on a conflict.
+  git(w.root, 'branch', 'upstream', 'HEAD~1');
+  const side = join(await temp(t, 'pb-del-side-'), 'side');
+  git(w.root, 'worktree', 'add', '-q', side, 'upstream');
+  await writeFile(join(side, 'feature.txt'), 'B\n'); git(side, 'commit', '-qam', 'B');
+  assert.throws(() => execFileSync('git', ['rebase', 'upstream'], { cwd: w.root, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }));
+  const before = git(w.root, 'rev-parse', 'trunk');
+  const preview = await mergeEvidence(w, task.id);
+  assert.deepEqual([preview.eligible, preview.targetCheckout?.path], [false, w.root]);
+  assert.match(preview.problems.join(' '), new RegExp(`trunk is being rebased in ${w.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\. Finish or abort the rebase there first\\.`));
+  await assert.rejects(w.delivery.merge(task.id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit }), { code: 'MERGE_NOT_ELIGIBLE' });
+  assert.equal(git(w.root, 'rev-parse', 'trunk'), before, 'trunk did not move under the rebase');
+  await writeFile(join(w.root, 'feature.txt'), 'A+B\n'); git(w.root, 'add', 'feature.txt');
+  execFileSync('git', ['rebase', '--continue'], { cwd: w.root, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_EDITOR: 'true' } });
+  assert.equal(git(w.root, 'branch', '--show-current'), 'trunk');
+});
+
 test('Done: verified no-change completion, final until Reopen, optional ownership-checked cleanup', { skip, timeout: 60000 }, async t => {
   const w = await world(t);
   const task = await w.task('Nothing to do', 'Check whether a change is needed.');
@@ -452,7 +522,7 @@ test('Testing and Merge agents: test commands in context, conflicts left for the
   assert.equal(git(w.remote, 'rev-parse', 'trunk'), git(w.remote, 'rev-parse', 'trunk'), 'Nothing is pushed.');
 });
 
-test('pull request: pushes the task branch without force, opens it with gh, and a merged pull request completes the task', { skip, timeout: 60000 }, async t => {
+test('pull request: pushes the task branch without force, opens it with gh, and a merged pull request completes the task, also once a run that was active at the check ends', { skip, timeout: 60000 }, async t => {
   const w = await world(t);
   const bin = await temp(t, 'pb-gh-bin-');
   const stateFile = join(bin, 'pr.json');
@@ -461,6 +531,9 @@ const fs = require('fs'); const a = process.argv.slice(2); const file = ${JSON.s
 fs.appendFileSync(file + '.log', JSON.stringify(a) + '\\n');
 const read = () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
 if (a[0] === '--version') { console.log('gh version 2.0.0'); process.exit(0); }
+// Like the real gh: the repository is the one whose Git remote the working folder has.
+let origin = ''; try { origin = require('child_process').execFileSync('git', ['config', '--get', 'remote.origin.url'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
+if (origin !== ${JSON.stringify(w.remote)}) { console.error('could not determine the repository of ' + process.cwd()); process.exit(1); }
 if (a[0] === 'pr' && a[1] === 'view') { const s = read(); if (!s) { console.error('no pull requests found'); process.exit(1); } console.log(JSON.stringify(s)); process.exit(0); }
 if (a[0] === 'pr' && a[1] === 'create') { const s = { url: 'https://github.com/example/repo/pull/7', number: 7, state: 'OPEN' }; fs.writeFileSync(file, JSON.stringify(s)); console.log(s.url); process.exit(0); }
 process.exit(2);
@@ -490,6 +563,15 @@ process.exit(2);
   await writeFile(stateFile, JSON.stringify({ url: 'https://github.com/example/repo/pull/7', number: 7, state: 'MERGED', mergedAt: '2026-09-29T12:00:00Z' }));
   // A card in Merge with an open pull request is checked by the board itself; once merged it moves to Done.
   await w.board.store.update(state => { state.projects[0].tasks.find(item => item.id === task.id).column = 'merge'; });
+  // An agent still works on the card at that check: the card cannot complete yet, so the pull request stays open
+  // here and the next check (a minute later) completes the card once the run has ended.
+  const run = await w.board.requestRun(task.id, { stage: 'merge', consent: true, config: { provider: 'claude' } });
+  await until(async () => (await w.board.run(run.id)).status === 'waiting_for_input', 'merge turn');
+  await w.board.advanceFlows();
+  const waiting = await w.current(task.id);
+  assert.deepEqual([waiting.column, waiting.evidence.pullRequest.state], ['merge', 'OPEN']);
+  await w.supervisor.confirm(run.id);
+  w.board.prChecks.clear();
   await w.board.advanceFlows();
   const done = await w.current(task.id);
   assert.equal(done.column, 'done');
@@ -744,6 +826,68 @@ test('a commit hook or a merge hook that refuses says why; the task branch stays
   const head = git(ws, 'rev-parse', 'HEAD');
   await assert.rejects(w.delivery.updateBranch(task.id, { confirm: true }), error => error.code === 'MERGE_FAILED' && /policy: merges need a ticket/.test(error.message));
   assert.deepEqual([git(ws, 'rev-parse', 'HEAD'), git(ws, 'status', '--porcelain')], [head, '']);
+});
+
+test('the commit preview shows a new symlink as a link and never reads through it (a file outside the worktree, a named pipe)', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const outside = await temp(t, 'pb-del-outside-');
+  await writeFile(join(outside, 'id_rsa'), 'PRIVATE KEY OUTSIDE THE WORKTREE\n');
+  execFileSync('mkfifo', [join(outside, 'pipe')]);
+  const task = await w.task('Links', 'x');
+  const ws = await w.workspace(task.id);
+  await writeFile(join(ws, 'new.txt'), 'hello\n');
+  await symlink(join(outside, 'id_rsa'), join(ws, 'notes.txt'));
+  await symlink(join(outside, 'pipe'), join(ws, 'log.txt'));
+  const preview = await Promise.race([w.delivery.uncommitted(task.id), new Promise(resolve => setTimeout(resolve, 5000, null))]);
+  if (!preview) {
+    // Release the read blocked on the pipe (from another process), so this test process can end.
+    const releaser = spawn('/bin/sh', ['-c', ': > "$0"', join(outside, 'pipe')], { stdio: 'ignore' });
+    setTimeout(() => releaser.kill('SIGKILL'), 4000).unref();
+    assert.fail('The preview waited for a named pipe.');
+  }
+  assert.match(preview.diff, /\nnew file: new\.txt\n\+hello\n/, 'A new text file is shown as before.');
+  assert.ok(preview.diff.includes(`\nnew symlink: notes.txt -> ${join(outside, 'id_rsa')}\n`));
+  assert.ok(preview.diff.includes(`\nnew symlink: log.txt -> ${join(outside, 'pipe')}\n`));
+  assert.ok(!preview.diff.includes('PRIVATE KEY'), 'Nothing outside the worktree was read.');
+});
+
+test('a renamed or deleted target branch is named as such in the card details, the merge preview and a move', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const task = await w.task('Card', 'x');
+  git(w.root, 'branch', '-m', 'trunk', 'main');
+  const gone = { code: 'TARGET_BRANCH_NOT_FOUND', message: 'The target branch trunk no longer exists. Choose the target branch again.' };
+  await assert.rejects(w.delivery.revision(task.id), gone);
+  await assert.rejects(w.delivery.mergePreview(task.id), gone);
+  await assert.rejects(w.move(task.id, 'code_review'), gone);
+});
+
+test('test logs: a new run replaces the logs of earlier runs, and deleting the card removes its logs', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  await w.delivery.setTestCommands(w.project.id, { commands: [{ command: `${process.execPath} -e "console.log('x'.repeat(1000))"` }], expectedRevision: (await w.board.view()).projects[0].revision });
+  const task = await w.task('Logs', 'x');
+  const logs = () => readdir(join(w.board.dataDir, 'tests', task.id)).catch(error => error.code);
+  for (let i = 0; i < 3; i++) {
+    await w.delivery.runTests(task.id, { confirm: true });
+    await until(() => !w.delivery.testsRunning.has(task.id), 'tests recorded');
+    await new Promise(resolve => setTimeout(resolve, 2)); // A new run ID.
+  }
+  const card = await w.current(task.id);
+  assert.deepEqual(await logs(), [card.evidence.tests.id], 'Only the run the card shows keeps its logs.');
+  await w.board.deleteTask(task.id, { expectedRevision: card.revision });
+  assert.equal(await logs(), 'ENOENT');
+});
+
+test('Start over keeps the uncommitted work of a card that was sent back to To Do', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const task = await w.task('Card', 'x');
+  const ws = (await w.current(task.id)).workspace;
+  await writeFile(join(ws.path, 'half-done.txt'), 'work in progress\n');
+  await w.move(task.id, 'todo'); // Executing → To Do keeps the worktree with its uncommitted files.
+  // The Commit route passes its request body as the options: nothing in it lets To Do commit.
+  await assert.rejects(w.delivery.commit(task.id, { message: 'x', confirm: true, anyColumn: true }), { code: 'STAGE_NOT_RUNNABLE' });
+  const result = await w.board.startOver(task.id, { expectedRevision: (await w.current(task.id)).revision, reason: 'try again' });
+  assert.deepEqual([result.task.column, result.task.previousAttempts.at(-1).savedChanges], ['todo', 1]);
+  assert.equal(git(w.root, 'show', `${ws.branch}:half-done.txt`), 'work in progress');
 });
 
 test('on Windows, npm and npx test commands start through Node without a shell; other commands start as written', () => {

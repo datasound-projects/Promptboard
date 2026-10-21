@@ -9,9 +9,9 @@
 import { spawn } from 'node:child_process';
 import { gh } from './github.mjs';
 import { createWriteStream, existsSync } from 'node:fs';
-import { access, constants, mkdir, readFile } from 'node:fs/promises';
-import { delimiter, dirname, join } from 'node:path';
-import { git, headBranch, ignoredFiles, lines, listWorktrees } from './git.mjs';
+import { access, constants, lstat, mkdir, open, readdir, readlink, rm } from 'node:fs/promises';
+import { delimiter, dirname, join, resolve } from 'node:path';
+import { git, headBranch, ignoredFiles, lines, listWorktrees, untrackedInTheWay } from './git.mjs';
 import { nestedRepositoryProblem } from './sandbox.mjs';
 import { killPidGroup, trackPid, untrackPid } from './providers.mjs';
 
@@ -34,6 +34,22 @@ export class DeliveryError extends Error {
 }
 const fail = (message, code, status) => new DeliveryError(message, code, status);
 
+/**
+ * A regular file's bytes (at most `limit`), or null for anything else. Never reads through a symlink (it may point
+ * outside the worktree) and never opens a named pipe or a device (a read there can wait forever).
+ */
+async function readRegular(path, limit = Infinity) {
+  if (!(await lstat(path).catch(() => null))?.isFile()) return null;
+  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0)).catch(() => null);
+  if (!handle) return null;
+  try {
+    if (!(await handle.stat()).isFile()) return null; // Replaced after the check.
+    if (limit === Infinity) return await handle.readFile();
+    const { buffer, bytesRead } = await handle.read(Buffer.alloc(limit), 0, limit, 0);
+    return buffer.subarray(0, bytesRead);
+  } catch { return null; } finally { await handle.close().catch(() => {}); }
+}
+
 /** Whether `program` can start: a bare name must be on PATH; a path (./gradlew) is checked when it runs. */
 export async function installed(program) {
   if (/[\\/]/.test(program)) return true;
@@ -53,7 +69,8 @@ export function parseCommand(input) {
     const char = input[i];
     if (quote) {
       if (char === quote) quote = null;
-      else if (char === '\\' && quote === '"' && i + 1 < input.length) current += input[++i];
+      // As in sh, a backslash escapes only " and \ here, so "C:\Program Files\node.exe" keeps its separators.
+      else if (char === '\\' && quote === '"' && (input[i + 1] === '"' || input[i + 1] === '\\')) current += input[++i];
       else current += char;
     } else if (char === '"' || char === "'") { quote = char; started = true; }
     else if (/\s/.test(char)) { if (started) { argv.push(current); current = ''; started = false; } }
@@ -158,7 +175,9 @@ export class Delivery {
     const branch = await headBranch(ws.path);
     const status = lines(await git(['status', '--porcelain', '--untracked-files=all'], { cwd: ws.path }));
     const ignored = await ignoredFiles(ws.path); // Shown before anything removes the worktree with them.
-    const targetCommit = await this.#rev(ws.path, `refs/heads/${target}`);
+    // Git itself works here (HEAD was read), so a failed lookup means the branch was renamed or deleted.
+    const targetCommit = await this.#rev(ws.path, `refs/heads/${target}`)
+      .catch(error => { throw error.code === 'GIT_FAILED' ? fail(`The target branch ${target} no longer exists. Choose the target branch again.`, 'TARGET_BRANCH_NOT_FOUND') : error; });
     const ahead = Number(lines(await git(['rev-list', '--count', `${targetCommit}..${head}`], { cwd: ws.path }))[0] || 0);
     return { taskCommit: head, branch, branchOk: branch === ws.branch, clean: status.length === 0, changes: status.slice(0, 200), ignored: ignored.slice(0, 50), targetBranch: target, targetCommit, ahead, promptRevision: task.contentRevision ?? 1, ...(await this.#mergeState(ws.path)) };
   }
@@ -176,8 +195,8 @@ export class Delivery {
     const changed = await names(['HEAD']);
     const unresolved = [];
     for (const file of [...new Set([...conflicts, ...changed])].slice(0, 500)) {
-      const text = await readFile(join(cwd, file), 'utf8').catch(() => null);
-      if (text !== null && /^(<{7}|>{7})( |$)/m.test(text)) unresolved.push(file);
+      const text = (await readRegular(join(cwd, file)))?.toString('utf8') ?? '';
+      if (/^(<{7}|>{7})( |$)/m.test(text)) unresolved.push(file);
     }
     return { merging, conflicts, unresolved };
   }
@@ -191,7 +210,9 @@ export class Delivery {
     const untracked = (await git(['ls-files', '--others', '--exclude-standard', '-z'], { cwd: ws.path })).split('\0').filter(Boolean);
     for (const file of untracked.slice(0, 200)) {
       if (diff.length > DIFF_LIMIT) break;
-      const content = await readFile(join(ws.path, file)).catch(() => null);
+      const path = join(ws.path, file), link = await readlink(path).catch(() => null);
+      if (link !== null) { diff += `\nnew symlink: ${file} -> ${link}\n`; continue; }
+      const content = await readRegular(path, 80 * 1024); // Enough for the 20,000 characters shown.
       if (!content) continue;
       const text = content.includes(0) ? '(binary file)' : content.toString('utf8').slice(0, 20000).split('\n').map(line => `+${line}`).join('\n');
       diff += `\nnew file: ${file}\n${text}\n`;
@@ -201,13 +222,16 @@ export class Delivery {
     return { changes: status.slice(0, 500), diff, truncated };
   }
 
-  /** Commit all task changes on the task branch with the repository's existing Git identity. */
-  async commit(taskId, { message, confirm }) {
+  /**
+   * Commit all task changes on the task branch with the repository's existing Git identity. `anyColumn` (Start over
+   * only; never from a request body) also commits for a card in To Do, so its leftover work is kept on the old branch.
+   */
+  async commit(taskId, { message, confirm }, { anyColumn = false } = {}) {
     if (confirm !== true) throw fail('Confirm the commit first.', 'CONFIRMATION_REQUIRED', 400);
     if (typeof message !== 'string' || !message.trim() || message.length > 2000) throw fail('Enter a commit message of 1 to 2,000 characters.', 'INVALID_INPUT', 400);
     return this.#locked(`task:${taskId}`, async () => {
       const rev = await this.revision(taskId);
-      const { ws } = await this.#context(taskId, { working: true });
+      const { ws } = await this.#context(taskId, { working: !anyColumn });
       if (!rev.branchOk) throw fail(`The task worktree is not on its task branch (${ws.branch}). Promptboard will not commit there.`, 'BRANCH_MISMATCH');
       if (rev.clean) throw fail('There are no changes to commit.', 'NOTHING_TO_COMMIT');
       // Staging a file with conflict markers would record it as resolved. Refuse instead.
@@ -305,6 +329,8 @@ export class Delivery {
       await this.board.updateTaskEvidence(taskId, task => {
         task.evidence = { ...(task.evidence || {}), tests: { status: 'running', id, taskCommit: rev.taskCommit, targetCommit: rev.targetCommit, promptRevision: rev.promptRevision, results: [], startedAt: Date.now() } };
       });
+      // The card now shows this run: the logs of earlier runs (up to 5 MB per command) are no longer referenced.
+      for (const old of await readdir(dirname(dir)).catch(() => [])) if (old !== id) await rm(join(dirname(dir), old), { recursive: true, force: true }).catch(() => {});
       (async () => {
         const results = [];
         for (const [index, command] of commands.entries()) results.push(await this.#runCommand(command, ws.path, join(dir, `command-${index + 1}.log`), running));
@@ -348,6 +374,9 @@ export class Delivery {
       child.once('exit', () => { clearTimeout(timer); setTimeout(() => { child.stdout.destroy(); child.stderr.destroy(); }, 2000).unref(); });
       child.on('close', (code, signal) => {
         clearTimeout(timer);
+        // The command is over: stop what it left running in its process group (a server the suite did not stop).
+        // The group only: its leader has exited, so that pid alone may belong to another program by now.
+        if (child.pid && process.platform !== 'win32') try { process.kill(-child.pid, 'SIGKILL'); } catch {}
         if (child.pid) { untrackPid(child.pid); running.pids.delete(child.pid); }
         done(timedOut ? { status: 'timeout', exitCode: code, reason: `Stopped after ${command.timeoutSec} seconds.` }
           : { status: code === 0 ? 'passed' : 'failed', exitCode: code, ...(signal ? { reason: `Ended by signal ${signal}.` } : {}) });
@@ -357,8 +386,16 @@ export class Delivery {
 
   /** Where the target branch is checked out, if anywhere, and whether that checkout is clean. */
   async #targetCheckout(root, target) {
-    const entry = (await listWorktrees(root)).find(item => item.branch === target) || null;
-    if (!entry) return null;
+    const worktrees = await listWorktrees(root);
+    const entry = worktrees.find(item => item.branch === target) || null;
+    if (!entry) {
+      // A rebase detaches HEAD, so Git lists no branch there; it still owns the branch and moves it when it finishes.
+      for (const item of worktrees.filter(item => !item.branch)) {
+        const names = lines(await git(['rev-parse', '--git-path', 'rebase-merge/head-name', '--git-path', 'rebase-apply/head-name'], { cwd: item.path }).catch(() => ''));
+        for (const name of names) if ((await readRegular(resolve(item.path, name)))?.toString('utf8').trim() === `refs/heads/${target}`) return { path: item.path, clean: false, rebasing: true };
+      }
+      return null;
+    }
     const tracked = lines(await git(['status', '--porcelain', '--untracked-files=no'], { cwd: entry.path }));
     return { path: entry.path, clean: tracked.length === 0, changes: tracked.slice(0, 50) };
   }
@@ -382,7 +419,8 @@ export class Delivery {
     if (review?.status !== 'accepted' || review.taskCommit !== rev.taskCommit) problems.push(review?.status === 'accepted' ? 'The accepted review is for an older task commit. Review again.' : 'An accepted code review for the current commit is required.');
     if (review?.verdict !== 'no_issues' || review?.findings?.length) problems.push('The code review detected issues or has no clear verdict. Resolve them and review again before merging.');
     if (tests?.status !== 'passed' || tests.taskCommit !== rev.taskCommit || tests.targetCommit !== rev.targetCommit) problems.push(tests?.status === 'passed' ? 'The passing tests are for older commits. Run tests again.' : 'Passing tests for the current commits are required.');
-    if (checkout && !checkout.clean) problems.push(`The checkout of ${target} at ${checkout.path} has uncommitted changes. Promptboard will not merge into it.`);
+    if (checkout?.rebasing) problems.push(`${target} is being rebased in ${checkout.path}. Finish or abort the rebase there first.`);
+    else if (checkout && !checkout.clean) problems.push(`The checkout of ${target} at ${checkout.path} has uncommitted changes. Promptboard will not merge into it.`);
     return { sourceBranch: ws.branch, targetBranch: target, taskCommit: rev.taskCommit, targetCommit: rev.targetCommit, commits, files, fastForward,
       targetCheckout: checkout ? { path: checkout.path, clean: checkout.clean } : null, merging: rev.merging, conflicts: rev.conflicts, unresolved: rev.unresolved, eligible: problems.length === 0, problems };
   }
@@ -424,9 +462,14 @@ export class Delivery {
       };
       let method;
       if (preview.targetCheckout) {
-        // Fast-forward the checkout that has the target branch; never switch branches anywhere.
-        await git(['merge', '--ff-only', '--no-edit', merged], { cwd: preview.targetCheckout.path, timeoutMs: 120000 })
-          .catch(async error => { throw await refused(`Git refused the fast-forward in the target checkout (${error.message}). Nothing was changed.`); });
+        // Fast-forward the checkout that has the target branch; never switch branches anywhere. By default Git
+        // overwrites ignored files (the owner's .env) with tracked ones; --no-overwrite-ignore refuses instead.
+        await git(['merge', '--ff-only', '--no-overwrite-ignore', '--no-edit', merged], { cwd: preview.targetCheckout.path, timeoutMs: 120000 })
+          .catch(async error => {
+            const files = untrackedInTheWay(error.stderr);
+            throw await refused(files.length ? `The merge would overwrite files in ${preview.targetCheckout.path} that Git does not track: ${files.slice(0, 10).join(', ')}${files.length > 10 ? ` and ${files.length - 10} more` : ''}. Promptboard does not replace them: move or rename them, then merge again. Nothing was changed.`
+              : `Git refused the fast-forward in the target checkout (${error.message}). Nothing was changed.`);
+          });
         method = `${squash ? 'squash commit, ' : ''}fast-forward in ${preview.targetCheckout.path}`;
       } else {
         // Not checked out anywhere. Compare-and-swap: the ref moves only if it still has the previewed value.
@@ -547,15 +590,15 @@ Use "passed" only when every command you list exited with 0 and the change works
       const remotes = lines(await git(['remote'], { cwd: ws.path }).catch(() => ''));
       const remote = remotes.includes('origin') ? 'origin' : remotes.length === 1 ? remotes[0] : null;
       if (!remote) throw fail(remotes.length ? `This repository has several remotes (${remotes.join(', ')}) and none is called origin. Promptboard pushes only to origin or a single remote.` : 'This repository has no remote. Add one (git remote add origin <url>), then try again.', 'NO_REMOTE');
-      await gh(['--version'], ws.path).catch(error => { throw error.missing ? fail('Install the GitHub CLI (gh) and run gh auth login, then try again.', 'GH_MISSING') : fail('The GitHub CLI did not start.', 'GH_FAILED'); });
+      await gh(['--version'], { cwd: ws.path }).catch(error => { throw error.missing ? fail('Install the GitHub CLI (gh) and run gh auth login, then try again.', 'GH_MISSING') : fail('The GitHub CLI did not start.', 'GH_FAILED'); });
       await git(['push', '--set-upstream', remote, `refs/heads/${ws.branch}:refs/heads/${ws.branch}`], { cwd: ws.path, timeoutMs: 180000 })
         .catch(() => { throw fail(`Git could not push ${ws.branch} to ${remote}. Check your access to the remote, or whether the branch there has different commits. Nothing was forced.`, 'PUSH_FAILED'); });
-      let pr = await gh(['pr', 'view', ws.branch, '--json', 'url,number,state'], ws.path).then(JSON.parse).catch(() => null);
+      let pr = await gh(['pr', 'view', ws.branch, '--json', 'url,number,state'], { cwd: ws.path }).then(JSON.parse).catch(() => null);
       if (!pr || pr.state !== 'OPEN') {
-        const out = await gh(['pr', 'create', '--base', target, '--head', ws.branch, '--title', title.trim(), '--body', body], ws.path)
+        const out = await gh(['pr', 'create', '--base', target, '--head', ws.branch, '--title', title.trim(), '--body', body], { cwd: ws.path })
           .catch(error => { throw fail(/base/i.test(error.stderr || '') ? `GitHub could not use ${target} as the base branch. Push ${target} to ${remote} first.` : /auth|login/i.test(error.stderr || '') ? 'The GitHub CLI is not signed in. Run gh auth login, then try again.' : 'The GitHub CLI could not create the pull request. Run gh pr create in the task worktree to see why.', 'PR_FAILED'); });
         const url = lines(out).reverse().find(line => /^https?:\/\//.test(line)) || '';
-        pr = await gh(['pr', 'view', url || ws.branch, '--json', 'url,number,state'], ws.path).then(JSON.parse).catch(() => ({ url, number: null, state: 'OPEN' }));
+        pr = await gh(['pr', 'view', url || ws.branch, '--json', 'url,number,state'], { cwd: ws.path }).then(JSON.parse).catch(() => ({ url, number: null, state: 'OPEN' }));
       }
       return this.board.updateTaskEvidence(taskId, task => {
         task.evidence = { ...(task.evidence || {}), pullRequest: { url: pr.url, number: pr.number, state: pr.state, remote, branch: ws.branch, base: target, taskCommit: rev.taskCommit, at: Date.now() } };
@@ -568,11 +611,12 @@ Use "passed" only when every command you list exited with 0 and the change works
     const { task, ws } = await this.#context(taskId);
     const known = task.evidence?.pullRequest;
     if (!known?.url) throw fail('This task has no pull request yet.', 'NO_PULL_REQUEST');
-    const pr = await gh(['pr', 'view', known.url, '--json', 'url,number,state,mergedAt'], ws.path).then(JSON.parse)
+    const pr = await gh(['pr', 'view', known.url, '--json', 'url,number,state,mergedAt'], { cwd: ws.path }).then(JSON.parse)
       .catch(error => { throw error.missing ? fail('Install the GitHub CLI (gh) to check the pull request.', 'GH_MISSING') : fail('The GitHub CLI could not read the pull request. Check gh auth status.', 'GH_FAILED'); });
-    const updated = await this.board.updateTaskEvidence(taskId, current => { current.evidence.pullRequest = { ...current.evidence.pullRequest, state: pr.state, checkedAt: Date.now() }; });
-    if (pr.state !== 'MERGED') return updated;
-    return this.board.completeTask(taskId, { kind: 'pull_request', details: { url: pr.url, number: pr.number, base: known.base, mergedAt: pr.mergedAt || null } });
+    // Complete before recording MERGED: a card that cannot complete yet (an active run) keeps its pull request OPEN
+    // here, so the minute poll and the Check button try again.
+    if (pr.state === 'MERGED') await this.board.completeTask(taskId, { kind: 'pull_request', details: { url: pr.url, number: pr.number, base: known.base, mergedAt: pr.mergedAt || null } });
+    return this.board.updateTaskEvidence(taskId, current => { current.evidence.pullRequest = { ...current.evidence.pullRequest, state: pr.state, checkedAt: Date.now() }; });
   }
 
   /** Separate, explicit completion for a task that needs no code change. Not a merge. */
