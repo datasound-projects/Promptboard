@@ -199,7 +199,7 @@ function turn(text) {
   process.stdout.write('turn complete\r\n');
 }
 // Codex asks through its terminal title, not a hook; answering it continues the turn.
-let codexQuestion = prompt.includes('CODEX_QUESTION');
+let codexQuestion = prompt.includes('CODEX_QUESTION'), keyAnswer = prompt.includes('KEY_ANSWER');
 if (trustScreen) drawTrust();
 else if (hooksPending) process.stdout.write('  Hooks need review\r\n  1 hook is new or changed.\r\n› 1. Review hooks\r\n  2. Trust all and continue\r\n  3. Continue without trusting\r\n');
 else if (codexQuestion) process.stdout.write('\x1b]0;[ ! ] Action Required | thread-1\x07Allow this command? (y)\r\n\x1b]0;[ . ] Action Required | thread-1\x07');
@@ -227,11 +227,20 @@ process.stdin.on('data', chunk => {
     hooksPending = false; emit('SessionStart'); if (prompt) turn(prompt);
     return;
   }
-  line += chunk.toString();
+  // KEY_ANSWER: one 'y' key answers the question or approval, with no Enter, as Codex's approval overlay does.
+  if (keyAnswer && chunk.toString() === 'y') {
+    keyAnswer = false;
+    if (codexQuestion) { codexQuestion = false; process.stdout.write('\x1b]0;⠋ thread-1\x07'); }
+    turn(prompt); return;
+  }
+  // EMPTY_ENTER_IGNORED: as the real CLIs do, Backspace deletes a character, Ctrl+C clears the prompt, and an Enter
+  // on an empty prompt submits nothing (no hook, no turn).
+  const edits = prompt.includes('EMPTY_ENTER_IGNORED');
+  if (edits) for (const key of chunk.toString()) line = key === '\x7f' ? line.slice(0, -1) : key === '\x03' ? '' : line + key;
+  else line += chunk.toString();
   if (!/[\r\n]/.test(line)) return;
   const text = line.trim(); line = '';
-  // EMPTY_ENTER_IGNORED: as the real CLIs do, an Enter on an empty prompt submits nothing (no hook, no turn).
-  if (!text && prompt.includes('EMPTY_ENTER_IGNORED')) return;
+  if (!text && edits) return;
   process.stdout.write(`you said: ${text}\r\n`);
   if (codexQuestion) { codexQuestion = false; process.stdout.write('\x1b]0;\u280b thread-1\x07'); }
   if (text === 'quit') process.exit(0);

@@ -583,6 +583,9 @@ export class Supervisor {
   async #setStatus(session, status, fields = {}) {
     session.status = status;
     session.turnEnded = 'turns' in fields; // Only a finished turn reports its count; other waits are inside a turn.
+    // Without activity there is no dialog evidence: a key may have answered an approval, so only later text is a draft.
+    // ponytail: text typed into a legacy Codex prompt during its turn is dropped too; its later Enter is then not seen.
+    if (session.turnEnded && !session.activity) session.draft = 0;
     await this.board.updateRun(session.runId, { status, ...fields }).catch(() => {});
     this.#push(session, { status, ...(fields.waitingReason ? { reason: fields.waitingReason } : {}) });
   }
@@ -699,11 +702,23 @@ export class Supervisor {
     // A terminal or mouse report is not typing. Drop it during a native paste so it cannot land inside the message.
     if (AUTOMATIC_REPORTS.test(data)) { if (!session.messageInputPending) session.proc.write(data); return; }
     const keys = data.replace(REPORTS, ''), dialog = DIALOG_KEY.test(keys) && session.activity?.snapshot().permissionPending;
-    // After a finished turn, an Enter with nothing typed since the last Enter submits nothing: each CLI ignores an
-    // empty prompt. Claude and Gemini report a new turn with their prompt hook; Codex has none, so its typed text
-    // starts the turn here. Inside a turn (a permission or question wait) Enter answers and the turn goes on.
+    // What the prompt holds, as far as the keys show: text adds, Backspace takes one back, Ctrl+C and every Enter clear
+    // it, and an escape sequence (a history key, a paste) may leave anything. A key answering a CLI dialog types nothing.
+    // ponytail: no line editor; other edits (cursor keys, Ctrl+W) count as text, so their Enter is taken as a new turn.
+    let draft = session.draft || 0, submits = false;
+    if (!dialog || /[\r\n]/.test(keys)) for (const key of keys) {
+      if (key === '\r' || key === '\n') { submits ||= draft > 0; draft = 0; }
+      else if (key === '\x03') draft = 0;
+      else if (key === '\x7f' || key === '\b') draft = Math.max(0, draft - 1);
+      else if (key === '\x1b') draft = Infinity;
+      else if (key >= ' ') draft++;
+    }
+    session.draft = draft;
+    // After a finished turn an Enter on an empty prompt submits nothing: each CLI ignores it. Claude and Gemini report a
+    // new turn with their prompt hook; Codex has none, so its Enter that submits text starts the turn here. Inside a turn
+    // (a permission or question wait) Enter answers and the turn goes on.
     const finished = session.status === 'waiting_for_input' && session.turnEnded;
-    const stray = finished && !session.draft && /^[\r\n]+$/.test(keys);
+    const stray = finished && !submits && /^[\r\n]+$/.test(keys);
     if (data) {
       // A key that answers the CLI's own permission or question dialog starts no draft, so queued
       // column messages stay deliverable. Free text, or input outside such a dialog, is a human draft.
@@ -718,9 +733,8 @@ export class Supervisor {
       }
       if (initialPastePending || session.initialSubmitPending) this.#initialInputUnconfirmed(session);
     }
-    if (keys && !dialog) session.draft = !/[\r\n]$/.test(keys);
     session.proc.write(data);
-    if (session.status === 'waiting_for_input' && /\r|\n/.test(keys) && (!finished || (session.provider === 'codex' && !stray))) this.#setStatus(session, 'running', { waitingReason: '', turnComplete: false });
+    if (session.status === 'waiting_for_input' && /\r|\n/.test(keys) && (!finished || (session.provider === 'codex' && submits))) this.#setStatus(session, 'running', { waitingReason: '', turnComplete: false });
   }
 
   /** Private cached observation: no input, hook processing, grant or session selection. */

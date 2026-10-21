@@ -821,12 +821,30 @@ test('an Enter on an empty prompt after a finished turn starts nothing; typed te
     // The CLI ignores it: no hook fires and no turn starts, so the finished turn stays confirmable.
     w.supervisor.input(run.id, '\r'); w.supervisor.input(run.id, '\r');
     assert.equal(w.supervisor.sessions.get(run.id).status, 'waiting_for_input', provider);
-    w.supervisor.input(run.id, 'Next step\r');
-    await finished(2);
+    // Typed text, or a history key that fills the prompt, starts the next turn; Codex has no hook to say so.
+    for (const [keys, turns] of [['Next step\r', 2], ['\x1b[A\r', 3]]) {
+      w.supervisor.input(run.id, keys);
+      if (provider === 'codex') assert.equal(w.supervisor.sessions.get(run.id).status, 'running', keys);
+      await finished(turns);
+    }
     w.supervisor.input(run.id, '\n');
+    // Text deleted again or cleared with Ctrl+C leaves an empty prompt too, also when the keys arrive in one write.
+    for (const key of ['abc', '\x7f\x7f\x7f', '\r', 'xyz\x03\r', 'ab\x7f\x7f\r']) w.supervisor.input(run.id, key);
+    assert.equal(w.supervisor.sessions.get(run.id).status, 'waiting_for_input', provider);
     await w.supervisor.confirm(run.id);
     assert.equal((await w.run(run.id)).status, 'succeeded', provider);
   }
+});
+
+test('legacy Codex: a key that answered an approval during the turn is no draft for a later Enter', { skip }, async t => {
+  const w = await world(t), card = await w.task('Key answer', 'Implement it. ASK_PERMISSION KEY_ANSWER EMPTY_ENTER_IGNORED');
+  const run = await w.board.requestRun(card.id, { stage: 'executing', consent: true, config: { provider: 'codex' } });
+  await until(async () => /Allow Bash\?/.test(await w.supervisor.artifact(run.id, 'output')), 'approval asked');
+  w.supervisor.input(run.id, 'y'); // One key, no Enter; a legacy run has no way to see the approval.
+  await until(async () => (await w.run(run.id)).turnComplete, 'turn');
+  w.supervisor.input(run.id, '\r');
+  assert.equal(w.supervisor.sessions.get(run.id).status, 'waiting_for_input');
+  await w.supervisor.confirm(run.id);
 });
 
 test('failures are classified once; unconfirmed exits are interrupted; waiting states surface; streams resume in order', { skip }, async t => {
