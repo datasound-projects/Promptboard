@@ -23,7 +23,19 @@ test('real PDF parser extracts only pages 40–55, retaining provenance and cach
   assert.ok(search(row.index, 'QuestDB ingestion protocol').length);
   assert.equal((await docs.add(bytes, meta)).id, first.id); assert.equal(docs.get(first.id).index, row.index);
   await assert.rejects(docs.add(bytes, { ...meta, from: 79, to: 81 }), /outside/);
+  // Added twice, so it goes when both have removed it.
+  assert.equal(docs.delete(first.id), true); assert.equal(docs.get(first.id), row);
   assert.equal(docs.delete(first.id), true); assert.throws(() => docs.get(first.id), /expired/);
+});
+
+test('the same file added in Research and in Compose stays for Research when Compose removes it', async () => {
+  const docs = new ComposeDocuments(), bytes = Buffer.from('# Spec\nThe payment service must use PostgreSQL logical replication.\n');
+  const research = await docs.add(bytes, { name: 'spec.md' }), compose = await docs.add(bytes, { name: 'spec.md' });
+  assert.equal(compose.id, research.id);
+  docs.delete(compose.id);
+  assert.match(docs.get(research.id).pages[0].text, /logical replication/);
+  docs.delete(research.id);
+  assert.throws(() => docs.get(research.id), /expired/);
 });
 
 test('empty/scanned, malformed and spoofed PDFs fail clearly; malicious text remains data', async () => {
