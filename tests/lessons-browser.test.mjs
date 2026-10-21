@@ -47,7 +47,7 @@ test('a merged card’s suggested lesson is approved in its details and then sho
   // Project memory lists it under its kind, with the switch on.
   await ev(`[...document.querySelectorAll('#task-lessons button')].find(node => node.textContent === 'Open Project memory').click();`);
   await wait(`document.querySelector('#lessons-dialog')?.open && document.querySelector('#lessons-dialog .lessons-list .lesson-text')`, 'Project memory open');
-  assert.deepEqual(await ev(`return { kinds: [...document.querySelectorAll('#lessons-dialog h4')].map(node => node.textContent), lessons: [...document.querySelectorAll('#lessons-dialog .lessons-list .lesson-text')].map(node => node.textContent), on: document.querySelector('#lessons-enabled').checked, pending: document.querySelector('.lessons-card-link').textContent };`),
+  assert.deepEqual(await ev(`return { kinds: [...document.querySelectorAll('#lessons-dialog h4')].map(node => node.textContent), lessons: [...document.querySelectorAll('#lessons-dialog .lesson[data-status="approved"] .lesson-text')].map(node => node.textContent), on: document.querySelector('#lessons-enabled').checked, pending: document.querySelector('.lessons-card-link').textContent };`),
     { kinds: ['Commands that worked'], lessons: [LESSONS[0].text], on: true, pending: '#1 Checkout flow' });
   await shots('lessons-memory');
   // The project settings row says the same, after a reload too.

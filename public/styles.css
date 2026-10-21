@@ -2606,6 +2606,7 @@ button.origin-context-badge { cursor: pointer; }
 .lessons-pending { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
 .lessons-pending li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; padding: 6px 0; border-bottom: 1px solid var(--divider); }
 .lessons-card-link { overflow: hidden; max-width: 100%; text-overflow: ellipsis; }
+.lessons-pending li > .lessons-list { flex-basis: 100%; }
 .lessons-count { color: var(--subtle); font-size: 12px; }
 .lessons-more { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--divider); }
 .lessons-more summary { color: var(--muted); font-size: 13px; cursor: pointer; }

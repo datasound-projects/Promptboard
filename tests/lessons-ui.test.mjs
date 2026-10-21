@@ -107,9 +107,10 @@ test('while lessons are suggested the details say so; a failure shows its reason
 });
 
 test('Project memory: approved lessons by kind, suggestions linked to their cards, the switch on by default, and the CLI and model under More', async t => {
-  const ui = setup(t, { lessons: [lesson('l1', 'command', 'npm test', 'approved', { decidedAt: 2 }), lesson('l2', 'gotcha', 'Tests need Git.', 'approved', { decidedAt: 3 }), lesson('l3', 'convention', 'ESM only.')] });
+  const ui = setup(t, { lessons: [lesson('l1', 'command', 'npm test', 'approved', { decidedAt: 2 }), lesson('l2', 'gotcha', 'Tests need Git.', 'approved', { decidedAt: 3 }), lesson('l3', 'convention', 'ESM only.'),
+    lesson('l4', 'gotcha', 'From a card that was deleted.', 'suggested', { taskId: 'gone', taskNumber: 9 })] });
   ui.view.sync(ui.project, 1);
-  await until(() => ui.$('#lessons-summary').textContent === '2 lessons · 1 new', 'settings row');
+  await until(() => ui.$('#lessons-summary').textContent === '2 lessons · 2 new', 'settings row');
   assert.equal(ui.$('#workflow-open').closest('.settings-row').nextElementSibling.id, 'lessons-row', 'right after Columns in the project settings');
   ui.$('#lessons-open').click();
   await until(() => ui.$('#lessons-dialog')?.open && ui.$('#lessons-enabled'), 'dialog');
@@ -118,8 +119,11 @@ test('Project memory: approved lessons by kind, suggestions linked to their card
   assert.equal(ui.$('#lessons-enabled').checked, true);
   assert.match(dialog.textContent, /One short run with a small model after each merged card\./);
   assert.deepEqual(ui.$$('#lessons-dialog h4').map(node => node.textContent), ['Commands that worked', 'Gotchas']);
-  assert.deepEqual(ui.$$('#lessons-dialog .lessons-list .lesson-text').map(node => node.textContent), ['npm test', 'Tests need Git.']);
+  assert.deepEqual(ui.$$('#lessons-dialog .lesson[data-status="approved"] .lesson-text').map(node => node.textContent), ['npm test', 'Tests need Git.']);
   assert.equal(ui.$('#lessons-more').open, false, 'CLI and model wait under More');
+  // A deleted card's suggestions are decided right here.
+  assert.match(ui.$('.lessons-pending').textContent, /#9, a deleted card/);
+  assert.ok(ui.button(ui.$('#lessons-dialog [data-id="l4"]'), 'Approve') && ui.button(ui.$('#lessons-dialog [data-id="l4"]'), 'Reject'));
   // A suggestion links to its card's details.
   const link = ui.$('.lessons-card-link');
   assert.equal(link.textContent, '#4 Checkout flow');
@@ -131,7 +135,7 @@ test('Project memory: approved lessons by kind, suggestions linked to their card
   await until(() => !ui.$('#lessons-dialog [data-id="l1"]'), 'removed');
   ui.$('#lessons-enabled').click();
   await until(() => changes(ui.calls).length === 2, 'switched off');
-  await until(() => ui.$('#lessons-summary').textContent === '1 lesson · 1 new · off', 'row says off');
+  await until(() => ui.$('#lessons-summary').textContent === '1 lesson · 2 new · off', 'row says off');
   ui.$('#lessons-more').open = true;
   const cli = ui.$('#lessons-provider'), model = ui.$('#lessons-model');
   assert.deepEqual([...cli.options].map(option => option.textContent), ['The card’s CLI', 'Claude Code', 'Codex', 'Gemini CLI']);

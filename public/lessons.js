@@ -87,7 +87,7 @@ window.PromptboardLessons = (() => {
       if (!merged(card) || !projectId) return [];
       const body = el('div', 'lessons-card'); body.tabIndex = -1; body.append(status('Loading lessons…'));
       const box = section('Suggested lessons', body); box.id = 'task-lessons';
-      const entry = { taskId: card.id, projectId, body, message: '', error: '' };
+      const entry = { taskId: card.id, projectId, body, error: '' };
       cards.set(card.id, entry);
       load(projectId).then(() => renderCard(entry), failure => { entry.error = failure.message; renderCard(entry); });
       return [box];
@@ -104,7 +104,7 @@ window.PromptboardLessons = (() => {
       const busy = ['queued', 'running'].includes(job?.status);
       if (job?.status === 'running') nodes.push(status('Suggesting lessons…', 'note lessons-working'));
       else if (job?.status === 'queued') nodes.push(status('Waiting for a free CLI slot to suggest lessons…', 'note lessons-working'));
-      else if (job?.status === 'failed') { const node = status(`Lessons could not be suggested: ${job.reason}`, 'inline-error'); nodes.push(node); }
+      else if (job?.status === 'failed') nodes.push(status(`Lessons could not be suggested: ${job.reason}`, 'inline-error'));
       else if (!suggested.length && !approved.length) nodes.push(status(job ? 'No new lessons from this card.' : 'No lessons were suggested for this card.'));
       if (suggested.length) {
         const lead = el('div', 'lessons-lead');
@@ -220,9 +220,14 @@ window.PromptboardLessons = (() => {
         const list = el('ul', 'lessons-pending'); list.setAttribute('aria-label', 'Suggestions to review');
         for (const [taskId, lessons] of byCard) {
           const task = taskOf(taskId), item = el('li');
-          item.append(button(`${task?.number ? `#${task.number} ` : lessons[0].taskNumber ? `#${lessons[0].taskNumber} ` : ''}${task?.title || 'A deleted card'}`, () => { dialog.close(); host.openTask(taskId); }, 'text-button lessons-card-link', 'Review in the card’s details'),
-            el('span', 'lessons-count', plural(lessons.length, 'suggestion')));
-          if (!task) item.firstChild.disabled = true;
+          if (task) item.append(button(`${task.number ? `#${task.number} ` : ''}${task.title}`, () => { dialog.close(); host.openTask(taskId); }, 'text-button lessons-card-link', 'Review in the card’s details'), el('span', 'lessons-count', plural(lessons.length, 'suggestion')));
+          else {
+            // The card was deleted: its suggestions are reviewed here instead.
+            const decided = el('div', 'lessons-list');
+            decided.append(...lessons.map(lesson => lessonNode(projectId, lesson, [['Approve', () => decide(projectId, lesson, 'approved', 'Lesson approved.', say), 'danger lesson-approve'], editAction(projectId, lesson),
+              ['Reject', () => decide(projectId, lesson, 'rejected', 'Lesson rejected. It is not suggested again.', say), 'text-button lesson-reject']])));
+            item.append(el('span', 'lessons-count', `${lessons[0].taskNumber ? `#${lessons[0].taskNumber}, ` : ''}a deleted card`), decided);
+          }
           list.append(item);
         }
         nodes.push(el('h3', '', `${plural(pending.length, 'suggestion')} to review`), list);
