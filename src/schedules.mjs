@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { taskPriority } from './task-priority.mjs';
 import { taskLabelIds } from './task-labels.mjs';
 
-export const SCHEDULE_LIMIT = 50;
+const SCHEDULE_LIMIT = 50;
 const PROMPT_LIMIT = 20000;
 const MAX_WAIT = 60000;
 const LATE_MS = 2 * 60000; // A card made later than this after its time says when it was due.
@@ -64,7 +64,7 @@ export function nextFire(cadence, after) {
 const since = schedule => Math.max(schedule.lastSlot ?? 0, schedule.updatedAt ?? schedule.createdAt ?? 0);
 
 /** The slot a schedule is due for at `now`, or null. Of several missed slots only the latest counts: one card, not one per slot. */
-export function dueSlot(schedule, now) {
+function dueSlot(schedule, now) {
   let slot = nextFire(schedule.cadence, since(schedule));
   if (slot === null || slot > now) return null;
   for (let next = nextFire(schedule.cadence, Math.max(slot, now - 32 * DAY)); next !== null && next <= now; next = nextFire(schedule.cadence, next)) slot = next;
