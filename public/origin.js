@@ -289,10 +289,11 @@ window.PromptboardOrigin = (() => {
         // replaces this one in place, so a record open in the editor (also one another page just asked to show) stays open.
         const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(id)}`, { timeoutMs: 30000 }).catch(() => ({ response: { ok: false }, data: {} }));
         if (response.ok && id === projectId && saveState === 'saved' && changeCount === savedCount) {
-          record.blueprint = data.blueprint; saveRevision(data.revision, data.project); views.map = null;
+          // An Undo from before would put the older blueprint back over the newer one, so it goes.
+          record.blueprint = data.blueprint; saveRevision(data.revision, data.project); hideUndo();
           if (data.recovery?.restoredFromBackup) showNotice('The blueprint file was damaged, so the last good copy was restored. The damaged file was kept in the app data folder.');
-        }
-        render();
+          render(); contextPanel.originSaved(); researchPanel.structureChanged();
+        } else renderProjects(); // Typing that started meanwhile keeps its focus; its save meets the newer version as a conflict.
       } else {
         // An open editor is left as it is; redrawing it would drop a pending confirmation.
         renderProjects(); renderMain(); renderSave();
