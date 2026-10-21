@@ -105,6 +105,16 @@ test('secret redaction removes the credential after an authorization scheme, not
   }
 });
 
+test('secret redaction masks bare tokens of known shapes and a flag’s token-like value, never ordinary words, numbers or names', () => {
+  for (const line of ['HttpError: Bad credentials for ghp_abcdefghijklmnopqrstuvwxyz0123456789', 'Using key sk-live-1234567890abcdef1234', 'my key is sk-' + 'ant-api03-abcdefghijklmnop1234',
+    'stripe sk_' + 'live_51H8abcdefghijklmnop', 'slack xoxb-123456789012-abcdefghij', '--token xoxb-1234-5678-abcdefgh', 'gh --token ghp_abcdEFGH1234567890abcd', 'curl --api-key 8f3a9b2c1d',
+    'mysql -u root --password hunter2', 'AKIAIOSFODNN7EXAMPLE', 'AI' + 'zaSyA1234567890abcdefghijklmnopqrstu']) assert.match(redactLocal(line), /\[redacted\]/, line);
+  for (const line of ['Every task: keep the column sk_customer_12345678 as the join key.', 'The column sk_product_id_2024_v2 is the surrogate key.', 'Set --max-token 4096 and --refresh-token 3600.',
+    'Add a --max-tokens 4096 option; --token-limit 2000 and --secret-name prod-db-2.', 'Use the --password-file ./secrets/pw2.txt flag.', 'Train with sk-learn 1.4 and sk-learning-models.',
+    'Handle the AIzaSy prefix check in validator2.', 'Pass --token "$GITHUB_TOKEN" (step 2) or `--api-key ${OPENAI_API_KEY}` for v2.', 'Add a --password flag; see task-1234567890abcdefgh.',
+    'Add --auth-token-env MY_TOKEN_2 support; Task-key: SK-1024 should stay.']) assert.equal(redactLocal(line), line, line);
+});
+
 test('local folders expose bounded relevant code, manifest and Skills data; exclude secrets and symlinks', async t => {
   const root = await folder(t), outside = await folder(t);
   await mkdir(join(root, '.agents', 'skills', 'auth'), { recursive: true }); await mkdir(join(root, 'node_modules'));

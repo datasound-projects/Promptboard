@@ -139,7 +139,7 @@ export class Coordinator {
   }
 
   /** A read-only answer from relevant evidence. The only place the Coordinator uses a model. */
-  /** `claim()`, when given, takes the shared CLI job slot once the question is valid and returns it ({ job }); its job's signal stops the run. */
+  /** `claim()`, when given, takes the shared CLI job slot only when the answer needs the CLI (a valid question, not cached) and returns it ({ job }); its job's signal stops the run. */
   async ask(projectId, input, { runner, signal, claim } = {}) {
     const question = typeof input?.question === 'string' ? input.question.trim() : '';
     if (!question || question.length > LIMITS.question) throw new CoordinatorError(`Ask a question of 1 to ${LIMITS.question} characters.`, 'INVALID_INPUT');
@@ -150,7 +150,6 @@ export class Coordinator {
     if (this.asking.has(projectId)) throw new CoordinatorError('The Coordinator is already answering a question for this project.', 'COORDINATOR_BUSY', 409);
     this.asking.add(projectId);
     try {
-      if (claim) ({ signal } = (await claim()).job.controller);
       const { index } = await this.reconcile(projectId, { force: true });
       const evidence = await this.#evidence(projectId, index, question, scope);
       const key = sha(JSON.stringify([question.toLocaleLowerCase(), scope, evidence.text]));
@@ -159,6 +158,7 @@ export class Coordinator {
       let answer, cachedAnswer = Boolean(cached);
       if (cached) answer = cached.answer;
       else {
+        if (claim) ({ signal } = (await claim()).job.controller);
         const cwd = await makeTempDir('pb-coordinator-');
         try { answer = (await runner({ provider: input.provider, model: input.model || '', effort: input.effort || '', prompt: promptFor(question, scope, evidence.text), cwd, signal, timeoutMs: 180000 })).text.trim().slice(0, LIMITS.answer); }
         finally { await removeTempDir(cwd).catch(() => {}); }
@@ -315,7 +315,7 @@ export async function coordinatorRoute({ coordinator, runner, track, claim, req,
   if (!action && req.method === 'PATCH') { const body = await jsonBody(req); return send(res, 200, await coordinator.setEnabled(projectId, body?.enabled)); }
   if (action === 'ask' && req.method === 'POST') {
     // A question runs one CLI call, so it shares the one-job slot with Compose, sign-in and file proposals. The slot is
-    // taken only for a valid question: a refused one never stops the background lessons run.
+    // taken only when the CLI runs: a refused question or a cached answer never stops the background lessons run.
     const body = await jsonBody(req);
     let claimed;
     const abort = () => { if (!res.writableEnded) claimed?.job.controller.abort(); };

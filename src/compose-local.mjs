@@ -23,11 +23,13 @@ export function redactLocal(text) {
     // A quoted value is redacted whole, spaces included. One way to split the separator (\s*(?:["']\s*)? rather than
     // \s*["']?\s*), so a long run of spaces after a keyword is scanned once, not once per split.
     .replace(/((?:api[_-]?key|secret|password|token|authorization|access[_-]?key)\s*(?:["']\s*)?[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|(?:(?:Bearer|Basic)\s+)?[^\s,;"'\n]+)/gi, '$1[redacted]')
-    // A flag's value after a space (--token xoxb-1…). Only a value with a digit, so "--password flag" stays readable;
-    // a flag starts after no word character, and its name is bounded, so a long run of dashes is scanned once.
-    .replace(/((?<![\w-])--?[\w-]{0,40}?(?:api[_-]?key|secret|password|token|access[_-]?key)\s+)(?!-)(?=[^\s,;"'\n]{0,200}?\d)[^\s,;"'\n]+/gi, '$1[redacted]')
-    // Bare tokens with a known prefix (GitHub, OpenAI/Anthropic/Stripe, Slack, AWS, Google), with a digit like real ones.
-    .replace(/(?<![A-Za-z0-9])(?:sk[-_]|gh[pousr]_|github_pat_|xox[a-z]-|AKIA|AIza)(?=[A-Za-z_-]{0,200}\d)[A-Za-z0-9_-]{16,}/g, '[redacted]')
+    // A flag's value after a space (--token xoxb-1…) when it looks like a token: six or more characters with letters and
+    // digits, so "--password flag", "--max-token 4096", "$VAR" and paths stay. A flag starts after no word character and
+    // its name is bounded, so a long run of dashes is scanned once.
+    .replace(/((?<![\w-])--?[\w-]{0,40}?(?:api[_-]?key|secret|password|token|access[_-]?key)\s+)(?![-$./~])(?=[^\s,;"'\n]{0,200}?\d)(?=[^\s,;"'\n]{0,200}?[A-Za-z])[^\s,;"'\n]{6,}/gi, '$1[redacted]')
+    // Bare tokens in the shapes their services issue (OpenAI/Anthropic, Stripe, GitHub, Slack, AWS, Google), so a name
+    // such as sk_customer_12345678 stays.
+    .replace(/(?<![A-Za-z0-9])(?:sk-(?=[A-Za-z0-9_-]{0,200}\d)[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[a-z]-\d{3,}-[A-Za-z0-9-]{6,}|AKIA[0-9A-Z]{16,}|AIza[0-9A-Za-z_-]{30,})/g, '[redacted]')
     // Credentials in any URL scheme (postgres://user:pw@, redis://:pw@).
     // The scheme starts a word and is short, and the user name ends at its first ":", so long text is scanned once (no quadratic backtracking).
     .replace(/(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@:]*:[^\s/@]+@/gi, '$1[redacted]@');

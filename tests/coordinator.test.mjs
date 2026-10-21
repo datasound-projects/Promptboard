@@ -106,6 +106,16 @@ test('chat is read-only, scoped, cached and isolated per project', async t => {
   assert.equal(calls[1].prompt.includes('Origin'), false);
 });
 
+test('only an answer that runs the CLI takes the shared job slot: a refused question or a cached answer never does', async t => {
+  const { project, runner, coordinator } = await world(t);
+  let claims = 0;
+  const claim = async () => { claims++; return { job: { controller: new AbortController() } }; };
+  await assert.rejects(coordinator.ask(project.id, { question: '', provider: 'codex' }, { runner, claim }), { code: 'INVALID_INPUT' });
+  assert.equal((await coordinator.ask(project.id, { question: 'Status?', provider: 'codex' }, { runner, claim })).cached, false);
+  assert.equal((await coordinator.ask(project.id, { question: 'status?', provider: 'codex' }, { runner, claim })).cached, true);
+  assert.equal(claims, 1);
+});
+
 test('a question whose client left while the job slot was claimed is cancelled, not left running', async () => {
   // The close event fired before the route could listen for it; only res.destroyed records it.
   const res = Object.assign(new EventEmitter(), { destroyed: true, writableEnded: false }), job = { controller: new AbortController() };
