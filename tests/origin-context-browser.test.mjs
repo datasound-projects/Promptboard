@@ -191,3 +191,26 @@ test('the panel resizes, works on a narrow screen in both themes, handles confli
   await ev(`const s = document.querySelector('#origin-project'); s.value = ${J(other.id)}; s.dispatchEvent(new Event('change'));`);
   await wait(`document.querySelector('#origin-context-open').textContent === 'Create Context' && !document.querySelector('#origin-context-open').disabled && document.querySelector('#origin-drawer').hidden`, 'other project');
 });
+
+test('focus stays in the panel through Back, Generate a new version and Keep current, so Escape still closes it', { skip: !chrome, timeout: 120000 }, async t => {
+  const { browser, ev, wait, menuItem } = await setup(t);
+  await ev(`document.querySelector('#origin-context-open').click();`);
+  await wait(`document.querySelector('#origin-drawer')?.dataset.mode === 'context' && document.querySelector('#origin-context-preview')`, 'panel');
+  const inside = () => ev(`return document.querySelector('#origin-drawer').contains(document.activeElement);`);
+  const press = text => ev(`const b = [...document.querySelectorAll('#origin-context-body button')].find(b => b.textContent === ${J(text)}); b.focus(); b.click();`);
+  await menuItem('origin-context-more', 'Versions…');
+  await wait(`document.querySelector('.origin-context-version')`, 'versions');
+  await press('← Back to the document');
+  await wait(`document.querySelector('#origin-context-preview')`, 'back');
+  assert.equal(await inside(), true, 'Back keeps focus in the panel');
+  await menuItem('origin-context-more', 'Regenerate from Origin…');
+  await wait(`document.querySelector('#origin-context-regenerate')`, 'regenerate view');
+  await press('Generate a new version');
+  await wait(`document.querySelector('#origin-context-use-new')`, 'comparison', 20000);
+  assert.equal(await inside(), true, 'Generate a new version keeps focus in the panel');
+  await press('Keep current');
+  await wait(`!document.querySelector('#origin-context-use-new') && document.querySelector('#origin-context-preview')`, 'kept');
+  assert.equal(await inside(), true, 'Keep current keeps focus in the panel');
+  await browser.key('Escape', 'Escape', 27);
+  await wait(`document.querySelector('#origin-drawer').hidden`, 'Escape closes the panel');
+});
