@@ -325,7 +325,8 @@ export async function remoteRoute(remote, req, res, pathname, { jsonBody, send }
 
 /**
  * What needs someone at the computer: remote access itself, CLI and GitHub sign-in (they open a browser or terminal
- * there), native dialogs, opening a project folder, terminal or editor there, and Base imports (Claude Desktop's own
+ * there), native dialogs, opening a project folder, terminal or editor there, starting or stopping a card's live preview
+ * (a dev server whose 127.0.0.1 link works only there), and Base imports (Claude Desktop's own
  * configuration, a repository scan). Everything else is allowed: a paired device has the same control as the computer,
  * so Compose's MCP test and local folder sources stay allowed, like agents, test commands and Base MCP tests.
  * tests/remote-access.test.mjs walks every route against this list.
@@ -333,7 +334,8 @@ export async function remoteRoute(remote, req, res, pathname, { jsonBody, send }
 function localOnly(method, path) {
   if (method === 'GET' || method === 'HEAD') return /^\/api\/remote(\/|$)/.test(path) || path === '/api/editors';
   return /^\/api\/remote(\/|$)/.test(path) || path === '/api/editors' || /^\/api\/auth\/(login|logout|cancel)$/.test(path) || /^\/api\/github\/login(\/cancel)?$/.test(path) || path === '/api/folder/choose' || /^\/api\/base\/(?:mcp\/import(?:\/preview)?|markdown\/(?:scan|import))$/.test(path)
-    || /^\/api\/projects\/[^/]+\/open$/.test(path); // Opens a window on the computer's screen.
+    || /^\/api\/projects\/[^/]+\/open$/.test(path) // Opens a window on the computer's screen.
+    || /^\/api\/tasks\/[^/]+\/preview$/.test(path); // Starts or stops a dev server whose link works only on the computer.
 }
 /** This computer's private addresses, offered as listening addresses for Twingate. */
 function localAddresses() {

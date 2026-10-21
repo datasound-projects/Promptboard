@@ -63,6 +63,7 @@ const assets = new Map([
   ['/projects.js', ['projects.js', 'text/javascript; charset=utf-8']],
   ['/coordinator.js', ['coordinator.js', 'text/javascript; charset=utf-8']],
   ['/compose-batch.js', ['compose-batch.js', 'text/javascript; charset=utf-8']],
+  ['/live-preview.js', ['live-preview.js', 'text/javascript; charset=utf-8']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal assets, served from the installed packages by exact path only (no CDN,
@@ -198,6 +199,7 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     }
     if (method === 'PATCH' && action === 'workflow') return view({ project: await board.setWorkflow(id, await body()) });
     if (method === 'PATCH' && action === 'tests') return view({ project: await board.delivery.setTestCommands(id, await body()) });
+    if (method === 'PATCH' && action === 'preview') return view({ project: await board.previews.setSettings(id, await body()) });
     if (method === 'POST' && action === 'target-branch') return view({ project: await board.setTargetBranch(id, await body()) });
     if (method === 'GET' && action === 'timeline') return send(res, 200, { events: await board.timeline(id) });
     if (method === 'POST' && action === 'timeline') return send(res, 200, { note: await board.addTimelineNote(id, await body()) });
@@ -267,6 +269,10 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'POST' && action === 'runs') return view({ run: await board.requestRun(id, await body()) });
     if (method === 'POST' && action === 'resume') return view({ run: await board.resumeTask(id, await body(128 * 1024)) });
     if (method === 'DELETE' && action === 'worktree') return view({ task: await board.removeTaskWorktree(id, { deleteIgnored: searchParams.get('deleteIgnored') === '1' }) });
+    // Live preview: the card's dev server in its worktree, on this computer (starting and stopping are local-only).
+    if (method === 'GET' && action === 'preview') return send(res, 200, await board.previews.status(id));
+    if (method === 'POST' && action === 'preview') return send(res, 200, await board.previews.start(id, await body()));
+    if (method === 'DELETE' && action === 'preview') { await board.previews.stop(id); return send(res, 200, await board.previews.status(id)); }
     // Review, testing, merge, and completion (PB-04). Every change needs an explicit confirm flag.
     const delivery = board.delivery;
     if (method === 'GET' && action === 'revision') return send(res, 200, { revision: await delivery.revision(id) });
@@ -752,6 +758,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     autopilot.stop();
     board.githubLogin.cancel('The app stopped.');
     board.delivery.stopAllTests();
+    board.previews.stopAll();
     const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents, batchesClosed].filter(Boolean));
     // An accepted shutdown must keep Node alive even when a broken adapter has
     // no remaining handles. Observe cleanup or reach this bounded terminal state.

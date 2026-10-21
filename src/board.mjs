@@ -18,6 +18,7 @@ import { branchExists, commitExists, git, ignoredFiles, initRepository, listWork
 import { ADAPTERS, resolveConfig, validateResumeId } from './agents.mjs';
 import { validateEffort } from './providers.mjs';
 import { Delivery } from './delivery.mjs';
+import { LivePreviews, previewSettings } from './live-preview.mjs';
 import { clonePath, ensureClone, fastForward, fetchAndCompare, originRepository, viewRepository } from './github.mjs';
 import { externalIssueSource } from './external-source.mjs';
 import { enteredName, nameKey } from './projects.mjs';
@@ -297,6 +298,7 @@ function parseBackupData(data) {
       workflow: v2 && project.workflow && typeof project.workflow === 'object' ? project.workflow : v2 && project.automation?.autoRun === true ? { executing: { policy: 'start' } } : null,
       // Imported test commands never run until the user confirms them.
       testCommands: v2 && Array.isArray(project.testCommands) && project.testCommands.length ? project.testCommands.slice(0, 20) : null,
+      preview: v2 ? previewSettings(project.preview) : null, // Like test commands, it runs only once the import is confirmed.
       // The execution policy and Autopilot route also wait for confirmation; Autopilot always comes back off.
       execution: pipeline && project.execution && Object.keys(project.execution).length ? normalizeExecutionPolicy(project.execution) : null,
       autopilot: v2 && project.autopilot ? autopilotSettings(project.autopilot, { workflowMode: pipeline ? 'pipeline' : 'legacy', pipeline }) : null,
@@ -607,6 +609,7 @@ export class Board {
     this.recoveryPromise = null;
     this.startupStallMs = 120000; // An autonomous run with no session sign after this long is reported (PERMISSION_REQUIRED).
     this.delivery = new Delivery(this);
+    this.previews = new LivePreviews(this); // Cards' dev servers: runtime only, never stored.
     this.automationJournal = new PipelineJournal(dataDir, { onLeaseLost: key => this.#automationLeaseLost(key) });
     this.messageScheduler = null;
     this.automations = new PipelineAutomations({ journal: this.automationJournal, actions: automationActions,
@@ -715,7 +718,8 @@ export class Board {
       baseRevision: state.base?.revision || 0,
       projects: state.projects.map(project => ({ ...project, columns: projectColumns(project), transitions: projectTransitions(project), effectiveWorkflow: effectiveWorkflow(project, state.settings.defaultAgent, state),
         ...(project.workflowMode === 'pipeline' ? { tasks: project.tasks.map(task => ({ ...task, pipelineAgent: effectiveWorkflow(project, state.settings.defaultAgent, state, task)[task.column] })) } : {}) })),
-      execution: this.executor?.describe ? await this.executor.describe() : { available: Boolean(this.executor) }, recovery: this.store.recovery };
+      execution: this.executor?.describe ? await this.executor.describe() : { available: Boolean(this.executor) }, recovery: this.store.recovery,
+      previews: this.previews.list() };
   }
 
   /** Base metadata is fetched separately; board polling never includes library document bodies. */
@@ -1911,6 +1915,17 @@ export class Board {
     });
   }
 
+  /** The project's live preview command, checked by LivePreviews.setSettings; null removes it. */
+  async setPreview(id, { preview, expectedRevision }) {
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      checkRevision(project, expectedRevision, 'This project');
+      project.preview = preview;
+      project.revision++;
+      return project;
+    });
+  }
+
   /** Save completion, optionally without merging; this method never starts task work. */
   /**
    * Whether `completeTask` would accept the card now. A merge asks first, so a refused completion never leaves the
@@ -2021,6 +2036,7 @@ export class Board {
           project.baseRevision = (project.baseRevision || 0) + 1;
           draft.base.revision++;
         }
+        if (pending.preview) project.preview = previewSettings(pending.preview);
         if (pending.testCommands) project.testCommands = pending.testCommands.filter(item => Array.isArray(item?.argv) && item.argv.length && item.argv.every(arg => typeof arg === 'string' && arg.length <= 1000 && !arg.includes('\0'))).slice(0, 20).map(item => ({ label: String(item.label || item.argv.join(' ')).slice(0, 80), argv: item.argv.slice(0, 50), timeoutSec: Number.isInteger(item.timeoutSec) && item.timeoutSec >= 1 && item.timeoutSec <= 3600 ? item.timeoutSec : 600 }));
       }
       project.pendingImport = null;
@@ -2289,6 +2305,7 @@ export class Board {
       const { task } = this.#task(await this.state(), id);
       this.#requireAutomationsStopped(task);
       checkRevision(task, expectedRevision, 'This card');
+      await this.previews.stop(id); // Also when the worktree is kept: the card is gone.
       let revision = expectedRevision;
       if (task.workspace && !keepFiles) revision = (await this.removeTaskWorktree(id)).revision;
       let removed = [];
@@ -2375,6 +2392,7 @@ export class Board {
         ...backupBaseScopes({ ...project.pendingImport, ...project, ...(project.baseBinding ? {} : project.pendingImport?.baseBinding ? { baseBinding: project.pendingImport.baseBinding } : {}) }),
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
         agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
+        preview: project.preview || null,
         ...(project.workflowMode === 'pipeline' && (project.execution || project.pendingImport?.execution) ? { execution: project.execution || project.pendingImport.execution } : {}),
         ...(project.autopilot?.route || project.pendingImport?.autopilot ? { autopilot: project.autopilot?.route ? { route: project.autopilot.route, finish: project.autopilot.finish, maxRework: project.autopilot.maxRework } : project.pendingImport.autopilot } : {}),
         // Workspaces and runs are machine-specific and are not exported.
@@ -2440,8 +2458,9 @@ export class Board {
         }
         if (incoming.columnLayout) project.columnLayout = incoming.columnLayout;
         project.timelineNotes = incoming.timelineNotes.map(note => ({ ...note, taskId: project.tasks.some(task => task.id === note.taskId) ? note.taskId : null }));
-        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands || incoming.agentDefaults || incoming.execution || incoming.autopilot || incoming.baseBinding || incoming.baseColumns || incoming.agentProfileId) {
+        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands || incoming.preview || incoming.agentDefaults || incoming.execution || incoming.autopilot || incoming.baseBinding || incoming.baseColumns || incoming.agentProfileId) {
           project.pendingImport = { repositoryPath: incoming.repositoryPath, targetBranch: incoming.targetBranch, workflow: incoming.workflow, testCommands: incoming.testCommands };
+          if (incoming.preview) project.pendingImport.preview = incoming.preview;
           if (incoming.agentDefaults) project.pendingImport.agentDefaults = incoming.agentDefaults;
           if (incoming.execution) project.pendingImport.execution = incoming.execution;
           if (incoming.autopilot) project.pendingImport.autopilot = incoming.autopilot;
@@ -2589,6 +2608,7 @@ export class Board {
   async restoreTaskWorktree(taskId) {
     const { task } = this.#task(await this.state(), taskId);
     if (task.workspace?.status !== 'ready') throw conflict('This task has no worktree to restore.', 'NOTHING_TO_RESTORE');
+    await this.previews.stop(taskId); // Its folder was deleted under it.
     return this.ensureTaskWorktree(taskId, { recover: true });
   }
 
@@ -2599,6 +2619,8 @@ export class Board {
   removeTaskWorktree(taskId, { deleteIgnored = false } = {}) {
     return this.#locked(`task:${taskId}`, async () => {
       const { task } = this.#task(await this.state(), taskId);
+      // A card's dev server stops first, also when the removal is refused: the card is merging or leaving its folder.
+      await this.previews.stop(taskId);
       this.#requireAutomationsStopped(task);
       const workspace = task.workspace;
       if (!workspace) return null;
