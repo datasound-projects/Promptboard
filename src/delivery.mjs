@@ -12,6 +12,7 @@ import { createWriteStream, existsSync } from 'node:fs';
 import { access, constants, mkdir, readFile } from 'node:fs/promises';
 import { delimiter, dirname, join } from 'node:path';
 import { git, headBranch, ignoredFiles, lines, listWorktrees } from './git.mjs';
+import { nestedRepositoryProblem } from './sandbox.mjs';
 import { killPidGroup, trackPid, untrackPid } from './providers.mjs';
 
 /**
@@ -140,6 +141,9 @@ export class Delivery {
       if (working && ['todo', 'done'].includes(task.column)) throw fail('To Do and Done do not perform task work. Move or reopen the task first.', 'STAGE_NOT_RUNNABLE');
       if (task.workspace?.status !== 'ready') throw fail('This task has no worktree yet. Run Executing first.', 'WORKSPACE_REQUIRED');
       if (!project.targetBranch) throw fail('Choose the target branch first.', 'TARGET_BRANCH_REQUIRED');
+      // Docker mode: a repository the agent made in the worktree would run its own settings in every Git command here.
+      const nested = await nestedRepositoryProblem(state, taskId, task.workspace.path);
+      if (nested) throw fail(nested, 'NESTED_REPOSITORY');
       return { state, project, task, ws: task.workspace, target: project.targetBranch.name };
     }
     throw fail('This task does not exist. Reload the board.', 'NOT_FOUND', 404);

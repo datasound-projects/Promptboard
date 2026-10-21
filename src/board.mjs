@@ -15,6 +15,7 @@ import { taskPriority } from './task-priority.mjs';
 import { taskLabels, taskLabelIds, labelRevision } from './task-labels.mjs';
 import { assignTaskNumbers, allocateTaskNumber, validateTaskNumbers } from './task-numbers.mjs';
 import { branchExists, commitExists, git, ignoredFiles, initRepository, listWorktrees, repositoryIdentity, validateRepository } from './git.mjs';
+import { nestedRepositoryProblem } from './sandbox.mjs';
 import { ADAPTERS, resolveConfig, validateResumeId } from './agents.mjs';
 import { validateEffort } from './providers.mjs';
 import { Delivery } from './delivery.mjs';
@@ -2674,6 +2675,8 @@ export class Board {
         return forget();
       }
       if (!registered || registered.branch !== workspace.branch) throw new BoardError('Git does not list this worktree for the task branch, so nothing was removed.', 'WORKTREE_NOT_OWNED', 409);
+      const nested = await nestedRepositoryProblem(await this.state(), taskId, workspace.path); // Docker mode (src/sandbox.mjs).
+      if (nested) throw new BoardError(nested, 'NESTED_REPOSITORY', 409);
       const status = await git(['status', '--porcelain', '--untracked-files=all'], { cwd: workspace.path });
       if (status.trim()) throw new BoardError('The task worktree has uncommitted changes. Commit or move them first; Promptboard never discards files.', 'WORKTREE_DIRTY', 409);
       // Git deletes the files it ignores (.env, local databases, build output) with the worktree: never without a yes.
