@@ -284,8 +284,11 @@ window.PromptboardOrigin = (() => {
       if (id !== projectId || !record && !loading) {
         if (projectId && projects.some(item => item.id === projectId) && !(await flush())) { renderProjects(); return; }
         await load(id);
+      } else if (record?.exists && saveState === 'saved' && changeCount === savedCount && (project()?.revision ?? 0) > record.revision) {
+        // Compose Batch and Kanban links save the blueprint too: with nothing unsaved here, the newer saved version is loaded.
+        await load(id, { force: true });
       } else {
-        // Only Origin writes the blueprint, so an open editor is left as it is; redrawing it would drop a pending confirmation.
+        // An open editor is left as it is; redrawing it would drop a pending confirmation.
         renderProjects(); renderMain(); renderSave();
       }
     }
