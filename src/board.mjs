@@ -189,6 +189,17 @@ export function originSourceOf(value) {
 }
 // Export keeps going past a malformed reference saved by an older version; it just leaves it out.
 const validOrigin = value => { try { return value !== undefined && Boolean(originSourceOf(value)); } catch { return false; } };
+/**
+ * How a Done card was completed, as backups keep it ({ completion } or nothing): prerequisiteMet reads it. Only the kind, time
+ * and short branch, commit and pull request details; never the summary or run IDs. Older backups have none and count as before.
+ */
+const COMPLETION_DETAILS = ['branch', 'taskCommit', 'uncommittedChanges', 'targetBranch', 'previousTarget', 'mergedCommit', 'method', 'squash', 'commits', 'trigger', 'url', 'number', 'base', 'mergedAt'];
+function backupCompletion(value) {
+  if (!['merged', 'pull_request', 'no_changes', 'unmerged', 'closed'].includes(value?.kind)) return {};
+  const completion = { kind: value.kind, at: time(value.at) };
+  for (const key of COMPLETION_DETAILS) if (typeof value[key] === 'string' ? value[key].length <= 2048 : typeof value[key] === 'boolean' || Number.isFinite(value[key])) completion[key] = value[key];
+  return { completion };
+}
 /** Prerequisite cards: other cards of the same project that must be done before this one starts. */
 /** The first prerequisite loop reachable from `startId` (card IDs, ending where it began), or null. */
 function prerequisiteLoop(cards, startId) {
@@ -318,7 +329,7 @@ function parseBackupData(data) {
           ...(data.version >= 6 ? { number: card.number } : {}),
           labelIds: data.version >= 8 ? taskLabelIds(card.labelIds, labels) : [],
           priority: data.version >= 7 ? taskPriority(card.priority) : 0, source: normalizeSource(card.source), ...(data.version >= 10 && card.externalSource !== undefined ? { externalSource: externalIssueSource(card.externalSource) } : {}),
-          ...(data.version >= 10 && card.originSource !== undefined ? { originSource: originSourceOf(card.originSource) } : {}), ...(data.version >= 10 && card.dependsOn !== undefined ? { dependsOn: card.dependsOn } : {}), column: v2 && columnIds.has(card.column) ? card.column : 'todo', ...(v3 ? backupBaseScopes(card, true, columnIds) : {}),
+          ...(data.version >= 10 && card.originSource !== undefined ? { originSource: originSourceOf(card.originSource) } : {}), ...(data.version >= 10 && card.dependsOn !== undefined ? { dependsOn: card.dependsOn } : {}), ...(v2 ? backupCompletion(card.completion) : {}), column: v2 && columnIds.has(card.column) ? card.column : 'todo', ...(v3 ? backupBaseScopes(card, true, columnIds) : {}),
           ...(pipeline && data.version >= 5 ? normalizePipelineTaskSelection(pipeline, { profileId: card.profileId, agentOverride: card.agentOverride }) : {}) };
       }),
     };
@@ -364,10 +375,10 @@ function backupBaseScopes(entity, task = false, columnIds) {
 function newProject({ id = randomUUID(), name, createdAt = Date.now(), nextTaskNumber = 1, labels = [] }) {
   return { id, name, createdAt, nextTaskNumber, labels: taskLabels(labels), labelRevision: 0, revision: 1, repository: null, targetBranch: null, workflowMode: 'legacy', workflow: {}, pendingImport: null, tasks: [] };
 }
-function newTask({ id = randomUUID(), title, prompt, source = null, checksOutdated = false, createdAt = Date.now(), updatedAt = createdAt, column = 'todo', number, priority = 0, labelIds = [], externalSource, originSource, dependsOn }) {
+function newTask({ id = randomUUID(), title, prompt, source = null, checksOutdated = false, createdAt = Date.now(), updatedAt = createdAt, column = 'todo', number, priority = 0, labelIds = [], externalSource, originSource, dependsOn, completion }) {
   // contentRevision changes only when the title or prompt changes; plan approvals refer to it.
   return { id, title, prompt, source, ...(externalSource === undefined ? {} : { externalSource: externalIssueSource(externalSource) }),
-    ...(originSource === undefined ? {} : { originSource: originSourceOf(originSource) }), ...(dependsOn?.length ? { dependsOn: [...dependsOn] } : {}), checksOutdated, createdAt, updatedAt, column, ...(number === undefined ? {} : { number }), priority: taskPriority(priority), labelIds: taskLabelIds(labelIds), revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] };
+    ...(originSource === undefined ? {} : { originSource: originSourceOf(originSource) }), ...(dependsOn?.length ? { dependsOn: [...dependsOn] } : {}), ...(completion ? { completion } : {}), checksOutdated, createdAt, updatedAt, column, ...(number === undefined ? {} : { number }), priority: taskPriority(priority), labelIds: taskLabelIds(labelIds), revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] };
 }
 
 // Autopilot routes: stages a card visits, in board order. Executing is required (it does the work).
@@ -2439,7 +2450,7 @@ export class Board {
         ...(project.schedules?.length ? { schedules: exportSchedules(project.schedules) } : {}),
         // Workspaces and runs are machine-specific and are not exported.
         tasks: project.tasks.map(task => ({ id: task.id, number: task.number, title: task.title, prompt: task.prompt, priority: taskPriority(task.priority), labelIds: taskLabelIds(task.labelIds, project.labels), source: task.source, ...(task.externalSource === undefined ? {} : { externalSource: externalIssueSource(task.externalSource) }),
-          ...(validOrigin(task.originSource) ? { originSource: originSourceOf(task.originSource) } : {}), ...(task.dependsOn?.length ? { dependsOn: [...task.dependsOn] } : {}), checksOutdated: task.checksOutdated,
+          ...(validOrigin(task.originSource) ? { originSource: originSourceOf(task.originSource) } : {}), ...(task.dependsOn?.length ? { dependsOn: [...task.dependsOn] } : {}), ...backupCompletion(task.completion), checksOutdated: task.checksOutdated,
           createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column, ...backupBaseScopes(task, true),
           ...(project.workflowMode === 'pipeline' ? normalizePipelineTaskSelection(project.pipelineImport || project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }) : {}) })) })) };
   }

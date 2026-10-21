@@ -7,7 +7,7 @@ import { chmod, mkdtemp, readFile, realpath, rm, unlink, writeFile } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Board } from '../src/board.mjs';
+import { Board, prerequisiteMet } from '../src/board.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 
@@ -208,4 +208,29 @@ test('a backup made after a prerequisite card was deleted restores, and its depe
   const card = (await target.state()).projects[0].tasks.find(task => task.id === second.taskId);
   assert.deepEqual(card.dependsOn, [first.taskId]);
   await assert.rejects(target.transition(card.id, { column: 'executing', expectedRevision: card.revision }), error => error.code === 'PREREQUISITES_PENDING' && /a prerequisite card that was deleted/.test(error.message));
+});
+
+test('a prerequisite completed without merging still holds its dependent after a backup round trip', { skip }, async t => {
+  const root = await temp(t, 'pb-lc-repo-');
+  git(root, 'init', '-q', '-b', 'trunk'); git(root, 'config', 'user.email', 't@example.com'); git(root, 'config', 'user.name', 'Tester'); git(root, 'commit', '-q', '--allow-empty', '-m', 'init');
+  const board = new Board({ dataDir: await temp(t, 'pb-lc-data-') });
+  const project = await board.createProject({ name: 'Shop', workflowMode: 'pipeline' });
+  await board.linkRepository(project.id, { path: root, expectedRevision: project.revision });
+  const [plan, code] = (await board.createOriginTasks(project.id, { originProjectId: 'o1', tasks: [{ originTaskId: 'a', title: 'Plan', prompt: 'x' }, { originTaskId: 'b', title: 'Code', prompt: 'y' }] })).map(row => row.taskId);
+  await board.ensureTaskWorktree(code); // Its work happened on a task branch.
+  for (const id of [plan, code]) await board.transition(id, { column: 'done', expectedRevision: (await board.state()).projects[0].tasks.find(task => task.id === id).revision, decision: 'move' });
+  const restore = async backup => { const target = new Board({ dataDir: await temp(t, 'pb-lc-restored-') }); await target.importBackup(backup); return (await target.state()).projects[0]; };
+  const backup = await board.exportBackup(), restored = await restore(backup), met = id => prerequisiteMet(restored, restored.tasks.find(task => task.id === id));
+  assert.deepEqual([met(plan), met(code)], [true, false], 'a card that never had a worktree has no code; the other one is not merged');
+  assert.deepEqual(Object.keys(restored.tasks.find(task => task.id === code).completion).sort(), ['at', 'branch', 'kind', 'taskCommit']);
+  // Only a known kind with short details is kept: no summary, run ID, long or nested value.
+  const [first, second] = backup.projects[0].tasks;
+  first.completion = { kind: 'merged', at: 5, targetBranch: 'trunk', number: 3, squash: true, summary: 'What the agent said', executionRunId: 'run-1', branch: 'b'.repeat(3000), base: { deep: [[[]]] } };
+  second.completion = { kind: 'invented', branch: 'task/x' };
+  const checked = await restore(backup);
+  assert.deepEqual(checked.tasks.map(task => task.completion), [{ kind: 'merged', at: 5, targetBranch: 'trunk', number: 3, squash: true }, undefined]);
+  // A backup from before completions were exported restores as it did: a Done card counts.
+  for (const task of backup.projects[0].tasks) delete task.completion;
+  const older = await restore(backup);
+  assert.equal(prerequisiteMet(older, older.tasks.find(task => task.id === code)), true);
 });
