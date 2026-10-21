@@ -7,9 +7,9 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { access, mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AgentError, HOOK_SCRIPT } from './agents.mjs';
 import { writeAtomic } from './durable.mjs';
@@ -30,6 +30,7 @@ export const SANDBOX_MESSAGES = Object.freeze({
   SANDBOX_MOUNT_HIDDEN: 'Docker cannot see this folder. Share it with your Docker machine.',
   SANDBOX_START_FAILED: 'Docker could not start a container for this card. Run docker info in your terminal to see why.',
   SANDBOX_PATH_UNSUPPORTED: 'Docker cannot share a folder whose path contains a colon. Move the project or the Promptboard data folder.',
+  SANDBOX_NOT_WORKTREE: 'This card’s workspace is not a Git worktree that Docker mode can protect. Remove the worktree in Details, then start the card again.',
   SANDBOX_BUILD_RUNNING: 'The image is already being built. Wait for it or cancel it.',
   SANDBOX_NO_CLI: 'Install Claude Code or Codex on this computer first: the image gets the same versions.',
   SANDBOX_INVALID_IMAGE: 'Enter an image name such as my-sandbox:1, or leave it empty for Promptboard’s image.',
@@ -64,20 +65,70 @@ export function containerSession(provider, args) {
 }
 
 /**
+ * The files of a worktree's own Git folder that decide where Git reads settings and hooks (commondir; config.worktree when
+ * the repository enables it), which worktree the folder belongs to (gitdir) and which branch it is on (HEAD). The folder
+ * stays writable for the index and logs, so each file is mounted read-only on top of it. A missing config.worktree is
+ * created empty first: a mount cannot protect a file that does not exist yet.
+ */
+export const PROTECTED_GIT_FILES = Object.freeze(['commondir', 'gitdir', 'HEAD', 'config.worktree']);
+const isInside = (child, parent) => { const path = relative(parent, child); return Boolean(path) && !path.startsWith('..') && !isAbsolute(path); };
+
+/**
+ * What a card agent's container mounts, as [source (its real path), path inside, read-only]. Each place is { path, real }:
+ * the path inside is the spelling Promptboard and Git use on this computer, so the hooks, usage files, `codex --cd` and
+ * Git's own pointers resolve inside exactly as they do here, even under a symlinked data folder.
+ */
+export function sandboxMounts({ workspace, gitDir, commonDir, runDir, home, app, codexAuth = null, readOnly = false }) {
+  const mount = (place, ro, name = '') => [join(place.real, name), join(place.path, name), ro];
+  return [
+    mount(workspace, readOnly), mount(workspace, true, '.git'), // The worktree, and its pointer to its Git folder.
+    mount(commonDir, true), mount(commonDir, readOnly, 'objects'), // Branches, settings and hooks stay read-only; objects take git add.
+    mount(gitDir, readOnly), ...PROTECTED_GIT_FILES.map(name => mount(gitDir, true, name)), // This worktree's index and logs.
+    mount(runDir, false), ...(isInside(home.path, runDir.path) ? [] : [mount(home, false)]), mount(app, true),
+    ...(codexAuth ? [[codexAuth.real, join(home.path, 'codex', 'auth.json'), true]] : []),
+  ];
+}
+
+/**
  * The docker run arguments for one card agent. `names` pass the client's own values (`-e NAME`), so the CLI's settings and
  * sign-in never appear in argv or ps; `values` are the container's folders, which the client must not use itself.
  */
-export function dockerRunArgs({ runId, label, user, workspace, gitDir, commonDir, runDir, home, readOnly = false, codexAuth = null, image, command, args, names, values }) {
-  const ro = readOnly ? ':ro' : '';
-  const mounts = [
-    `${workspace}:${workspace}${ro}`, `${join(workspace, '.git')}:${join(workspace, '.git')}:ro`, // The worktree, and its pointer to the Git data.
-    `${commonDir}:${commonDir}:ro`, `${join(commonDir, 'objects')}:${join(commonDir, 'objects')}${ro}`, `${gitDir}:${gitDir}${ro}`, // Git data: objects and this worktree's index only.
-    `${runDir}:${runDir}`, ...(home.startsWith(runDir + '/') ? [] : [`${home}:${home}`]), `${APP_DIR}:${APP_DIR}:ro`,
-    ...(codexAuth ? [`${codexAuth}:${join(home, 'codex', 'auth.json')}:ro`] : []),
-  ];
+export function dockerRunArgs({ runId, label, user, workdir, mounts, image, command, args, names, values }) {
   return ['run', '--rm', '-it', '--init', '--name', `pb-run-${runId}`, '--label', `promptboard.run=${runId}`, '--label', `promptboard.data=${label}`,
-    '--user', user, '-w', workspace, ...mounts.flatMap(mount => ['-v', mount]), ...names.flatMap(name => ['-e', name]),
+    '--user', user, '-w', workdir, ...mounts.flatMap(([source, target, ro]) => ['-v', `${source}:${target}${ro ? ':ro' : ''}`]), ...names.flatMap(name => ['-e', name]),
     ...Object.entries(values).flatMap(([name, value]) => ['-e', `${name}=${value}`]), image, command, ...args];
+}
+
+/** A linked worktree's own Git folder and the repository's, spelled as Git finds them from the worktree's .git file. */
+async function gitFolders(workspace) {
+  const pointer = (await readFile(join(workspace, '.git'), 'utf8').catch(() => '')).match(/^gitdir: (.+)$/m)?.[1].trim();
+  const gitDir = pointer && resolve(workspace, pointer);
+  const common = gitDir && (await readFile(join(gitDir, 'commondir'), 'utf8').catch(() => '')).trim();
+  if (!common) throw fail('SANDBOX_NOT_WORKTREE');
+  return { gitDir, commonDir: resolve(gitDir, common) };
+}
+
+/**
+ * Git repositories inside a worktree, which Git treats as submodules: staged gitlinks whose folder holds a .git, and
+ * untracked folders that are repositories (Git lists those with a trailing slash and never looks inside). Listing them
+ * runs nothing in them, but status, diff or add would run their own settings (fsmonitor, filters) on this computer.
+ */
+export async function nestedRepositories(workspace) {
+  const [staged, others] = await Promise.all([git(['ls-files', '--stage', '-z'], { cwd: workspace }), git(['ls-files', '--others', '--exclude-standard', '-z'], { cwd: workspace })]);
+  const found = [];
+  for (const path of staged.split('\0').filter(entry => entry.startsWith('160000 ')).map(entry => entry.slice(entry.indexOf('\t') + 1)))
+    if (await lstat(join(workspace, path, '.git')).then(() => true, () => false)) found.push(path);
+  return [...found, ...others.split('\0').filter(path => path.endsWith('/')).map(path => path.slice(0, -1))];
+}
+
+/**
+ * Why Promptboard must not run Git in a task's worktree, or ''. Only a worktree a container wrote is checked: an agent on
+ * this computer can run commands here anyway. A worktree that cannot be listed is left to the Git command that follows.
+ */
+export async function nestedRepositoryProblem(state, taskId, workspace) {
+  if (!(state.runs || []).some(run => run.taskId === taskId && run.config?.sandbox === 'docker')) return '';
+  const nested = await nestedRepositories(workspace).catch(() => []);
+  return nested.length ? `The agent made a Git repository inside this card’s workspace (${nested.slice(0, 3).join(', ')}${nested.length > 3 ? ', …' : ''}). Git would run that repository’s own settings on this computer, so Promptboard runs no Git in this workspace until you delete it. Do not run Git there yourself either.` : '';
 }
 
 export class Sandbox {
@@ -225,34 +276,39 @@ export class Sandbox {
     const token = provider === 'claude' ? await this.#token() : '';
     const codexAuth = provider === 'codex' ? await realpath(join(this.codexHome, 'auth.json')).catch(() => null) : null;
     if (provider === 'claude' ? !token : !codexAuth) throw fail('SANDBOX_SIGNIN_MISSING', SIGN_IN[provider]);
-    const workspace = await realpath(run.workspacePath);
-    const [gitDir, commonDir] = await Promise.all(lines(await git(['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'], { cwd: workspace })).map(path => realpath(path)));
-    const home = conversationHome(await realpath(this.dataDir), runs, run), cliHome = join(home, provider === 'codex' ? 'codex' : 'claude');
-    const realRunDir = await realpath(runDir);
-    if ([workspace, gitDir, commonDir, realRunDir, home, APP_DIR, codexAuth].some(path => path?.includes(':'))) throw fail('SANDBOX_PATH_UNSUPPORTED');
+    const folders = await gitFolders(run.workspacePath);
+    const home = conversationHome(this.dataDir, runs, run), cliHome = join(home, provider === 'codex' ? 'codex' : 'claude');
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
     await mkdir(cliHome, { recursive: true, mode: 0o700 });
+    // Every protected Git file must exist before it is mounted (Docker would create a folder in its place).
+    await writeFile(join(folders.gitDir, 'config.worktree'), '', { flag: 'a' });
+    if (!(await Promise.all(PROTECTED_GIT_FILES.map(name => lstat(join(folders.gitDir, name)).then(info => info.isFile(), () => false)))).every(Boolean)) throw fail('SANDBOX_NOT_WORKTREE');
+    const place = async path => ({ path, real: await realpath(path) });
+    const [workspace, gitDir, commonDir, runPlace, homePlace, app] = await Promise.all([run.workspacePath, folders.gitDir, folders.commonDir, runDir, home, APP_DIR].map(place));
+    const codexPlace = codexAuth && { path: join(this.codexHome, 'auth.json'), real: codexAuth };
+    if ([workspace, gitDir, commonDir, runPlace, homePlace, app, codexPlace].some(item => item && `${item.path}${item.real}`.includes(':'))) throw fail('SANDBOX_PATH_UNSUPPORTED');
     // A fresh CLI home: Codex does not offer updates (the image is rebuilt instead); Claude Code skips its first-run setup.
     const seed = (file, text) => writeFile(join(cliHome, file), text, { flag: 'wx', mode: 0o600 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
     if (provider === 'codex') { await seed('config.toml', 'check_for_update_on_startup = false\n'); await seed('auth.json', ''); } // auth.json: the mount point of the sign-in.
     else await seed('.claude.json', `${JSON.stringify({ hasCompletedOnboarding: true })}\n`);
     // Each check names the folder to share. The run folder lives in the data folder, so the worktree's check covers later runs.
-    await this.#checkVisible(image, JSON.stringify([image, workspace, commonDir, codexAuth]), [['-f', join(workspace, '.git'), workspace], ['-d', join(commonDir, 'objects'), dirname(commonDir)],
-      ['-d', realRunDir, realRunDir], ['-f', HOOK_SCRIPT, APP_DIR], ...(codexAuth ? [['-f', codexAuth, dirname(codexAuth)]] : [])], signal);
+    const shown = [workspace, commonDir, runPlace, app, ...(codexPlace ? [{ path: dirname(codexPlace.path), real: dirname(codexPlace.real) }] : [])];
+    await this.#checkVisible(image, JSON.stringify([image, workspace, commonDir, codexAuth]), shown, [['-f', join(workspace.path, '.git'), workspace.path], ['-d', join(commonDir.path, 'objects'), dirname(commonDir.path)],
+      ['-d', runPlace.path, runPlace.path], ['-f', join(app.path, 'src', 'agent-hook.mjs'), app.path], ...(codexPlace ? [['-f', codexPlace.path, dirname(codexPlace.path)]] : [])], signal);
     const env = { ...built.env, ...(token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {}) };
     const values = { HOME: home, ...(provider === 'codex' ? { CODEX_HOME: cliHome } : { CLAUDE_CONFIG_DIR: cliHome }) };
     const session = containerSession(provider, built.args);
+    const mounts = sandboxMounts({ workspace, gitDir, commonDir, runDir: runPlace, home: homePlace, app, codexAuth: codexPlace, readOnly: session.readOnly });
     return { command: await commandOnPath('docker'), env, codexHome: provider === 'codex' ? cliHome : null,
-      args: dockerRunArgs({ runId: run.id, label: this.label, user: this.user, workspace, gitDir, commonDir, runDir: realRunDir, home, readOnly: session.readOnly, codexAuth, image, command: provider, args: session.args, names: Object.keys(env), values }) };
+      args: dockerRunArgs({ runId: run.id, label: this.label, user: this.user, workdir: workspace.path, mounts, image, command: provider, args: session.args, names: Object.keys(env), values }) };
   }
 
   /** A folder the Docker machine does not share mounts as an empty one, without an error: a tiny container checks them once per worktree. */
-  async #checkVisible(image, key, checks, signal) {
+  async #checkVisible(image, key, folders, checks, signal) {
     if (this.visible.has(key)) return;
-    const folders = [...new Set(checks.map(([type, path]) => type === '-f' ? dirname(path) : path))];
     try {
       await this.#docker(['run', '--rm', '--name', `pb-check-${randomUUID().slice(0, 8)}`, '--label', `promptboard.data=${this.label}`, '--user', this.user,
-        ...folders.flatMap(folder => ['-v', `${folder}:${folder}:ro`]), image, 'sh', '-c', 'while [ $# -gt 1 ]; do test "$1" "$2" || { printf %s "$2"; exit 3; }; shift 2; done', 'sh',
+        ...folders.flatMap(folder => ['-v', `${folder.real}:${folder.path}:ro`]), image, 'sh', '-c', 'while [ $# -gt 1 ]; do test "$1" "$2" || { printf %s "$2"; exit 3; }; shift 2; done', 'sh',
         ...checks.flatMap(([type, path]) => [type, path])], { signal, timeoutMs: 30000 });
     } catch (error) {
       signal?.throwIfAborted();

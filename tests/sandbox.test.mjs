@@ -3,14 +3,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildSession, HOOK_SCRIPT, resolveConfig } from '../src/agents.mjs';
 import { Board, effectiveWorkflow } from '../src/board.mjs';
 import { defaultPipelineConfig, normalizeExecutionPolicy } from '../src/pipeline-config.mjs';
-import { containerSession, conversationHome, dockerRunArgs, Sandbox } from '../src/sandbox.mjs';
+import { git as hostGit } from '../src/git.mjs';
+import { containerSession, conversationHome, dockerRunArgs, nestedRepositories, nestedRepositoryProblem, PROTECTED_GIT_FILES, Sandbox, sandboxMounts } from '../src/sandbox.mjs';
 import { startServer } from '../src/server.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
 import { customPipelineConfig } from './helpers/pipeline.mjs';
@@ -30,6 +32,8 @@ function setEnv(t, key, value) {
   if (!saved.get(t).has(key)) saved.get(t).set(key, process.env[key]);
   if (value === undefined) delete process.env[key]; else process.env[key] = value;
 }
+const exists = path => stat(path).then(() => true, () => false);
+const realpathSyncOf = path => realpathSync(path);
 const jsonLines = async file => (await readFile(file, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
 
 /** Fake docker and fake CLIs first on PATH. The CLIs answer --version as the real ones do (the image tag uses it). */
@@ -47,8 +51,11 @@ async function fakes(t, { docker = true } = {}) {
 }
 
 /** A pipeline project in Docker mode, with a linked repository, and the agent of every active column set to `provider`. */
-async function boxed(t, { provider = 'codex', server = false } = {}) {
-  const dataDir = await temp(t, 'pb-sandbox-data-'), root = await temp(t, 'pb-sandbox-repo-'), codexHome = await temp(t, 'pb-sandbox-codex-');
+async function boxed(t, { provider = 'codex', server = false, link = false } = {}) {
+  // link: the data folder is reached through a symbolic link, as a moved or shared folder can be.
+  let dataDir = await temp(t, 'pb-sandbox-data-');
+  if (link) { const linked = join(await temp(t, 'pb-sandbox-link-'), 'data'); await symlink(dataDir, linked); dataDir = linked; }
+  const root = await temp(t, 'pb-sandbox-repo-'), codexHome = await temp(t, 'pb-sandbox-codex-');
   git(root, 'init', '-q', '-b', 'trunk'); git(root, 'config', 'user.email', 't@e'); git(root, 'config', 'user.name', 'T');
   await writeFile(join(root, 'README.md'), 'main checkout\n'); git(root, 'add', '.'); git(root, 'commit', '-q', '-m', 'init');
   await writeFile(join(codexHome, 'auth.json'), '{"fixture":"codex sign-in"}\n', { mode: 0o600 });
@@ -74,6 +81,17 @@ async function boxed(t, { provider = 'codex', server = false } = {}) {
 }
 const runCalls = calls => calls.filter(call => call.args[0] === 'run' && !call.args.includes('sh'));
 const values = (args, flag) => args.flatMap((arg, at) => arg === flag ? [args[at + 1]] : []);
+// The container's view, from docker run's -v list: the most specific mount decides, as Docker stacks nested mounts.
+const mountsOf = args => values(args, '-v').map(spec => { const ro = spec.endsWith(':ro'), [source, target] = (ro ? spec.slice(0, -3) : spec).split(':'); return [source, target, ro]; });
+const mountFor = (mounts, path) => mounts.filter(([, target]) => path === target || path.startsWith(target + sep)).sort((a, b) => b[1].length - a[1].length)[0];
+const writable = (mounts, path) => { const mount = mountFor(mounts, path); return Boolean(mount) && !mount[2]; };
+/** A write as a process in the container makes it: refused like EROFS where its mount is read-only or missing. */
+async function containerWrite(mounts, path, text) {
+  if (!writable(mounts, path)) throw Object.assign(new Error(`EROFS: read-only file system, open '${path}'`), { code: 'EROFS' });
+  const [source, target] = mountFor(mounts, path);
+  await mkdir(dirname(source + path.slice(target.length)), { recursive: true });
+  await writeFile(source + path.slice(target.length), text);
+}
 
 test('Docker mode is a project setting that every active column carries, kept by Hands-off and in backups; Gemini is refused', async t => {
   const dataDir = await temp(t, 'pb-sandbox-setting-'), board = new Board({ dataDir });
@@ -104,22 +122,28 @@ test('Docker mode is a project setting that every active column carries, kept by
   assert.equal((await board.exportBackup()).projects[0].execution.sandbox, 'docker', 'A backup carries the project setting.');
 });
 
-test('the container sees only the worktree, its Git data, the run folder and Promptboard’s code, at the host’s own paths', () => {
-  const spec = { runId: 'r1', label: 'abc', user: '501:20', workspace: '/data/worktrees/p/t', gitDir: '/repo/.git/worktrees/t', commonDir: '/repo/.git', runDir: '/data/runs/r1',
-    home: '/data/runs/r1/sandbox-home', codexAuth: '/home/me/.codex/auth.json', image: 'promptboard-sandbox:1', command: 'codex', args: ['--sandbox', 'danger-full-access', '--', 'Do it'],
-    names: ['TERM', 'PROMPTBOARD_RUN'], values: { HOME: '/data/runs/r1/sandbox-home', CODEX_HOME: '/data/runs/r1/sandbox-home/codex' } };
-  const args = dockerRunArgs(spec);
+test('the container sees only the worktree, its Git data, the run folder and Promptboard’s code, at the paths used on this computer', { skip }, () => {
+  const at = (path, real = path) => ({ path, real });
+  const places = { workspace: at('/data/worktrees/p/t'), gitDir: at('/repo/.git/worktrees/t'), commonDir: at('/repo/.git'), runDir: at('/data/runs/r1'), home: at('/data/runs/r1/sandbox-home'),
+    app: at(APP_DIR), codexAuth: at('/home/me/.codex/auth.json') };
+  const args = dockerRunArgs({ runId: 'r1', label: 'abc', user: '501:20', workdir: places.workspace.path, mounts: sandboxMounts(places), image: 'promptboard-sandbox:1', command: 'codex',
+    args: ['--sandbox', 'danger-full-access', '--', 'Do it'], names: ['TERM', 'PROMPTBOARD_RUN'], values: { HOME: '/data/runs/r1/sandbox-home', CODEX_HOME: '/data/runs/r1/sandbox-home/codex' } });
   assert.deepEqual(args.slice(0, 11), ['run', '--rm', '-it', '--init', '--name', 'pb-run-r1', '--label', 'promptboard.run=r1', '--label', 'promptboard.data=abc', '--user']);
-  assert.equal(args[args.indexOf('-w') + 1], spec.workspace);
+  assert.equal(args[args.indexOf('-w') + 1], places.workspace.path);
+  const gitFile = name => `/repo/.git/worktrees/t/${name}:/repo/.git/worktrees/t/${name}:ro`;
   assert.deepEqual(values(args, '-v'), ['/data/worktrees/p/t:/data/worktrees/p/t', '/data/worktrees/p/t/.git:/data/worktrees/p/t/.git:ro', '/repo/.git:/repo/.git:ro', '/repo/.git/objects:/repo/.git/objects',
-    '/repo/.git/worktrees/t:/repo/.git/worktrees/t', '/data/runs/r1:/data/runs/r1', `${APP_DIR}:${APP_DIR}:ro`, '/home/me/.codex/auth.json:/data/runs/r1/sandbox-home/codex/auth.json:ro']);
+    '/repo/.git/worktrees/t:/repo/.git/worktrees/t', gitFile('commondir'), gitFile('gitdir'), gitFile('HEAD'), gitFile('config.worktree'),
+    '/data/runs/r1:/data/runs/r1', `${APP_DIR}:${APP_DIR}:ro`, '/home/me/.codex/auth.json:/data/runs/r1/sandbox-home/codex/auth.json:ro']);
   // Settings and secrets pass by name; only the container's own folders are written out.
   assert.deepEqual(values(args, '-e'), ['TERM', 'PROMPTBOARD_RUN', 'HOME=/data/runs/r1/sandbox-home', 'CODEX_HOME=/data/runs/r1/sandbox-home/codex']);
   assert.deepEqual(args.slice(args.indexOf('promptboard-sandbox:1')), ['promptboard-sandbox:1', 'codex', '--sandbox', 'danger-full-access', '--', 'Do it']);
   // A read-only stage cannot change the worktree or Git data; a resumed conversation mounts its first run's CLI home.
-  const readOnly = values(dockerRunArgs({ ...spec, readOnly: true, home: '/data/runs/r0/sandbox-home', codexAuth: null }), '-v');
+  const readOnly = values(dockerRunArgs({ runId: 'r1', label: 'abc', user: '501:20', workdir: '/w', mounts: sandboxMounts({ ...places, readOnly: true, home: at('/data/runs/r0/sandbox-home'), codexAuth: null }), image: 'i', command: 'codex', args: [], names: [], values: {} }), '-v');
   assert.deepEqual(readOnly, ['/data/worktrees/p/t:/data/worktrees/p/t:ro', '/data/worktrees/p/t/.git:/data/worktrees/p/t/.git:ro', '/repo/.git:/repo/.git:ro', '/repo/.git/objects:/repo/.git/objects:ro',
-    '/repo/.git/worktrees/t:/repo/.git/worktrees/t:ro', '/data/runs/r1:/data/runs/r1', '/data/runs/r0/sandbox-home:/data/runs/r0/sandbox-home', `${APP_DIR}:${APP_DIR}:ro`]);
+    '/repo/.git/worktrees/t:/repo/.git/worktrees/t:ro', gitFile('commondir'), gitFile('gitdir'), gitFile('HEAD'), gitFile('config.worktree'),
+    '/data/runs/r1:/data/runs/r1', '/data/runs/r0/sandbox-home:/data/runs/r0/sandbox-home', `${APP_DIR}:${APP_DIR}:ro`]);
+  // Under a symbolic link, the source is the real folder and the path inside keeps the spelling Promptboard uses.
+  assert.deepEqual(sandboxMounts({ ...places, runDir: at('/link/runs/r1', '/real/runs/r1'), home: at('/link/runs/r1/sandbox-home', '/real/runs/r1/sandbox-home') }).find(([, target]) => target === '/link/runs/r1'), ['/real/runs/r1', '/link/runs/r1', false]);
 });
 
 test('inside the container Codex runs with its own sandbox off, and strict read-only stages are marked read-only', async t => {
@@ -349,4 +373,86 @@ test('a paused conversation continues only where it started: after Docker mode i
   assert.equal(next.resumeFrom, undefined, 'The conversation kept on this computer is not resumed in Docker.');
   await until(async () => runCalls(await docker.calls()).length === 1, 'a fresh run in Docker');
   assert.ok(!runCalls(await docker.calls())[0].args.includes('resume'));
+});
+
+test('an agent in Docker cannot point Git at settings of its own: every file that redirects Git is read-only, checked with real Git', { skip, timeout: 120000 }, async t => {
+  const docker = await fakes(t), w = await boxed(t);
+  await docker.setState({ images: [w.image] });
+  const task = await w.board.createTask({ projectId: w.project.id, title: 'Redirect', prompt: 'x' });
+  const ws = await w.board.ensureTaskWorktree(task.id);
+  // Commits and a reset on this computer leave the per-worktree files Git normally keeps (index, logs, ORIG_HEAD).
+  await writeFile(join(ws.path, 'one.txt'), '1\n'); git(ws.path, 'add', '.'); git(ws.path, 'commit', '-qm', 'one'); git(ws.path, 'reset', '-q', '--soft', 'HEAD~1'); git(ws.path, 'commit', '-qm', 'again');
+  const runDir = join(w.dataDir, 'runs', 'redirect'); await mkdir(runDir, { recursive: true });
+  const run = { id: 'redirect', artifactsDir: join('runs', 'redirect'), workspacePath: ws.path, config: { provider: 'codex', sandbox: 'docker' } };
+  const mounts = mountsOf((await w.sandbox.prepare({ run, runs: [run], runDir, built: { args: ['--sandbox', 'workspace-write', '--', 'x'], env: { TERM: 'xterm-256color' } } })).args);
+  const gitDir = git(ws.path, 'rev-parse', '--path-format=absolute', '--git-dir'), commonDir = git(ws.path, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+  // Every entry of the worktree's own Git folder is either protected or plain data; a new kind of file needs a decision.
+  const DATA = ['index', 'logs', 'ORIG_HEAD', 'COMMIT_EDITMSG', 'FETCH_HEAD', 'MERGE_HEAD', 'MERGE_MSG', 'MERGE_MODE', 'AUTO_MERGE', 'refs'];
+  for (const name of await readdir(gitDir)) {
+    if (PROTECTED_GIT_FILES.includes(name)) assert.equal(writable(mounts, join(gitDir, name)), false, name);
+    else assert.ok(DATA.includes(name), `${name} in the worktree's Git folder is neither protected nor known data`);
+  }
+  assert.equal(await readFile(join(gitDir, 'config.worktree'), 'utf8'), '', 'A missing config.worktree is created empty, so it can be protected.');
+  // What tells Git where its settings, hooks and branches are, or which branch the worktree is on, is read-only inside.
+  for (const path of [join(ws.path, '.git'), ...PROTECTED_GIT_FILES.map(name => join(gitDir, name)), join(commonDir, 'config'), join(commonDir, 'hooks', 'pre-commit'),
+    join(commonDir, 'info', 'attributes'), join(commonDir, 'refs', 'heads', 'trunk'), join(commonDir, 'packed-refs'), join(commonDir, 'worktrees', 'other', 'commondir')]) assert.equal(writable(mounts, path), false, path);
+  // Staging stays possible: the files, the index (and its lock), logs and objects.
+  for (const path of [join(ws.path, 'src', 'app.js'), join(gitDir, 'index'), join(gitDir, 'index.lock'), join(gitDir, 'logs', 'HEAD'), join(commonDir, 'objects', 'ab', 'cdef')]) assert.equal(writable(mounts, path), true, path);
+  // Nothing else of this computer is visible: not the board, other runs, the main checkout or the Codex settings.
+  for (const path of [join(w.dataDir, 'state.json'), join(w.dataDir, 'runs', 'other'), join(w.root, 'README.md'), join(w.codexHome, 'config.toml')]) assert.equal(mountFor(mounts, path), undefined, path);
+  // The attack: a Git folder of the agent's own, whose fsmonitor is a command, and commondir pointed at it.
+  const marker = join(await temp(t, 'pb-sandbox-marker-'), 'ran'), evil = join(ws.path, 'evil');
+  git(ws.path, 'init', '-q', '--bare', evil); git(ws.path, '--git-dir', evil, 'config', 'core.bare', 'false'); git(ws.path, '--git-dir', evil, 'config', 'core.fsmonitor', `touch '${marker}'; false`);
+  const attack = async view => {
+    await rm(marker, { force: true });
+    await containerWrite(view, join(gitDir, 'commondir'), `${evil}\n`).catch(error => { if (error.code !== 'EROFS') throw error; });
+    await hostGit(['status', '--porcelain'], { cwd: ws.path }).catch(() => {}); // As Promptboard's next checkpoint does.
+    const ran = await exists(marker);
+    await writeFile(join(gitDir, 'commondir'), '../..\n');
+    return ran;
+  };
+  assert.equal(await attack(mounts), false, 'commondir is read-only, so nothing of the agent’s runs on this computer.');
+  assert.equal(await attack(mounts.filter(([, target]) => !PROTECTED_GIT_FILES.some(name => target === join(gitDir, name)))), true, 'With the earlier mounts the same attack runs the agent’s command.');
+});
+
+test('a Git repository the agent makes in its Docker workspace stops Promptboard’s own Git there, so its settings never run on this computer', { skip, timeout: 120000 }, async t => {
+  const docker = await fakes(t), w = await boxed(t);
+  await docker.setState({ images: [w.image] });
+  const run = await w.start('Nested', 'WRITE_FILE:work.txt');
+  await until(async () => (await w.run(run.id)).turnComplete, 'turn in Docker');
+  await w.board.pauseRun(run.id, { confirm: true });
+  // What the agent can make with the files it may write: a repository with a hostile fsmonitor, staged like a submodule.
+  const marker = join(await temp(t, 'pb-sandbox-marker-'), 'ran'), nested = join(run.workspacePath, 'vendor', 'tool');
+  git(run.workspacePath, 'init', '-q', nested); git(nested, '-c', 'user.email=a@b', '-c', 'user.name=A', 'commit', '-q', '--allow-empty', '-m', 'x');
+  git(nested, 'config', 'core.fsmonitor', `touch '${marker}'; false`); await writeFile(join(nested, 'file.txt'), 'x\n');
+  assert.deepEqual(await nestedRepositories(run.workspacePath), ['vendor/tool'], 'An untracked repository is found without running anything in it.');
+  const refused = { code: 'NESTED_REPOSITORY', message: /^The agent made a Git repository inside this card’s workspace \(vendor\/tool\)\./ };
+  for (const action of [() => w.board.delivery.revision(run.taskId), () => w.board.delivery.uncommitted(run.taskId), () => w.board.delivery.commit(run.taskId, { message: 'x', confirm: true }), () => w.board.removeTaskWorktree(run.taskId)])
+    await assert.rejects(action(), refused);
+  assert.equal(await exists(marker), false, 'None of the agent’s settings ran.');
+  git(run.workspacePath, 'add', 'vendor/tool');
+  assert.deepEqual(await nestedRepositories(run.workspacePath), ['vendor/tool'], 'Staged as a submodule, it is still found.');
+  await assert.rejects(w.board.delivery.revision(run.taskId), refused);
+  assert.equal(await exists(marker), false);
+  git(run.workspacePath, 'status', '--porcelain');
+  assert.equal(await exists(marker), true, 'Plain Git would have run the agent’s fsmonitor.');
+  // A card that never ran in Docker is not checked: its agent could run commands here anyway.
+  assert.equal(await nestedRepositoryProblem({ runs: [] }, run.taskId, run.workspacePath), '');
+  // Once the repository is gone, Promptboard works again.
+  git(run.workspacePath, 'restore', '--staged', 'vendor/tool'); await rm(nested, { recursive: true, force: true });
+  assert.equal((await w.board.delivery.revision(run.taskId)).branchOk, true);
+});
+
+test('under a symlinked data folder every path the CLI is given is visible in the container at that same spelling', { skip, timeout: 120000 }, async t => {
+  const docker = await fakes(t), w = await boxed(t, { link: true });
+  await docker.setState({ images: [w.image] });
+  const run = await w.start('Linked', 'WRITE_FILE:linked.txt');
+  await until(async () => (await w.run(run.id)).turnComplete, 'turn complete under a linked data folder');
+  const args = runCalls(await docker.calls())[0].args, mounts = mountsOf(args), cli = args.slice(args.indexOf(w.image) + 2);
+  const notify = JSON.parse(cli[cli.indexOf('-c') + 1].slice('notify='.length));
+  const paths = [args[args.indexOf('-w') + 1], ...notify.slice(1, 3), ...values(args, '-e').filter(value => value.includes('=')).map(value => value.slice(value.indexOf('=') + 1))];
+  assert.ok(paths.some(path => path.startsWith(w.dataDir + sep)), 'The hooks and homes use the data folder as Promptboard spells it.');
+  for (const path of paths) assert.ok(mountFor(mounts, path), `${path} is visible inside the container`);
+  assert.equal(args[args.indexOf('-w') + 1], run.workspacePath, '-w and codex --cd use the stored worktree path.');
+  assert.ok(mountsOf(args).some(([source, target]) => target === join(w.dataDir, 'runs', run.id) && source === join(realpathSyncOf(w.dataDir), 'runs', run.id)), 'The run folder is mounted from its real path.');
 });
