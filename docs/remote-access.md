@@ -34,8 +34,9 @@ you no longer use. A few things need someone at the computer and are refused fro
 and GitHub sign-in (they open a browser or terminal there), native folder pickers, opening a project's folder, a terminal
 or a code editor (Open in Finder, Open in IDE, and the list of editors): they open windows on the computer. A phone can
 copy the path. Base imports are refused too: *Import MCP servers…* reads Claude Desktop's own configuration on the
-computer, and *Import Markdown from a repository…* scans a repository there. GitHub, CLI and agent credentials are never
-sent to the phone.
+computer, and *Import Markdown from a repository…* scans a repository there. Starting and stopping a card's
+[live preview](live-preview.md) is refused too: its link is `127.0.0.1`, which only the computer can open. GitHub, CLI
+and agent credentials are never sent to the phone.
 
 Everything else works from a phone because it runs on the computer exactly as it would from there, with the same
 checks. That includes Compose's context sources: a local project folder (read-only, secret files skipped) and an MCP
