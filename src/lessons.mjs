@@ -21,7 +21,8 @@ import { FAILURE_MESSAGES, makeTempDir, removeTempDir, SAFE_MODEL } from './prov
 const SCHEMA = 'promptboard.lessons', VERSION = 1;
 const KINDS = Object.freeze(['command', 'convention', 'gotcha', 'failed_approach']);
 const TITLES = { command: 'Commands that worked', convention: 'Conventions', gotcha: 'Gotchas', failed_approach: 'Failed approaches (do not repeat them)' };
-const CAPS = { approved: 200, suggested: 100, rejected: 200, jobs: 200, perRun: 6, text: 300, evidence: 200, input: 24000, prompt: 8000, stops: 3 };
+const CAPS = { approved: 200, suggested: 100, rejected: 200, jobs: 200, perRun: 6, text: 300, evidence: 200, input: 24000, prompt: 8000, stops: 3,
+  known: { approved: [40, 6000], rejected: [20, 3000] } }; // The owner's decided lessons the model sees: newest first, at most this many and characters.
 const STOPPED = `It was stopped ${CAPS.stops} times to make room for your own CLI work or an app restart. Choose Suggest again when the CLI is free.`;
 // The smallest model of each CLI that can run with every tool disabled. Antigravity cannot, so it never suggests.
 const DEFAULTS = Object.freeze({ claude: { model: 'haiku', effort: '' }, codex: { model: '', effort: 'low' }, gemini: { model: 'flash', effort: '' } });
@@ -99,8 +100,22 @@ export function parseLessons(text, known = []) {
   return result;
 }
 
-/** The facts one merged card leaves behind, bounded and without local paths, secrets or environment values. */
-async function evidenceFor(project, task, approved = []) {
+/** The newest decided lessons of one status, as lines within its count and character bounds. */
+function decided(lessons, status) {
+  const [count, chars] = CAPS.known[status], lines = [];
+  let room = chars;
+  for (const item of lessons.filter(lesson => lesson.status === status).sort((a, b) => (b.decidedAt || b.createdAt) - (a.decidedAt || a.createdAt)).slice(0, count)) {
+    const line = `- [${item.kind}] ${safe(item.text, CAPS.text)}`;
+    if ((room -= line.length + 1) < 0) break;
+    lines.push(line);
+  }
+  return lines.join('\n');
+}
+/**
+ * The facts one merged card leaves behind, bounded and without local paths, secrets or environment values. The owner's
+ * approved and rejected lessons keep their room: the card's facts are cut first.
+ */
+async function evidenceFor(project, task, lessons = []) {
   const parts = [], add = (title, text) => { if (text) parts.push(`${title}:\n${text}`); };
   parts.push(`Card #${task.number ?? '?'}: “${safe(task.title, 120)}”`);
   add('Card text (first 3,000 characters)', safe(task.prompt, 3000));
@@ -114,8 +129,9 @@ async function evidenceFor(project, task, approved = []) {
   const done = task.completion || {};
   parts.push(`Merge: ${done.kind === 'merged' ? `merged into ${safe(done.targetBranch, 100)}, ${done.commits ?? '?'} ${done.commits === 1 ? 'commit' : 'commits'}` : `pull request #${done.number ?? '?'} merged into ${safe(done.base, 100) || 'its base branch'}`}.`);
   add('Changed files (first 150)', await changedFiles(project, task));
-  add('Lessons the owner already approved (do not repeat them)', approved.slice(-60).map(item => `- [${item.kind}] ${safe(item.text, CAPS.text)}`).join('\n'));
-  return clip(parts.join('\n\n'), CAPS.input);
+  const known = [['Lessons the owner already approved (do not repeat them)', decided(lessons, 'approved')], ['The owner rejected these; do not suggest them again, even reworded', decided(lessons, 'rejected')]]
+    .filter(([, text]) => text).map(([title, text]) => `${title}:\n${text}`).join('\n\n');
+  return [clip(parts.join('\n\n'), CAPS.input - known.length - 2), known].filter(Boolean).join('\n\n');
 }
 /** `git diff --name-status` of what the merge brought in, read from the repository (the worktree is gone after a merge). */
 async function changedFiles(project, task) {
@@ -137,7 +153,7 @@ function promptFor(evidence) {
     '- failed_approach: an approach that was tried here and did not work, so nobody repeats it.',
     'Rules:',
     '- Only what the facts support. No guesses, no generic programming advice, nothing that matters only for this one card.',
-    '- Do not repeat the lessons the owner already approved.',
+    '- Do not suggest again what the owner already approved or rejected, not even in other words.',
     `- At most ${CAPS.perRun} lessons. "text" has at most ${CAPS.text} characters; "evidence" has at most ${CAPS.evidence} and names the fact that supports it.`,
     '- If nothing is worth keeping, answer [].',
     'Answer with only a JSON array and no other text, for example: [{"kind":"command","text":"Run the tests with npm test.","evidence":"npm test exited 0 before the merge."}]',
@@ -432,7 +448,7 @@ export class Lessons {
     const task = project.tasks.find(item => item.id === job.taskId) || fail('This card was deleted.', 'NOT_FOUND', 404);
     const data = await this.#serial(() => this.#load(projectId));
     const call = choiceFor(data.settings, task, state.runs);
-    const prompt = promptFor(await evidenceFor(project, task, data.lessons.filter(item => item.status === 'approved')));
+    const prompt = promptFor(await evidenceFor(project, task, data.lessons));
     const cwd = await makeTempDir('pb-lessons-');
     let text;
     try { text = (await this.runner({ ...call, prompt, cwd, signal, timeoutMs: 180000 })).text; }

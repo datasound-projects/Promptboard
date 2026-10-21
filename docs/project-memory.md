@@ -68,7 +68,7 @@ At most about 24,000 characters, built from the board's own records:
 - rework notes and the reasons in the card's stage history;
 - the merge: target branch and number of commits, or the pull request;
 - the names of the changed files (`git diff --name-status` of the merge, read in the repository, at most 150);
-- the lessons you already approved, so it does not repeat them.
+- the newest lessons you approved (up to 40, 6,000 characters) and rejected (up to 20, 3,000 characters), so it suggests neither again, not even reworded. They keep their room: the card's facts are cut first.
 
 Local folders are cut to their last name (`/Users/you/shop/README.md` becomes `…/README.md`), and secret-looking values (API keys, tokens, passwords, private keys, credentials in URLs) are masked. Environment variables, CLI credentials, agent transcripts and terminal logs are never included. The card text and the facts are marked as data, not instructions.
 
