@@ -213,6 +213,9 @@ export class LivePreviews {
       child.once('exit', () => setTimeout(() => { child.stdout.destroy(); child.stderr.destroy(); }, 2000).unref());
       child.once('close', (code, signal) => {
         clearTimeout(timer);
+        // What the command left running in its process group goes with it ("The preview stopped" means stopped). The group
+        // only, never the bare ID: the command has exited, so that ID may be another program's by now. Windows has no groups.
+        if (child.pid && process.platform !== 'win32') try { process.kill(-child.pid, 'SIGKILL'); } catch {}
         if (child.pid) { untrackPid(child.pid); item.pids.delete(child.pid); }
         resolve({ code: timedOut ? null : code, signal, timedOut });
       });

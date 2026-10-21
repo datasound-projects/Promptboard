@@ -325,6 +325,25 @@ test('Build image streams progress, can be cancelled, tags the image with this c
   assert.ok(sandbox.buildStatus().lines.includes('npm ERR! network unavailable'));
 });
 
+test('Build image is claimed at once: a second request while Docker is checked is refused, and Cancel then means no docker build', { skip, timeout: 60000 }, async t => {
+  const docker = await fakes(t), sandbox = new Sandbox({ dataDir: await temp(t, 'pb-sandbox-claim-') });
+  const builds = async () => (await docker.calls()).filter(call => call.args[0] === 'build').length;
+  setEnv(t, 'FAKE_DOCKER_BUILD_MS', '400');
+  const both = await Promise.allSettled([sandbox.startBuild(), sandbox.startBuild()]);
+  assert.deepEqual(both.map(item => item.value?.status ?? item.reason.code), ['running', 'SANDBOX_BUILD_RUNNING']);
+  await until(() => sandbox.buildStatus().status === 'succeeded', 'build finished');
+  assert.equal(await builds(), 1);
+  // Cancel before the checks are done: docker build never starts.
+  const starting = sandbox.startBuild();
+  assert.equal(sandbox.cancelBuild().status, 'cancelled');
+  assert.equal((await starting).status, 'cancelled');
+  assert.equal(await builds(), 1);
+  // A failed check gives the claim back.
+  setEnv(t, 'FAKE_DOCKER_STOPPED', '1');
+  await assert.rejects(sandbox.startBuild(), { code: 'SANDBOX_DOCKER_STOPPED' });
+  assert.equal(sandbox.buildStatus().status, 'cancelled');
+});
+
 test('the Docker status says what is missing, and an image of your own replaces Promptboard’s', { skip, timeout: 60000 }, async t => {
   const docker = await fakes(t), dataDir = await temp(t, 'pb-sandbox-status-'), codexHome = await temp(t, 'pb-sandbox-status-codex-');
   const sandbox = new Sandbox({ dataDir, codexHome });

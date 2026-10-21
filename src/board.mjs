@@ -1141,8 +1141,12 @@ export class Board {
       const ap = current.autopilot;
       if (!ap) throw new BoardError('Save the Autopilot settings first.', 'AUTOPILOT_EMPTY');
       const log = text => { ap.log = [...(ap.log || []), { at: Date.now(), text: clip(text, 500) }].slice(-200); };
-      if (action === 'start') Object.assign(ap, { status: 'running', current: null, done: [], reason: '', startedAt: Date.now() }), log(`Autopilot started by ${by}.`);
-      else if (action === 'pause') { if (ap.status !== 'running') throw conflict('Autopilot is not running.', 'AUTOPILOT_NOT_RUNNING'); ap.status = 'paused'; ap.reason = 'Paused by you.'; log('Paused by you.'); }
+      if (action === 'start') {
+        // Restart (offered while paused): the card in progress is continued where it is, as Resume does, before the next one.
+        const card = ['running', 'paused'].includes(ap.status) && ap.current ? current.tasks.find(task => task.id === ap.current.taskId) : null;
+        Object.assign(ap, { status: 'running', current: card ? { ...ap.current, step: 'resume' } : null, done: [], reason: '', startedAt: Date.now() });
+        log(card ? `Autopilot restarted by ${by}. It continues “${card.title}” first.` : `Autopilot started by ${by}.`);
+      } else if (action === 'pause') { if (ap.status !== 'running') throw conflict('Autopilot is not running.', 'AUTOPILOT_NOT_RUNNING'); ap.status = 'paused'; ap.reason = 'Paused by you.'; log('Paused by you.'); }
       else if (action === 'resume') { if (ap.status !== 'paused') throw conflict('Autopilot is not paused.', 'AUTOPILOT_NOT_PAUSED'); ap.status = 'running'; ap.reason = ''; if (ap.current) ap.current.step = 'resume'; log('Resumed by you.'); }
       else if (action === 'skip') {
         if (!ap.current) throw conflict('No card is in progress.', 'AUTOPILOT_IDLE');
@@ -1951,16 +1955,27 @@ export class Board {
    * target branch moved with the card still in Merge.
    */
   async checkCompletable(id, { owner = null } = {}) {
-    const state = await this.state(), { task } = this.#task(state, id);
+    const state = await this.state(), { project, task } = this.#task(state, id);
+    this.#refuseCompletedAgain(project, task);
     this.#requireAutomationsStopped(task, { owner });
     if (this.#activeRun(state, id)) throw conflict('This card has an active run. Stop it before you merge.', 'RUN_ACTIVE');
   }
   /** The automation move that owns this card's automatic merge, if it is running and not blocked. */
   mergeOwner(id) { const job = this.automationMoves.get(id); return job && !job.blocked ? job.key : null; }
 
+  /**
+   * Done is written once: a second completion would replace the first (a merge record, say). Only Done without merging may
+   * still be completed by a merge or a merged pull request (Check pull request on the card), as its code then reached the target.
+   */
+  #refuseCompletedAgain(project, task, kind = 'merged') {
+    const done = project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'done').id : 'done';
+    if (task.column === done && !(task.completion?.kind === 'unmerged' && ['merged', 'pull_request'].includes(kind))) throw conflict('This card is already done. Its completion stays as it is.', 'NOT_ALLOWED_IN_DONE');
+  }
+
   async completeTask(id, { kind, details, transitionId, owner = null }) {
     const saved = await this.store.update(state => {
       const { project, task } = this.#task(state, id);
+      this.#refuseCompletedAgain(project, task, kind);
       this.#requireAutomationsStopped(task, { owner });
       if (this.#activeRun(state, id)) throw conflict('This card has an active run.', 'RUN_ACTIVE');
       const done = project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'done').id : 'done';
