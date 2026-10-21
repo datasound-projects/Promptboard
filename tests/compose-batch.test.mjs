@@ -540,3 +540,21 @@ test('a batch whose batch.json is damaged is still listed from its backup, as it
   assert.deepEqual((await call('')).data.batches.map(entry => entry.id), [record.id]);
   assert.equal((await call(`/${record.id}`)).data.batch.items.length, 1);
 });
+
+test('deleting the Origin side waits for its running batch, then keeps the batch aside, so a later project with that ID starts without it', async t => {
+  const runner = engineer({ hold: text => /MARK1\b/.test(text) });
+  const { app, token, call } = await setup(t, runner);
+  const { store, record } = await project(app, 2);
+  await call('', { originId: record.id, expectedRevision: record.revision, itemIds: ['t1', 't2'] });
+  await call(`/${record.id}/run`, { itemIds: ['t1'] });
+  await settle(call, record.id, batch => batch.items.find(item => item.key === 'IMP-001').state === 'running');
+  const remove = () => api(app, `/api/origin/projects/${record.id}/delete`, { method: 'POST', token, body: { expectedRevision: record.revision } });
+  assert.deepEqual(await remove().then(({ status, data }) => [status, data.code]), [409, 'TASK_RUNNING']);
+  assert.equal((await api(app, `/api/origin/projects/${record.id}`, { token })).status, 200, 'nothing was deleted');
+  await call(`/${record.id}/cancel`, { itemIds: ['t1'] });
+  await settle(call, record.id);
+  assert.equal((await remove()).status, 200);
+  assert.ok((await readdir(join(app.board.store.dir, 'origin', 'deleted'))).some(name => name.startsWith(`compose-batch-${record.id}`)), 'kept aside, not removed');
+  await store.create({ name: 'Shop again', id: record.id });
+  assert.equal((await call(`/${record.id}`)).status, 404, 'the new project has no batch of the old one');
+});

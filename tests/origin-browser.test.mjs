@@ -312,6 +312,21 @@ test('Origin restores a damaged project file and refuses stale saves without tou
   assert.equal((await blueprintFile(app, created.id)).blueprint.idea, 'Saved elsewhere');
   await ev(`[...document.querySelectorAll('#origin-save button')].find(b => b.textContent === 'Reload saved version').click();`);
   await wait(`document.querySelector('#origin-view').dataset.save === 'saved' && document.querySelector('#origin-error').hidden`, 'reloaded saved version');
+  // Compose Batch and Kanban links save the blueprint too: back on Origin with nothing unsaved, the page takes the
+  // newer saved version, so the next edit is saved instead of being refused as "changed in another window".
+  await ev(`location.hash = '#/kanban';`);
+  await wait(`document.documentElement.dataset.page === 'kanban'`, 'Kanban shown');
+  const put = async summary => {
+    const latest = await (await fetch(`${app.url}/api/origin/projects/${created.id}`, { headers: { 'X-STE-Token': token } })).json();
+    assert.equal((await fetch(`${app.url}/api/origin/projects/${created.id}`, { method: 'PUT', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ expectedRevision: latest.revision, blueprint: { ...latest.blueprint, vision: { ...latest.blueprint.vision, summary } } }) })).status, 200);
+  };
+  await put('Saved by Compose'); await put('Damaged on disk');
+  await writeFile(join(app.board.store.dir, 'origin', blueprintFileName(created.id)), '{"schema":"promptboard.origin", broken'); // Its backup is the save before.
+  await ev(`location.hash = '#/origin';`);
+  await wait(`document.querySelector('#origin-main textarea')?.value === 'Saved by Compose' && /last good copy was restored/.test(document.querySelector('#origin-notice').textContent)`, 'the newer saved version is shown');
+  await ev(`const t = document.querySelector('#origin-main textarea'); t.value = 'Edited after Compose'; t.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await saved();
+  assert.equal((await blueprintFile(app, created.id)).blueprint.vision.summary, 'Edited after Compose');
   assert.equal((await app.board.view()).projects[0].tasks[0].prompt, 'Still here.');
   assert.ok((await readFile(statePath)).equals(stateBefore));
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);

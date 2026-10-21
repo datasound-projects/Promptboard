@@ -16,7 +16,7 @@ import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { redactLocal } from './compose-local.mjs';
 import { readWithBackup, serial, writeAtomic } from './durable.mjs';
-import { createBoardFor, enteredName, nameKey, nameTaken } from './projects.mjs';
+import { createBoardFor, enteredName, nameKey, nameTaken, oneName } from './projects.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 export const ORIGIN_DIR = 'origin';
@@ -196,7 +196,7 @@ export class OriginStore {
 
   list() { return this.#serial(() => this.#list()); }
 
-  /** `report: false` (Project Context) leaves a pending recovery notice for the project's own page. */
+  /** `report: false` (every reader but the project's own page) leaves a pending recovery notice for that page. */
   read(originId, { report = true } = {}) {
     try { validId(originId); } catch (error) { return Promise.reject(error); }
     return this.#serial(async () => {
@@ -265,6 +265,8 @@ export class OriginStore {
     return this.#serial(async () => {
       const record = await this.#require(originId);
       if (record.revision !== expectedRevision) throw new OriginError('This project changed in another window. Reload it first.', 'ORIGIN_REVISION_CONFLICT', 409);
+      // Checked here too, as in create(), so two renames to one name at once never both pass.
+      if (changes.name !== undefined && (await this.#list()).some(other => other.id !== originId && nameKey(other.name) === nameKey(changes.name))) throw new OriginError('A project with this name already exists. Choose it from the project list.', 'NAME_TAKEN', 409);
       return this.#save(record, changes);
     });
   }
@@ -465,7 +467,7 @@ export function loopFrom(items, ids) {
  * card are added only when asked, and a card deleted in Kanban is recreated only when asked. Nothing starts.
  */
 async function handoff({ origin, board, originId, input }) {
-  const record = await origin.read(originId);
+  const record = await origin.read(originId, { report: false });
   if (!record || record.damaged) throw new OriginError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
   if (record.revision !== input.expectedRevision) throw new OriginError('The blueprint has newer changes. Let it save, then send again.', 'ORIGIN_REVISION_CONFLICT', 409);
   const destination = record.kanbanProjectId ? (await board.state()).projects.find(project => project.id === record.kanbanProjectId) : null;
@@ -532,7 +534,7 @@ const todoOf = project => (project.workflowMode === 'pipeline' ? project.pipelin
  * the snapshot), so unrelated edits and diagram moves change nothing. Kanban progress is only read.
  */
 async function contextStatus({ origin, board, originId, input }) {
-  const record = await origin.read(originId);
+  const record = await origin.read(originId, { report: false });
   if (!record || record.damaged) throw new OriginError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
   if (record.revision !== input.expectedRevision) throw new OriginError('The blueprint has newer changes. Let it save, then check again.', 'ORIGIN_REVISION_CONFLICT', 409);
   const projects = (await board.state()).projects, tasks = [];
@@ -559,7 +561,7 @@ async function contextStatus({ origin, board, originId, input }) {
  * confirm. Earlier snapshots stay for history.
  */
 async function updateContext({ origin, board, originId, input }) {
-  const record = await origin.read(originId);
+  const record = await origin.read(originId, { report: false });
   if (!record || record.damaged) throw new OriginError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
   if (record.revision !== input.expectedRevision) throw new OriginError('The blueprint has newer changes. Let it save, then review again.', 'ORIGIN_REVISION_CONFLICT', 409);
   const item = record.blueprint.items.find(entry => entry.id === input.itemId);
@@ -588,7 +590,9 @@ function view(record, kanban) {
     kanban: record.kanbanProjectId ? (linked ? { exists: true, name: linked.name, revision: linked.revision, github: linked.github?.nameWithOwner || '' } : { exists: false }) : null };
 }
 
-const kanbanFailure = error => ({ message: error.message || 'The Kanban project could not be created.', code: error.code || 'KANBAN_FAILED' });
+// Only the board's own refusals (they carry a status) are shown; a raw file system error names local paths.
+const kanbanFailure = error => (Number.isInteger(error.status) ? { message: error.message, code: error.code || 'KANBAN_FAILED' }
+  : { message: 'The Kanban project could not be created. Check free disk space and folder permissions.', code: 'KANBAN_FAILED' });
 const nameInUse = () => new OriginError('A project with this name already exists. Choose it from the project list.', 'NAME_TAKEN', 409);
 
 /**
@@ -612,14 +616,14 @@ async function startBlueprint(origin, start) {
     return Model.structureTemplate(saved.blueprint, randomUUID);
   }
   if (start && typeof start === 'object' && !Array.isArray(start) && typeof start.from === 'string') {
-    const source = await origin.read(start.from);
+    const source = await origin.read(start.from, { report: false });
     if (!source || source.damaged) throw new OriginError('The project to copy the structure from no longer exists. Choose another one.', 'NOT_FOUND', 404);
     return Model.structureTemplate(source.blueprint, randomUUID);
   }
   throw new OriginError('Choose how the project starts: a blueprint from the library, the general structure, blank, a saved blueprint or another project’s structure.', 'INVALID_INPUT');
 }
 
-export async function originRoute({ origin, contexts, research, board, prompts, req, res, pathname, jsonBody, send }) {
+export async function originRoute({ origin, contexts, research, batches, board, prompts, req, res, pathname, jsonBody, send }) {
   const kanban = async () => (await board.state()).projects, services = { origin, board };
   const named = value => (typeof value === 'string' ? value.trim() : '');
   const body = async () => {
@@ -633,19 +637,21 @@ export async function originRoute({ origin, contexts, research, board, prompts, 
     const input = await body();
     // One project per name across Origin, Compose and Kanban, its own name or its board's. A board of this
     // name that no Origin project uses is this project's board: the Origin project takes its ID and links to it.
-    const match = named(input.name) ? await nameTaken(services, named(input.name)) : null;
-    if (match?.origin) throw nameInUse();
-    const start = await startBlueprint(origin, input.start);
-    if (match) {
-      const adopted = await origin.create({ name: input.name, description: input.description, id: match.kanban.id, kanbanProjectId: match.kanban.id, start, preferences: input.preferences });
-      return send(res, 200, { project: view(adopted, await kanban()), blueprint: adopted.blueprint, joinedKanban: true });
-    }
-    const created = await origin.create({ name: input.name, description: input.description, start, preferences: input.preferences });
-    if (input.createKanban !== true) return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint });
-    let linked;
-    try { linked = (await createBoardFor(services, created)).record; }
-    catch (error) { return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint, kanbanError: kanbanFailure(error) }); }
-    return send(res, 200, { project: view(linked, await kanban()), blueprint: linked.blueprint });
+    return oneName(async () => {
+      const match = named(input.name) ? await nameTaken(services, named(input.name)) : null;
+      if (match?.origin) throw nameInUse();
+      const start = await startBlueprint(origin, input.start);
+      if (match) {
+        const adopted = await origin.create({ name: input.name, description: input.description, id: match.kanban.id, kanbanProjectId: match.kanban.id, start, preferences: input.preferences });
+        return send(res, 200, { project: view(adopted, await kanban()), blueprint: adopted.blueprint, joinedKanban: true });
+      }
+      const created = await origin.create({ name: input.name, description: input.description, start, preferences: input.preferences });
+      if (input.createKanban !== true) return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint });
+      let linked;
+      try { linked = (await createBoardFor(services, created)).record; }
+      catch (error) { return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint, kanbanError: kanbanFailure(error) }); }
+      return send(res, 200, { project: view(linked, await kanban()), blueprint: linked.blueprint });
+    });
   }
   // Saved blueprints: list (with their structure for the preview) and delete; saving is done from a project.
   if (pathname === '/api/origin/blueprints' && req.method === 'GET') return send(res, 200, { blueprints: await origin.listBlueprints() });
@@ -668,8 +674,10 @@ export async function originRoute({ origin, contexts, research, board, prompts, 
   }
   if (!action && req.method === 'PATCH') {
     const input = await body();
-    if (named(input.name) && await nameTaken(services, named(input.name), originId)) throw nameInUse();
-    const saved = await origin.update(originId, { expectedRevision: input.expectedRevision, name: input.name, description: input.description });
+    const saved = await oneName(async () => {
+      if (named(input.name) && await nameTaken(services, named(input.name), originId)) throw nameInUse();
+      return origin.update(originId, { expectedRevision: input.expectedRevision, name: input.name, description: input.description });
+    });
     return send(res, 200, { project: view(saved, await kanban()), revision: saved.revision });
   }
   if (action === 'save-blueprint' && req.method === 'POST') {
@@ -683,15 +691,14 @@ export async function originRoute({ origin, contexts, research, board, prompts, 
   }
   if (action === 'link' && req.method === 'POST') {
     const input = await body();
-    const record = await origin.read(originId);
+    const record = await origin.read(originId, { report: false });
     if (!record || record.damaged) throw new OriginError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
     if (input.createKanban === true) {
       // Checked before anything is created; the new board takes this project's ID when it is free.
       if (record.revision !== input.expectedRevision) throw new OriginError('This project changed in another window. Reload it first.', 'ORIGIN_REVISION_CONFLICT', 409);
       const name = named(input.name) || record.name;
-      if (await nameTaken(services, name, originId)) throw nameInUse();
       let saved;
-      try { saved = (await createBoardFor(services, record, { name })).record; }
+      try { saved = (await oneName(async () => { if (await nameTaken(services, name, originId)) throw nameInUse(); return createBoardFor(services, record, { name }); })).record; }
       catch (error) { if (error instanceof OriginError) throw error; const failure = kanbanFailure(error); throw new OriginError(failure.message, failure.code, 409); }
       return send(res, 200, { project: view(saved, await kanban()), revision: saved.revision });
     }
@@ -715,9 +722,10 @@ export async function originRoute({ origin, contexts, research, board, prompts, 
   }
   if (action === 'delete' && req.method === 'POST') {
     const input = await body();
-    const record = await origin.read(originId);
+    const record = await origin.read(originId, { report: false });
     if (!record) throw new OriginError('This Origin project no longer exists.', 'NOT_FOUND', 404);
     if (record.revision !== input.expectedRevision) throw new OriginError('This project changed in another window. Reload it first.', 'ORIGIN_REVISION_CONFLICT', 409);
+    if (batches?.running(originId)) throw new OriginError('Compose Batch is working on tasks of this project. Cancel them there first; nothing was deleted.', 'TASK_RUNNING', 409);
     let kanbanDeleted = false;
     if (input.deleteKanban === true) {
       if (!record.kanbanProjectId) throw new OriginError('This Origin project has no linked Kanban project.', 'NOT_LINKED', 409);
@@ -731,6 +739,7 @@ export async function originRoute({ origin, contexts, research, board, prompts, 
     await origin.remove(originId, { expectedRevision: record.revision });
     await contexts?.archive(originId).catch(() => {}); // Kept in origin/deleted/; Base copies stay usable.
     await research?.archive(originId).catch(() => {}); // So a project created later under this ID starts without them.
+    await batches?.archive(originId).catch(() => {});
     return send(res, 200, { deleted: true, kanbanDeleted });
   }
   return send(res, 404, { error: 'This Origin route does not exist.' });

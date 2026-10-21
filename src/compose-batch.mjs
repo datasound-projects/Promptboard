@@ -7,10 +7,10 @@
  * is parallel; Kanban keeps the Origin prerequisites, so implementation order is unchanged.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readdir, rm } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import '../public/origin-model.js';
-import { buildContext, escapeId, loopFrom } from './origin.mjs';
+import { ORIGIN_DIR, buildContext, escapeId, loopFrom } from './origin.mjs';
 import { readWithBackup, serial, setAside, writeAtomic } from './durable.mjs';
 import { redactLocal } from './compose-local.mjs';
 import { CONTEXT_CHARS } from './compose-grounding.mjs';
@@ -256,7 +256,7 @@ export class ComposeBatches {
 
   // ---- Origin and Kanban, as read now ----
   async #record(originId) {
-    const record = await this.origin.read(originId);
+    const record = await this.origin.read(originId, { report: false });
     return record && !record.damaged ? record : null;
   }
   /** Whether each task still says in Origin what it said when its prompt was made. Rebuilt only after Origin or the task changes. */
@@ -447,6 +447,21 @@ export class ComposeBatches {
       // The cached copy goes last, so a read during the removal never caches a half-deleted folder.
       await rm(join(this.dir, escapeId(batch.meta.id)), { recursive: true, force: true });
       this.#cache.delete(batch.meta.id);
+    });
+  }
+
+  /** Whether a task of this batch is queued or running, as its page shows (a batch never loaded runs nothing). */
+  running(batchId) { return [...(this.#cache.get(batchId)?.items.values() || [])].some(item => item.run); }
+  /** “Delete from Origin”: the batch moves to origin/deleted/, as Project Context and research do, so a project made later under this ID starts without it. */
+  archive(batchId) {
+    return this.#serial(async () => {
+      if (this.running(batchId)) throw conflict('Tasks are running. Cancel them first.', 'TASK_RUNNING');
+      const deleted = join(this.dir, '..', ORIGIN_DIR, 'deleted');
+      await mkdir(deleted, { recursive: true, mode: 0o700 });
+      try { await rename(join(this.dir, escapeId(batchId)), join(deleted, `compose-batch-${escapeId(batchId)}.deleted-${Date.now()}`)); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      this.#cache.delete(batchId);
+      for (const key of this.#originCache.keys()) if (key.startsWith(`${batchId}:`)) this.#originCache.delete(key);
     });
   }
 

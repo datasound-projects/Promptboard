@@ -162,7 +162,10 @@ export class ResearchStore {
     return this.#serial(originId, async () => {
       const value = await this.#read(originId, chatId(chat));
       await change(value);
+      // Suggestions show under their message: those of the oldest messages go with them, so none waits or is applied unseen.
+      const dropped = new Set(value.messages.slice(0, -LIMITS.messages).map(message => message.id));
       value.messages = value.messages.slice(-LIMITS.messages);
+      value.proposals = value.proposals.filter(proposal => !dropped.has(proposal.messageId));
       // Over the cap, decided suggestions go first (oldest first); open ones only when nothing else is left.
       let excess = value.proposals.length - LIMITS.proposals;
       value.proposals = value.proposals.filter(proposal => { if (excess > 0 && !['pending', 'conflict'].includes(proposal.status)) { excess--; return false; } return true; }).slice(-LIMITS.proposals);

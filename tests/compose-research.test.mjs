@@ -34,6 +34,18 @@ test('research plans enforce actionability, complexity, per-level limits and str
   for (const value of ['not JSON', '```json\n{}\n```', '{}']) assert.throws(() => validateResearchPlan(value));
 });
 
+test('a research plan or review in a ```json fence is read, as split, review and file answers are', async () => {
+  const fenced = value => '```json\n' + JSON.stringify(value) + '\n```';
+  assert.equal(validateResearchPlan(fenced(researchPlan())).assessment.research, 'standard');
+  const runner = async call => ({ text: call.prompt.startsWith('# Compose context preparation') ? fenced(researchPlan()) : fenced(researchReview(call.prompt)) });
+  const context = new ComposeContext({ mcp: docs() });
+  try {
+    const prepared = await context.prepare({ request: { input: questTask }, autonomous: true, sources: [{ type: 'expert', name: 'Architecture', text: questText }, { type: 'mcp', preset: 'context7' }] }, { runner });
+    assert.ok(prepared.research.lookups > 0, `research was skipped: ${JSON.stringify(prepared.warnings)}`);
+    assert.ok(prepared.evidence.length > 0);
+  } finally { context.close(); }
+});
+
 test('research summaries require exact evidence and forbid continuation after the budget', () => {
   const evidence = [{ sourceType: 'mcp', source: 'Docs', locator: '/library', query: 'Python ingestion', text: questText, questionIds: ['r1'] }];
   const prompt = buildResearchReviewPrompt(validateRequest({ input: questTask }), researchPlan(), evidence);

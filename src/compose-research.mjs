@@ -8,7 +8,8 @@ export function safeExternalQuery(query) {
 const languages = { en: 'English', de: 'German', pl: 'Polish' };
 function parse(text, keys, label) {
   string(text, 40_000, label);
-  let value; try { value = JSON.parse(text); } catch { invalid(`Invalid ${label} JSON.`); }
+  // A ```json fence around the answer is unwrapped, as for the review and split answers.
+  let value; try { value = JSON.parse(text.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i, '$1')); } catch { invalid(`Invalid ${label} JSON.`); }
   object(value, keys, label); return value;
 }
 function strings(value, max, length, name) { return list(value, max, name).map(item => string(item, length, name)); }
