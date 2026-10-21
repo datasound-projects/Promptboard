@@ -2395,6 +2395,10 @@ window.PromptboardOrigin = (() => {
       const svg = document.createElementNS(ns, 'svg'); svg.classList.add('origin-map'); svg.setAttribute('role', 'group');
       svg.setAttribute('aria-label', 'Project map: click a branch to open it, drag or use arrow keys to move it');
       const make = svgMaker(svg);
+      // Names are cut to the room in their shape, measured in the map's own fonts (.origin-map-label, -count and -title).
+      const ruler = document.createElement('canvas').getContext('2d'), sans = getComputedStyle(document.documentElement).getPropertyValue('--sans');
+      const textWidth = (text, font) => { ruler.font = `${font} ${sans}`; return ruler.measureText(text).width; };
+      const fitText = (text, room, font) => { let value = text.trim(); if (textWidth(value, font) <= room) return value; while (value && textWidth(`${value}…`, font) > room) value = value.slice(0, -1); return `${value.trimEnd()}…`; };
       const decor = make('g', { class: 'origin-map-decor' }), links = make('g', { class: 'origin-map-links' }), nodes = make('g');
       const curve = (x1, y1, x2, y2, bend) => `M${x1} ${y1}C${x1 + bend} ${y1} ${x2 - bend} ${y2} ${x2} ${y2}`;
       const named = id => (id === 'center' ? project()?.name || 'Project' : sectionName(id));
@@ -2503,8 +2507,8 @@ window.PromptboardOrigin = (() => {
         const node = make('g', { class: `origin-map-section phase-${phase} state-${state}`, transform: `translate(${p.x - SECTION_W / 2} ${p.y - SECTION_H / 2})` }, branch);
         make('rect', { width: SECTION_W, height: SECTION_H, rx: SECTION_H / 2 }, node);
         make('circle', { cx: 20, cy: SECTION_H / 2, r: 4.5, class: 'origin-map-dot' }, node);
-        const label = make('text', { x: 36, y: SECTION_H / 2 + 5, class: 'origin-map-label' }, node); label.textContent = clip(sectionName(block.id), 18);
         const count = block.id === 'vision' ? 0 : sectionCount(block.id);
+        const label = make('text', { x: 36, y: SECTION_H / 2 + 5, class: 'origin-map-label' }, node); label.textContent = fitText(sectionName(block.id), SECTION_W - 52 - (count ? textWidth(String(count), '600 13px') + 10 : 0), '600 15px');
         if (count) { const number = make('text', { x: SECTION_W - 18, y: SECTION_H / 2 + 4.5, 'text-anchor': 'end', class: 'origin-map-count' }, node); number.textContent = String(count); }
         movable(node, block.id, `${sectionName(block.id)}: ${M.SECTION_STATE[state][1]}${count ? `, ${count}` : ''}`, () => openSection(block.id));
         grow(p.x - SECTION_W / 2, p.y - SECTION_H / 2, p.x + SECTION_W / 2, p.y + SECTION_H / 2);
@@ -2526,7 +2530,7 @@ window.PromptboardOrigin = (() => {
       }
       const centerNode = make('g', { class: `origin-map-center${mapLinkFrom === 'center' ? ' linking' : ''}`, transform: `translate(${center.x - CENTER_W / 2} ${center.y - centerH / 2})` }, make('g', { class: 'origin-map-branch' }, nodes));
       make('rect', { width: CENTER_W, height: centerH, rx: 20 }, centerNode);
-      const name = make('text', { x: CENTER_W / 2, y: 38, 'text-anchor': 'middle', class: 'origin-map-title' }, centerNode); name.textContent = clip(project()?.name || 'Project', 30);
+      const name = make('text', { x: CENTER_W / 2, y: 38, 'text-anchor': 'middle', class: 'origin-map-title' }, centerNode); name.textContent = fitText(project()?.name || 'Project', CENTER_W - 32, '700 21px');
       lines.forEach((line, index) => { const text = make('text', { x: CENTER_W / 2, y: 64 + index * 20, 'text-anchor': 'middle', class: 'origin-map-summary' }, centerNode); text.textContent = line; });
       // The idea is written on the Vision section; without one, the center shows the project's description only.
       const describable = M.hasPage(blueprint, 'vision');

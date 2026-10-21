@@ -138,3 +138,30 @@ test('saved blueprints that cannot be read are reported in the library instead o
   assert.match(await browser.eval(`return document.querySelector('#origin-first-start [role=alert]').textContent;`), /saved blueprints were damaged/);
   assert.ok(await browser.eval(`return document.querySelectorAll('#origin-first-start .origin-blueprint-card').length > 2;`), 'the library still works');
 });
+
+test('on the Overview map every section name and the project name fit inside their shapes, for all 20 blueprints', { skip: !chrome, timeout: 180000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const call = async (path, method = 'GET', body) => (await fetch(`${app.url}${path}`, { method, headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: J(body) } : {}) })).json();
+  const ids = [];
+  for (const template of T.TEMPLATES) ids.push((await call('/api/origin/projects', 'POST', { name: `${template.name} for independent clinics`, start: { template: template.id } })).project.id);
+  // Counts take room in the pill too.
+  const first = await call(`/api/origin/projects/${ids[0]}`), blueprint = first.blueprint;
+  for (let n = 1; n <= 12; n++) blueprint.requirements.push({ id: `r${n}`, key: `REQ-${String(n).padStart(3, '0')}`, title: `Need ${n}` });
+  blueprint.sequence.requirements = 12;
+  await call(`/api/origin/projects/${ids[0]}`, 'PUT', { expectedRevision: first.revision, blueprint });
+  const browser = await launch({ width: 1440, height: 1000 }); assert.ok(browser); t.after(() => browser.close());
+  const ev = code => browser.eval(code), wait = (expression, label, ms = 15000) => browser.until(expression, label, ms);
+  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('promptboard.origin.section', 'overview');` });
+  await browser.goto(`${app.url}/#/origin`);
+  for (const id of ids) {
+    await ev(`const s = document.querySelector('#origin-project'); s.value = ${J(id)}; s.dispatchEvent(new Event('change'));`);
+    await wait(`document.querySelector('#origin-project').value === ${J(id)} && document.querySelector('.origin-map-section')`, 'map');
+    const over = await ev(`const box = node => node.getBBox();
+      const sections = [...document.querySelectorAll('.origin-map-section')].map(g => { const label = box(g.querySelector('.origin-map-label')), count = g.querySelector('.origin-map-count'), end = count ? box(count).x - 4 : box(g.querySelector('rect')).width - 12;
+        return [g.querySelector('.origin-map-label').textContent, Math.ceil(label.x + label.width - end)]; });
+      const center = document.querySelector('.origin-map-center'), title = box(center.querySelector('.origin-map-title'));
+      return [...sections, [center.querySelector('.origin-map-title').textContent, Math.ceil(Math.max(12 - title.x, title.x + title.width - (box(center.querySelector('rect')).width - 12)))]].filter(([, past]) => past > 0);`);
+    assert.deepEqual(over, [], `${id}: names run past their shape`);
+  }
+});
