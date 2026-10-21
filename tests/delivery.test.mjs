@@ -591,6 +591,11 @@ process.exit(2);
   assert.equal(done.column, 'done');
   assert.equal(done.completion.kind, 'pull_request');
   assert.equal(done.completion.url, 'https://github.com/example/repo/pull/7');
+  // A Done card whose pull request is still recorded as open (a check stopped between its two writes) is updated by
+  // the next Check, and its completion stays as it is.
+  await w.board.updateTaskEvidence(task.id, current => { current.evidence.pullRequest.state = 'OPEN'; });
+  const checked = await w.delivery.pullRequestStatus(task.id);
+  assert.deepEqual([checked.column, checked.evidence.pullRequest.state, checked.completion.at], ['done', 'MERGED', done.completion.at]);
 });
 
 test('the destination column alone decides what runs: skipped stages never run, a drop never runs twice, cards stay independent', { skip, timeout: 60000 }, async t => {
@@ -889,6 +894,11 @@ test('test logs: a new run replaces the logs of earlier runs, and deleting the c
   assert.deepEqual(await logs(), [card.evidence.tests.id], 'Only the run the card shows keeps its logs.');
   await w.board.deleteTask(task.id, { expectedRevision: card.revision });
   assert.equal(await logs(), 'ENOENT');
+  // Deleting the whole project removes the test logs of its cards too.
+  const kept = await w.board.createTask({ projectId: w.project.id, title: 'Tested earlier', prompt: 'x' });
+  await mkdir(join(w.board.dataDir, 'tests', kept.id, 'run'), { recursive: true });
+  await w.board.deleteProject(w.project.id, { expectedRevision: (await w.board.state()).projects[0].revision });
+  assert.equal(await readdir(join(w.board.dataDir, 'tests', kept.id)).catch(error => error.code), 'ENOENT');
 });
 
 test('Start over keeps the uncommitted work of a card that was sent back to To Do', { skip, timeout: 60000 }, async t => {

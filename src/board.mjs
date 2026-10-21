@@ -899,18 +899,20 @@ export class Board {
   }
 
   async deleteProject(id, { expectedRevision }) {
-    let removed = [];
+    let removed = [], cards = [];
     await this.store.update(state => {
       const project = this.#project(state, id);
       checkRevision(project, expectedRevision, 'This project');
       for (const task of project.tasks) this.#requireAutomationsStopped(task);
       if (this.#hasWorkspaceOrRun(state, [project])) throw conflict('Remove the task worktrees in this project first. Promptboard never deletes worktrees with a whole project.', 'WORKSPACES_EXIST');
       removed = state.runs.filter(run => run.projectId === id).map(run => run.id);
+      cards = project.tasks.map(task => task.id).filter(task => RECORD_ID.test(task));
       state.projects = state.projects.filter(item => item.id !== id);
       state.runs = state.runs.filter(run => run.projectId !== id);
       state.sessions = state.sessions.filter(session => session.projectId !== id);
     });
     await this.#removeRunFolders(removed);
+    for (const card of cards) await rm(join(this.dataDir, 'tests', card), { recursive: true, force: true }).catch(() => {}); // Their test logs.
     await this.lessons?.remove(id).catch(() => {}); // Its project memory goes with it.
   }
 
