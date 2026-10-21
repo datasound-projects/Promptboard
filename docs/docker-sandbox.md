@@ -29,16 +29,18 @@ docker run --rm -it --init --name pb-run-<run> --label promptboard.run=<run> --l
   --user <your uid>:<gid> -w <worktree> -v … -e NAME … <image> claude|codex <the same arguments as on this computer>
 ```
 
-Every path inside the container is the path on this computer, so workspace trust, the lifecycle hooks, the status
-line, usage files, native message input and resume work unchanged. The hooks run with the image's own `node` and read
-Promptboard's code from a read-only mount.
+Every path inside the container is spelled as Promptboard and Git spell it on this computer (each mount's source is the
+folder's real path, so this holds under a symlinked data folder too), so workspace trust, the lifecycle hooks, the
+status line, usage files, native message input and resume work unchanged. The hooks run with the image's own `node` and
+read Promptboard's code from a read-only mount.
 
 | Mounted | Access | Why |
 | --- | --- | --- |
 | The card's worktree | read-write (read-only in Planning and Code Review) | The work itself. |
 | The worktree's `.git` pointer file | read-only | So the worktree cannot be pointed at other Git data. |
 | The repository's `.git` folder | read-only | Git reads history, branches and settings. |
-| `.git/objects` and this worktree's own Git folder | read-write (read-only in Planning and Code Review) | `git status`, `git diff` and `git add` work; branches, hooks and Git settings stay read-only. |
+| `.git/objects` and this worktree's own Git folder (`.git/worktrees/<name>`) | read-write (read-only in Planning and Code Review) | `git status`, `git diff` and `git add` work: objects, the index and logs. |
+| In that folder: `commondir`, `gitdir`, `HEAD`, `config.worktree` | read-only, always | They decide where Git reads settings and hooks, which worktree the folder belongs to, and the branch. A missing `config.worktree` is created empty first, so it can be protected. |
 | The run folder (`<data>/runs/<run>`) | read-write | Lifecycle events, prompt files, the status line, and the CLI's home for this conversation. |
 | A resumed conversation's CLI home (`<data>/runs/<first run>/sandbox-home`) | read-write | Resume finds the conversation's own history. |
 | Promptboard's own folder | read-only | The hook and status-line scripts. |
@@ -48,6 +50,22 @@ Nothing else of this computer is mounted: not your home folder, other projects, 
 SSH keys or other CLI settings. Environment values (the terminal type, Claude Code's effort, the Claude Code token) are
 passed by name (`-e NAME`), so they never appear in the command line or `ps`; only the container's own folders are
 written out (`HOME`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`).
+
+### Git inside the container
+
+The agent can read history, run `git status`, `git diff` and `git log`, and stage changes with `git add`. It cannot
+commit: a commit moves the branch, and the branches live in the repository's `refs` folder, which every task branch
+shares, so making it writable would let one card's agent move another card's branch or your target branch. Promptboard
+commits on this computer at each checkpoint, as it does without Docker. Nothing the container can write tells Git on this
+computer to read settings or hooks from somewhere else: the worktree's `.git` file, `commondir`, `config.worktree`, the
+repository's `config`, `hooks` and `info` are all read-only inside.
+
+One thing an agent can still make with the files it may write is a Git repository of its own inside the worktree (a
+folder with its own `.git`). Git treats it as a submodule and runs that repository's own settings (an fsmonitor command,
+filters) on this computer when you or Promptboard run `git status`, `git diff` or `git add` in the worktree. So for a
+card that ran in Docker, Promptboard first lists such repositories (without running anything in them) and refuses its
+own Git work there, with `NESTED_REPOSITORY` and the folder's name, until you delete it. Do not run Git in that
+worktree yourself, or open it in an editor that does, before then.
 
 ## Sign-in
 
@@ -96,6 +114,7 @@ returns to its previous column with the reason). Promptboard never falls back to
 | `SANDBOX_MOUNT_HIDDEN` | Docker cannot see this folder (path). Share it with your Docker machine. |
 | `SANDBOX_START_FAILED` | Docker could not start a container for this card. |
 | `SANDBOX_PATH_UNSUPPORTED` | A folder path contains a colon, which Docker cannot share. |
+| `SANDBOX_NOT_WORKTREE` | The card's workspace is not a linked Git worktree whose Git files can be protected. |
 | `SANDBOX_PROVIDER_UNSUPPORTED` | Docker mode supports Claude Code and Codex (Gemini and Antigravity are refused when you save the setting and when a run starts). |
 
 A Docker machine that does not share a folder mounts it as an empty folder without an error, so the first run of each
@@ -126,8 +145,11 @@ labelled with its data folder's hash. A data folder that never used Docker mode 
 - **The network stays on**: the CLIs need their APIs. An agent can reach the internet and your local network.
 - **The worktree is writable**, and its files later run on this computer: test commands, package scripts, and code you
   merge. Review the work before you run it.
-- **Git data is partly writable**: `.git/objects` and the worktree's own Git folder. Branches, Git settings and hooks
-  are read-only, but an agent can still create nested repositories or Git attributes inside the worktree.
+- **Git objects and the index are writable**: an agent can add objects and stage files (and could fill the disk). A
+  repository it makes inside the worktree is caught as described above; `.gitattributes` it writes can only name
+  filters and diff drivers that your own Git settings define.
+- Creating `.git/worktrees/<name>/locked` is possible: Git then refuses to remove that worktree until you run
+  `git worktree unlock`.
 - **The sign-in is inside the container**: the agent can read the Codex sign-in file or the Claude Code token it runs
   with, like any process the CLI starts.
 - **Promptboard's own code is readable** (not writable).
@@ -150,5 +172,10 @@ On 2026-10-21, on macOS with Colima (Docker 29.5, Ubuntu arm64 virtual machine) 
   computer), `cat ~/pb-sandbox-canary-….txt` failed inside with "No such file or directory", the card's usage was read
   from the conversation's own Codex home, Stop removed the container, and shutdown left none.
 - Codex's own sandbox in a container failed with bubblewrap's "No permissions to create a new namespace".
+- With the mounts of a writing stage, writing the worktree's `.git` file, `commondir`, `gitdir`, `HEAD`,
+  `config.worktree`, the repository's `config`, a hook, a branch or `packed-refs` failed with "Read-only file system",
+  and renaming or deleting the protected files with "Resource busy". Writing worktree files, `git add`, `git status`,
+  the logs and `ORIG_HEAD` worked; `git commit` stopped at the branch ("cannot lock ref"). The main checkout and the
+  board's `state.json` were not visible.
 
 Not verified live: Claude Code in Docker (it needs a `claude setup-token` token), Linux hosts and Docker Desktop.
