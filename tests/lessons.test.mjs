@@ -490,6 +490,26 @@ test('a CLI call that never ends cannot hold up a shutdown', { timeout: 60000 },
   settle({ text: '[]' }); // Nothing is left pending after the test.
 });
 
+test('a merge queued while the worker ends its last scan still runs: the wake-up is not lost', { timeout: 60000 }, async t => {
+  // Deterministic: board reads are held at fixed points, and the project files share one queue (reads, then writes, in order).
+  const dataDir = await temp(t, 'pb-lessons-wakeup-'), holds = [];
+  const card = { id: 't1', number: 1, title: 'Card 1', prompt: 'x', completion: { kind: 'merged', at: 1001, targetBranch: 'main', commits: 1 } };
+  const state = { projects: [{ id: 'p1', tasks: [card] }, { id: 'p2', tasks: [] }], runs: [] };
+  const hold = () => { let release; holds.push(new Promise(resolve => { release = resolve; })); return release; };
+  const lessons = new Lessons({ dataDir, board: { state: async () => { await holds.shift(); return state; } }, claim: async () => slot(), runner: async () => answer([]), schedule: () => {} });
+  t.after(() => lessons.close());
+  const settled = () => new Promise(resolve => setImmediate(resolve));
+  lessons.start(); while (lessons.working) await lessons.working;
+  const scan = hold(), change = hold();
+  lessons.kick(); await settled(); // The worker's scan waits for the project list.
+  const settings = lessons.setSettings('p2', { expectedRevision: 0 }); await settled(); // A change holds the file queue.
+  scan(); await settled(); // The scan's read of p1 waits behind that change.
+  const queued = lessons.queue('t1'); await settled(); // The merge's write to p1 waits behind that read.
+  change(); await settings; await queued; // p1 is read without the job; the job is written while the scan reads p2.
+  while (lessons.working) await lessons.working;
+  assert.equal((await lessons.view('p1')).jobs[0].status, 'done');
+});
+
 test('deciding a lesson never conflicts with the worker’s job updates; only new suggestions change the revision', { timeout: 60000 }, async t => {
   const answers = [answer(LESSONS.slice(0, 1)), { text: '[]' }];
   const w = await world(t, { runner: async () => answers.shift() });

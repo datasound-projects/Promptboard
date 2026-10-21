@@ -185,7 +185,7 @@ export class Lessons {
    */
   constructor({ dataDir, board, claim, runner, retryMs = 30000, schedule = (fn, ms) => setTimeout(fn, ms).unref() }) {
     this.dir = join(dataDir, 'lessons'); this.board = board; this.claim = claim; this.runner = runner; this.retryMs = retryMs; this.schedule = schedule;
-    this.started = false; this.closed = false; this.working = null; this.current = null; this.retry = false;
+    this.started = false; this.closed = false; this.working = null; this.current = null; this.retry = false; this.again = false;
   }
   // ponytail: one queue for every project's file; per-project queues if they ever contend.
   #serial = serial();
@@ -372,8 +372,11 @@ export class Lessons {
     })().catch(() => {}).finally(() => { this.working = null; this.kick(); });
   }
   kick() {
-    if (!this.started || this.closed || this.working) return;
-    this.working = this.#drain().catch(() => {}).finally(() => { this.working = null; });
+    if (!this.started || this.closed) return;
+    // The running worker's last scan may already have passed a job queued now: it scans once more when it ends.
+    if (this.working) { this.again = true; return; }
+    this.again = false;
+    this.working = this.#drain().catch(() => {}).finally(() => { this.working = null; if (this.again) this.kick(); });
   }
   #later() {
     if (this.retry || this.closed) return;
