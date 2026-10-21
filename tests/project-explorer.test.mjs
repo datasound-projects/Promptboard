@@ -54,6 +54,7 @@ test('porcelain parsing keeps renamed files under their new name and skips their
   assert.equal(execFileSync('git', ['status', '--porcelain=v1'], { cwd: base, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }), ' R readme.md -> intro.md\n');
   assert.deepEqual((await projectStatus(board, 'p_shop')).status.entries, [['intro.md', 'A']]);
   assert.deepEqual(parseStatus(' M app/a.js\0 M other/b.js\0', 'app').entries, [['a.js', 'M']]);
+  assert.deepEqual(parseStatus('?? src/.promptboard-save-5ab95e27-d075-47d5-bd22-c48748fa661b.tmp\0?? src/.promptboard-save-notes.tmp\0').entries, [['src/.promptboard-save-notes.tmp', 'U']]);
 });
 
 test('changed tracked files in the target checkout block merges; new files alone do not, and another branch is named', async t => {

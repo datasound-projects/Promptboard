@@ -5,7 +5,7 @@
 import { basename, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { git, headBranch } from './git.mjs';
-import { FILE_LIMITS, workspaceRoot } from './workspace-files.mjs';
+import { FILE_LIMITS, SAVE_TEMP, workspaceRoot } from './workspace-files.mjs';
 
 /**
  * `git status --porcelain=v1 -z` as [path, letter] pairs relative to `prefix` (the project folder inside its repository):
@@ -24,6 +24,7 @@ export function parseStatus(output, prefix = '') {
     if (letter === 'M' || letter === 'A') tracked++;
     let path = field.slice(3).replace(/\/$/, '');
     if (prefix) { if (!path.startsWith(`${prefix}/`)) continue; path = path.slice(prefix.length + 1); }
+    if (letter === 'U' && SAVE_TEMP.test(path.split('/').at(-1))) continue;
     if (entries.length === FILE_LIMITS.entries) { truncated = true; continue; }
     entries.push([path, letter]);
   }

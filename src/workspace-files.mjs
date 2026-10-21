@@ -85,6 +85,7 @@ export async function inspectWorkspace(board, projectId, { path = '', workspace 
       const entries = [], directory = await opendir(item.path);
       let truncated = false;
       for await (const entry of directory) {
+        if (SAVE_TEMP.test(entry.name)) continue;
         if (entries.length === FILE_LIMITS.entries) { truncated = true; break; }
         const kind = entry.isSymbolicLink() ? 'link' : entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'unsupported';
         const blocked = protectedName(entry.name) || /[\\:\x00-\x1f\x7f]/.test(entry.name) || ['link', 'unsupported'].includes(kind);
@@ -126,6 +127,8 @@ export function validateFileText(text) {
 }
 
 const saves = new Map();
+/** A save's own temporary file, which lives only until its rename: listings and Git status leave it out. */
+export const SAVE_TEMP = /^\.promptboard-save-[0-9a-f-]{36}\.tmp$/;
 /** Optimistic conflict checking, serialized saves and atomic replacement; never create files. */
 export async function saveWorkspaceFile(board, projectId, value, { signal } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('Provide a file edit.', 'FILE_TEXT_INVALID');

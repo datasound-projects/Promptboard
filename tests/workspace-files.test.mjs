@@ -27,6 +27,9 @@ test('lists the actual hierarchy lazily, folders first, including untracked and 
   const src = await inspectWorkspace(board, 'p_fixture', { path: 'src' });
   assert.deepEqual(src.entries.map(e => [e.name, e.kind]), [['nested', 'directory'], ['index.js', 'file']]);
   assert.equal((await inspectWorkspace(board, 'p_fixture', { path: 'src/nested' })).entries.length, 0);
+  // A save in progress never shows its temporary file, which a refresh during the save would otherwise list.
+  await writeFile(join(root, 'src', '.promptboard-save-5ab95e27-d075-47d5-bd22-c48748fa661b.tmp'), 'draft');
+  assert.deepEqual((await inspectWorkspace(board, 'p_fixture', { path: 'src' })).entries.map(e => e.name), ['nested', 'index.js']);
 });
 
 test('reads Unicode exactly, hashes content, avoids repeat transfer and notices same-size edits', async t => {
