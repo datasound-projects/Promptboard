@@ -174,7 +174,7 @@ window.PromptboardExplorer = (() => {
         // Escape cancels the name only, not the whole dialog.
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); creating = null; renderTree(true); }
       });
-      item.append(icon(creating.kind === 'file' ? 'file' : 'folder'), input);
+      item.append(node('span', 'explorer-chevron'), icon(creating.kind === 'file' ? 'file' : 'folder'), input);
       return item;
     }
     function renderTree(focus = tree.contains(document.activeElement)) {
