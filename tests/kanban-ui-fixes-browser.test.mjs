@@ -260,3 +260,22 @@ test('an unsaved "Merges into" choice survives a background board refresh', { sk
   await app.board.setTargetBranch(project.id, { branch: 'main', expectedRevision: (await app.board.state()).projects[0].revision });
   await browser.until(`(${target}) === ${JSON.stringify(JSON.stringify({ value: 'main', save: false }))}`, 'target saved elsewhere');
 });
+
+test('a dialog close button never covers its eyebrow text at 390 px', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t, {}, { width: 390, height: 844 });
+  const project = await linked(app, 'Quarterly infrastructure migration and observability programme for the north');
+  const card = await app.board.createTask({ projectId: project.id, title: 'Card', prompt: 'c' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${card.id}"]')`, 'card');
+  for (const theme of ['light', 'dark']) for (const [opener, dialog, eyebrow, close] of [
+    [`document.querySelector('[data-id="${card.id}"] .kanban-open').click()`, 'card-dialog', 'card-dialog-project', 'card-dialog-close'],
+    [`openTaskDetails(${JSON.stringify(card.id)})`, 'task-dialog', 'task-dialog-stage', 'task-dialog-close'],
+    [`document.querySelector('#agents-open').click()`, 'workflow-dialog', 'workflow-dialog-project', 'workflow-dialog-close'],
+    [`document.querySelector('#columns-open').click()`, 'columns-dialog', 'columns-project', 'columns-close'],
+    [`document.querySelector('#autopilot-open').click()`, 'autopilot-dialog', 'autopilot-project', 'autopilot-close'],
+  ]) {
+    await browser.eval(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}; ${opener};`); await browser.until(`document.querySelector('#${dialog}').open`, dialog);
+    assert.equal(await browser.layout(`const c = document.querySelector('#${close}').getBoundingClientRect(), range = document.createRange(); range.selectNodeContents(document.querySelector('#${eyebrow}'));
+      return range.toString().length > 40 && ![...range.getClientRects()].some(r => r.right > c.left + 1 && r.left < c.right - 1 && r.bottom > c.top + 1 && r.top < c.bottom - 1);`), true, `${theme}: ${dialog}`);
+    await browser.eval(`document.querySelector('#${dialog}').close();`);
+  }
+});
