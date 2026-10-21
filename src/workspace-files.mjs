@@ -166,8 +166,10 @@ export async function saveWorkspaceFile(board, projectId, value, { signal } = {}
   try { return await pending; } finally { if (saves.get(lock) === pending) saves.delete(lock); }
 }
 
-/** The project checkout with the viewer's custody checks, for the project explorer's Git status. */
-export const workspaceRoot = (board, projectId) => context(board, projectId, '').catch(unavailable);
+/** The project checkout with the viewer's custody checks, including the root itself (no link in its place), for Git status. */
+export async function workspaceRoot(board, projectId) {
+  try { const ctx = await context(board, projectId, ''); await target(ctx.root, []); return ctx; } catch (error) { unavailable(error); }
+}
 
 /** A new empty file or folder in the project checkout. It never replaces anything: an existing name is refused. */
 export async function createWorkspaceEntry(board, projectId, value) {
@@ -176,8 +178,11 @@ export async function createWorkspaceEntry(board, projectId, value) {
   if (!['file', 'directory'].includes(kind)) fail('Choose a file or a folder.', 'FILE_KIND_INVALID');
   if (!/^[a-f0-9]{64}$/.test(scopeVersion || '')) fail('Refresh the project files before adding to them.', 'FILE_VERSION_INVALID');
   const parts = parsePath(path), name = parts.at(-1);
-  // Windows drops trailing dots and spaces and maps device names (NUL, COM1) to devices: such names are refused everywhere.
-  if (!name || /[. ]$/.test(name) || /^(?:con|prn|aux|nul|com\d|lpt\d)(?:\..*)?$/i.test(name)) fail('Choose another name.', 'FILE_PATH_INVALID');
+  // Names Windows cannot hold are refused on every system, so the project still checks out there: its reserved characters,
+  // a trailing dot or space (dropped), and device names, also with an extension or a space before it (NUL.txt, CON .txt, COM¹).
+  if (!name || /[<>"|?*]|[. ]$/.test(name) || /^(?:con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])(?:[ .].*)?$/i.test(name)) {
+    fail('Choose another name. A name cannot use < > " | ? *, end with a dot or a space, or be a reserved name such as CON or NUL.', 'FILE_PATH_INVALID');
+  }
   try {
     const ctx = await context(board, projectId, '');
     if (createHash('sha256').update(ctx.root).digest('hex') !== scopeVersion) fail('The project folder changed. Refresh the files before adding to them.', 'FILE_CONFLICT', 409);
@@ -190,6 +195,7 @@ export async function createWorkspaceEntry(board, projectId, value) {
     return { path, kind, created: true };
   } catch (error) {
     if (error.code === 'EEXIST') fail('A file or folder with this name already exists.', 'FILE_EXISTS', 409);
-    unavailable(error);
+    if (error instanceof WorkspaceFileError || ['ENOENT', 'ENOTDIR'].includes(error.code)) unavailable(error);
+    fail('The file or folder could not be created. Check that you can write to this folder, or choose a shorter name.', 'FILE_CREATE_FAILED', 409);
   }
 }

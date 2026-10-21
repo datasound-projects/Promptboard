@@ -1814,14 +1814,7 @@ function renderColumn(column, tasks) {
 
 // Done: a drop zone, then the most recently completed cards in a compact form.
 const DONE_PREVIEW = 5;
-const relativeTime = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
-function timeAgo(at) {
-  const seconds = (at - Date.now()) / 1000;
-  for (const [unit, size] of [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]]) {
-    if (Math.abs(seconds) >= size) return relativeTime.format(Math.round(seconds / size), unit);
-  }
-  return 'just now';
-}
+function timeAgo(at) { return window.PromptboardDom.ago(at); } // Shared with the project explorer's own window.
 function renderDoneList(tasks) {
   const zone = document.createElement('li');
   zone.className = 'kanban-done-drop';

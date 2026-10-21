@@ -8,13 +8,19 @@ import { findChrome, launch } from './helpers/browser.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
 const chrome = await findChrome();
-test('Project card in Chrome: open a file from the tree, edit, Cmd+S writes it to disk, and Pop out shows the same tree on its own page', { skip: !chrome, timeout: 120_000 }, async t => {
+/** A committed repository linked as the project Shop. */
+async function shop(t) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pb-explorer-browser-')));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const git = (...args) => execFileSync('git', args, { cwd: root, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
   git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@example.com'); git('config', 'user.name', 'Tester');
   await mkdir(join(root, 'src')); await writeFile(join(root, 'src', 'app.js'), 'export const greeting = "hello";\n'); await writeFile(join(root, 'readme.md'), '# Shop\n');
   git('add', '.'); git('commit', '-q', '-m', 'First page');
+  return root;
+}
+
+test('Project card in Chrome: open a file from the tree, edit, Cmd+S writes it to disk, and Pop out shows the same tree on its own page', { skip: !chrome, timeout: 120_000 }, async t => {
+  const root = await shop(t);
   let calls = 0;
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [], runner: async () => { calls++; throw new Error('The explorer never runs a model.'); } });
   const { project } = await app.board.createProjectWithRepository({ name: 'Shop', folder: root });
@@ -71,4 +77,27 @@ test('Project card in Chrome: open a file from the tree, edit, Cmd+S writes it t
   }
   assert.equal(calls, 0);
   assert.deepEqual(browser.consoleMessages.filter(message => message.includes('EXCEPTION')), []);
+});
+
+test('on a touch screen the Project card button, tree rows and tab buttons are at least 44 px, without sideways scroll', { skip: !chrome, timeout: 120_000 }, async t => {
+  const root = await shop(t);
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  await app.board.createProjectWithRepository({ name: 'Shop', folder: root });
+  const browser = await launch({ width: 390, height: 800 }); assert.ok(browser); t.after(() => browser.close());
+  await browser.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const ev = code => browser.eval(code), wait = (expression, label) => browser.until(expression, label, 15000);
+  const sizes = selector => ev(`return [...document.querySelectorAll(${JSON.stringify(selector)})].map(node => { const r = node.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; });`);
+  await browser.goto(`${app.url}/#/kanban`);
+  await wait(`matchMedia('(pointer: coarse)').matches && document.querySelector('.project-card-open')`, 'Project card on a touch screen');
+  for (const [, height] of await sizes('.project-lane button')) assert.ok(height >= 44, `card button ${height} px`);
+  await ev(`document.querySelector('.project-card-open').click();`);
+  await wait(`document.querySelector('.explorer-dialog[open] [data-path="src"]')`, 'tree');
+  await ev(`document.querySelector('.explorer-dialog [data-path="src"]').click();`);
+  await wait(`document.querySelector('.explorer-dialog [data-path="src/app.js"]')`, 'src');
+  await ev(`document.querySelector('.explorer-dialog [data-path="src/app.js"]').click();`);
+  await wait(`document.querySelector('.explorer-dialog .explorer-tab-close')`, 'tab');
+  for (const selector of ['.explorer-row', '.explorer-tab-name', '.explorer-tab-close', '.explorer-action', '.explorer-save']) {
+    for (const [width, height] of await sizes(`.explorer-dialog ${selector}`)) assert.ok(height >= 44 && (!selector.endsWith('close') || width >= 44), `${selector} ${width}×${height}`);
+  }
+  assert.equal(await browser.layout('return document.documentElement.scrollWidth <= innerWidth;'), true);
 });

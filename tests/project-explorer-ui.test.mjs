@@ -238,3 +238,16 @@ test('Refresh shows files a merge added, updates clean tabs and flags a changed 
   assert.equal($('.explorer .file-editor').value, 'export const total = 5;\n');
   assert.equal($('.explorer-status').textContent, 'Updated from disk.');
 });
+
+test('the pop-out window says why when Promptboard gives it no session, instead of waiting on "Opening the project…"', async t => {
+  const answers = [[{ status: 503, body: { error: 'The app is shutting down.', code: 'SHUTTING_DOWN' } }, 'The app is shutting down. Reload it in a moment.'],
+    [{ status: 200, body: {} }, 'Promptboard did not return a session for this window. Reload it in a moment.'],
+    [null, 'Promptboard isn’t responding. Check that it is still running, then reload.']];
+  for (const [answer, text] of answers) {
+    const dom = new JSDOM('<body><main id="project-explorer-page"><p>Opening the project…</p></main></body>', { runScripts: 'outside-only', url: 'http://127.0.0.1:4318/project.html?project=p1' });
+    t.after(() => dom.window.close());
+    dom.window.fetch = async () => { if (!answer) throw new TypeError('Failed to fetch'); return new Response(JSON.stringify(answer.body), { status: answer.status }); };
+    for (const source of sources) dom.window.eval(source);
+    await until(() => dom.window.document.querySelector('#project-explorer-page').textContent === text, text);
+  }
+});
