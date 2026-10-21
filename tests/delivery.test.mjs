@@ -877,6 +877,19 @@ test('test logs: a new run replaces the logs of earlier runs, and deleting the c
   assert.equal(await logs(), 'ENOENT');
 });
 
+test('Start over keeps the uncommitted work of a card that was sent back to To Do', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const task = await w.task('Card', 'x');
+  const ws = (await w.current(task.id)).workspace;
+  await writeFile(join(ws.path, 'half-done.txt'), 'work in progress\n');
+  await w.move(task.id, 'todo'); // Executing → To Do keeps the worktree with its uncommitted files.
+  // The Commit route passes its request body as the options: nothing in it lets To Do commit.
+  await assert.rejects(w.delivery.commit(task.id, { message: 'x', confirm: true, anyColumn: true }), { code: 'STAGE_NOT_RUNNABLE' });
+  const result = await w.board.startOver(task.id, { expectedRevision: (await w.current(task.id)).revision, reason: 'try again' });
+  assert.deepEqual([result.task.column, result.task.previousAttempts.at(-1).savedChanges], ['todo', 1]);
+  assert.equal(git(w.root, 'show', `${ws.branch}:half-done.txt`), 'work in progress');
+});
+
 test('on Windows, npm and npx test commands start through Node without a shell; other commands start as written', () => {
   const win = { platform: 'win32', execPath: 'C:/node/node.exe', exists: () => true };
   const [node, cli, ...rest] = startArgv(['npm', 'test', '--', '--grep', 'a & b'], win);

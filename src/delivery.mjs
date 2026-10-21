@@ -222,13 +222,16 @@ export class Delivery {
     return { changes: status.slice(0, 500), diff, truncated };
   }
 
-  /** Commit all task changes on the task branch with the repository's existing Git identity. */
-  async commit(taskId, { message, confirm }) {
+  /**
+   * Commit all task changes on the task branch with the repository's existing Git identity. `anyColumn` (Start over
+   * only; never from a request body) also commits for a card in To Do, so its leftover work is kept on the old branch.
+   */
+  async commit(taskId, { message, confirm }, { anyColumn = false } = {}) {
     if (confirm !== true) throw fail('Confirm the commit first.', 'CONFIRMATION_REQUIRED', 400);
     if (typeof message !== 'string' || !message.trim() || message.length > 2000) throw fail('Enter a commit message of 1 to 2,000 characters.', 'INVALID_INPUT', 400);
     return this.#locked(`task:${taskId}`, async () => {
       const rev = await this.revision(taskId);
-      const { ws } = await this.#context(taskId, { working: true });
+      const { ws } = await this.#context(taskId, { working: !anyColumn });
       if (!rev.branchOk) throw fail(`The task worktree is not on its task branch (${ws.branch}). Promptboard will not commit there.`, 'BRANCH_MISMATCH');
       if (rev.clean) throw fail('There are no changes to commit.', 'NOTHING_TO_COMMIT');
       // Staging a file with conflict markers would record it as resolved. Refuse instead.
