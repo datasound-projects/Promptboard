@@ -162,6 +162,26 @@ test('a credential typed into an MCP or recipe argument is refused as in imports
   await assert.rejects(base.update(saved.id, { configuration: { ...server([folder, '--secret=hunter2']).configuration } }, { expectedRevision: saved.revision }), /looks like a credential/);
 });
 
+test('a password in a URL, an authorization header and a secret flag’s value are credentials; references, URLs, ports and paths are not', async t => {
+  const refused = [['postgresql://admin:S3cretPass@db.internal:5432/app'], ['redis://:S3cretPass@cache:6379'], ['--header', 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcDEF123'],
+    ['--header=X-API-Key: abc123def456'], ['--api-key', 'BSAk3j4h5g6f7d8s'], ['--client-secret', 'hunter2hunter2']];
+  const accepted = [['postgresql://admin:${DB_PASSWORD}@db.internal:5432/app'], ['postgres://localhost:5432/app', 'ssh://git@github.com/acme/shop.git'], ['--header', 'Authorization: Bearer ${API_TOKEN}'],
+    ['--header', 'Authorization:${AUTH_HEADER}'], ['--api-key', '$BRAVE_API_KEY'], ['--api-key', '${BRAVE_API_KEY}'], ['--token', '--verbose'], ['--token-file', '/run/secrets/token'],
+    ['https://mcp.example.com/mcp', '--port', '8080'], ['/Users/someone/notes', './data', 'C:\\Users\\someone\\notes', 'file:///Users/someone/notes']];
+  const importable = args => parseMcpConfig(JSON.stringify({ mcpServers: { s: { command: 'npx', args } } }), { environment: {} }).servers[0].importable;
+  for (const args of refused) assert.equal(importable(args), false, args.join(' '));
+  for (const args of accepted) assert.equal(importable(args), true, args.join(' '));
+  const url = endpoint => parseMcpConfig(JSON.stringify({ mcpServers: { s: { url: endpoint } } }), { environment: {} }).servers[0].importable;
+  assert.deepEqual([url('https://mcp.example.com/mcp?key=AI' + 'zaSyA-1234567890abcdef'), url('https://mcp.example.com/mcp?region=eu&keyword=x')], [false, true]);
+  // Typed in Base: refused the same way; a server saved with such an argument still loads and can be renamed.
+  const dir = await temp(t), base = new Base({ store: new Store(dir) });
+  const server = args => ({ kind: 'mcp', name: 'Db', configuration: { transport: 'stdio', command: 'db-mcp', args } });
+  for (const args of refused) await assert.rejects(base.create(server(args)), /looks like a credential/, args.join(' '));
+  for (const args of accepted) await base.create(server(args));
+  const legacy = (await base.import({ kind: 'promptboard-base', version: 1, resources: [{ id: 'old', ...server(['--api-key', 'BSAk3j4h5g6f7d8s']) }] })).resources[0];
+  assert.equal((await base.update(legacy.id, { name: 'Db (old)' }, { expectedRevision: legacy.revision })).name, 'Db (old)');
+});
+
 test('repository instruction files are found read-only, imported once, and written back only after a matching preview', async t => {
   const repo = await temp(t), outside = await temp(t);
   await writeFile(join(repo, 'AGENTS.md'), '# Agents\n'); await writeFile(join(repo, 'README.md'), '# Readme\n');
@@ -178,6 +198,44 @@ test('repository instruction files are found read-only, imported once, and writt
   assert.equal((await deployToRepository(repo, 'AGENTS.md', '# New agents\n', { confirm: true, expectedHash: 'h9', hash })).written, true);
   assert.equal(await readFile(join(repo, 'AGENTS.md'), 'utf8'), '# New agents\n');
   assert.equal((await deployToRepository(repo, '.github/instructions/api.instructions.md', '---\napplyTo: "**/*.ts"\n---\n', { confirm: true, hash })).written, true, 'a new file in a new folder');
+});
+
+test('a repository’s skill already in Base is skipped, and a file Base refuses is reported by name while the others import', async t => {
+  const repo = await temp(t);
+  const git = (...args) => execFileSync('git', args, { cwd: repo, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+  await mkdir(join(repo, 'skills', 'deploy'), { recursive: true }); await mkdir(join(repo, 'docs'), { recursive: true });
+  await writeFile(join(repo, 'skills', 'deploy', 'SKILL.md'), '---\nname: deploy\ndescription: Deploy the app\n---\n\nRun ./deploy.sh\n');
+  await writeFile(join(repo, 'docs', 'SKILL.md'), 'No frontmatter.\n'); await writeFile(join(repo, 'CLAUDE.md'), '# Rules\n');
+  git('init', '-q', '-b', 'main'); git('add', '.'); git('-c', 'user.email=t@e', '-c', 'user.name=T', 'commit', '-q', '-m', 'init');
+  const app = await startTestServer(t, { port: 0, executor: null });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const call = (path, method = 'GET', body) => fetch(`${app.url}${path}`, { method, headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(async r => ({ status: r.status, json: await r.json() }));
+  const project = await app.board.createProject({ name: 'Shop' });
+  await app.board.linkRepository(project.id, { path: repo, expectedRevision: 1 });
+  assert.equal((await call('/api/base/markdown/import', 'POST', { projectId: project.id, paths: ['skills/deploy/SKILL.md'] })).json.imported.length, 1);
+  assert.equal((await call('/api/base/markdown/scan', 'POST', { projectId: project.id })).json.files.find(file => file.path === 'skills/deploy/SKILL.md').inBase, true);
+  const again = await call('/api/base/markdown/import', 'POST', { projectId: project.id, paths: ['skills/deploy/SKILL.md', 'docs/SKILL.md', 'CLAUDE.md'] });
+  assert.equal(again.status, 200);
+  assert.deepEqual(again.json.imported.map(resource => resource.name), ['CLAUDE.md']);
+  assert.deepEqual(again.json.skipped.map(entry => entry.path), ['skills/deploy/SKILL.md', 'docs/SKILL.md']);
+  assert.deepEqual([again.json.skipped[0].reason, /^docs\/SKILL\.md: SKILL\.md needs a YAML frontmatter/.test(again.json.skipped[1].reason)], ['Already in Base as “deploy”.', true]);
+  assert.equal((await call('/api/base')).json.resources.filter(resource => resource.kind === 'skill').length, 1);
+});
+
+test('the MCP import preview agrees with the import, and a refused server leaves nothing half-imported', async t => {
+  const app = await startTestServer(t, { port: 0, executor: null });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const call = (path, method = 'GET', body) => fetch(`${app.url}${path}`, { method, headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(async r => ({ status: r.status, json: await r.json() }));
+  const json = JSON.stringify({ mcpServers: { alpha: { url: 'https://alpha.example.com/mcp' }, beta: { url: 'https://beta.example.com/mcp', headers: { X_Api_Key: 'abc123' } },
+    gamma: { url: 'https://gamma.example.com/mcp', headers: { 'X.Team': '${TEAM}' } } } });
+  const preview = (await call('/api/base/mcp/import/preview', 'POST', { json })).json;
+  assert.deepEqual(preview.servers.map(server => [server.name, server.importable]), [['alpha', true], ['beta', true], ['gamma', false]], 'a header name with "_" is legal HTTP');
+  assert.match(preview.servers[2].issues.join(' '), /names can use letters, digits, "-" and "_" only/);
+  const refused = await call('/api/base/mcp/import', 'POST', { json, names: ['alpha', 'gamma'] });
+  assert.deepEqual([refused.status, /gamma/.test(refused.json.error), (await call('/api/base')).json.resources.length], [400, true, 0], 'nothing was imported');
+  const done = (await call('/api/base/mcp/import', 'POST', { json, names: ['alpha', 'beta'] })).json;
+  assert.deepEqual(done.imported.map(resource => resource.name), ['alpha', 'beta']);
+  assert.deepEqual((await call(`/api/base/resources/${done.imported[1].id}`)).json.resource.configuration.headers, { X_Api_Key: 'MCP_BETA_X_API_KEY' });
 });
 
 test('Base routes: import a repository’s files and an MCP configuration, deploy a trusted file, give a project its own version', async t => {

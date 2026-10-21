@@ -6,7 +6,7 @@ import { resolveConfig } from './agents.mjs';
 import { normalizeAvatarImage } from './base-avatar.mjs';
 import { syncDir, writeAtomic } from './durable.mjs';
 import { markdownFileName, normalizeActivation } from './base-markdown.mjs';
-import { CREDENTIAL_ARG } from './base-mcp-import.mjs';
+import { credentialArgs } from './base-mcp-import.mjs';
 
 // `profile` is an Agent (one agent definition); `agentProfile` composes agents and resources into a deployable setup;
 // `markdown` is a Custom MD file (AGENTS.md, CLAUDE.md, SOUL.md…).
@@ -92,7 +92,8 @@ function envReferences(value, label, headers = false) {
   if (!object(value) || Object.keys(value).length > 40) fail(`${label} must map names to environment-variable names.`);
   const out = {};
   for (const [key, reference] of Object.entries(value)) {
-    if (!(headers ? /^[A-Za-z0-9-]{1,100}$/ : ENV).test(key) || !ENV.test(reference) || ['__proto__', 'constructor', 'prototype'].includes(key)) fail(`${label} accepts environment-variable references, never credential values.`);
+    if (!(headers ? /^[A-Za-z0-9_-]{1,100}$/ : ENV).test(key) || ['__proto__', 'constructor', 'prototype'].includes(key)) fail(`${label} names can use letters, digits${headers ? ', "-"' : ''} and "_" only.`);
+    if (!ENV.test(reference)) fail(`${label} accepts environment-variable references, never credential values.`);
     out[key] = reference;
   }
   return out;
@@ -268,7 +269,7 @@ export function validateResourceGraph(resources) {
   }
   return true;
 }
-function normalizeResource(input, previous, { imported = false, omitted = false } = {}) {
+export function normalizeResource(input, previous, { imported = false, omitted = false } = {}) {
   if (!object(input)) fail('Choose a supported Base resource type.');
   const requestedKind = input.kind || (input.type === 'agent' ? 'profile' : input.type) || previous?.kind;
   if (!BASE_KINDS.includes(requestedKind)) fail('Choose a supported Base resource type.');
@@ -280,7 +281,7 @@ function normalizeResource(input, previous, { imported = false, omitted = false 
   const config = configuration(kind, input.configuration ?? previous?.configuration);
   // A credential typed into an argument would be saved, exported and visible in process lists: refused as in MCP
   // configuration imports. Arguments saved before this check, and Promptboard's own exports, keep loading.
-  if (!imported && ['mcp', 'tool'].includes(kind) && config.args?.some(arg => CREDENTIAL_ARG.test(arg) && !previous?.configuration?.args?.includes(arg))) fail('An argument looks like a credential. Keep credentials in environment variables; an MCP server references them under Environment.');
+  if (!imported && ['mcp', 'tool'].includes(kind) && config.args && credentialArgs(config.args).some(arg => !previous?.configuration?.args?.includes(arg))) fail('An argument looks like a credential. Keep credentials in environment variables; an MCP server references them under Environment.');
   if (kind === 'profile' && config.avatar && config.avatar.contentStatus !== 'omitted' && !omitted && content.avatar?.contentHash !== config.avatar.contentHash) fail('Avatar content does not match this profile’s saved face.');
   if (kind === 'skill' && !omitted && !content.body.trim() && !content.files.some(file => file.path === config.entrypoint && file.text.trim())) fail('An instruction skill needs instructions or a SKILL.md file.');
   const trust = imported ? 'untrusted' : input.trust ?? previous?.trust ?? (['mcp', 'tool'].includes(kind) ? 'untrusted' : 'trusted');
