@@ -446,7 +446,11 @@ window.PromptboardOrigin = (() => {
       summary.append(icon(ICON.dots, 14));
       const list = el('div', 'origin-menu-list');
       for (const [text, run, { disabled = false, danger = false } = {}] of items) {
-        const item = button(text, () => { box.open = false; run(); }, `origin-menu-item${danger ? ' danger' : ''}`);
+        const item = button(text, () => {
+          // The choice usually redraws this menu away: keyboard focus goes to its ⋯ button, or to Undo when the thing is gone.
+          box.open = false; summary.focus(); run();
+          if (document.activeElement === document.body) (document.querySelector(`[data-nav="${CSS.escape(summary.dataset.nav)}"]`) || undoBar.querySelector('.origin-undo-button'))?.focus({ preventScroll: true });
+        }, `origin-menu-item${danger ? ' danger' : ''}`);
         item.disabled = disabled; list.append(item);
       }
       box.addEventListener('toggle', () => { if (box.open) for (const other of document.querySelectorAll('.origin-menu[open]')) if (other !== box) other.open = false; });
