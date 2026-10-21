@@ -272,7 +272,7 @@ window.PromptboardOrigin = (() => {
     async function refreshProjects() {
       const { response, data } = await app.api('/api/origin/projects', { timeoutMs: 30000 }).catch(() => ({ response: { ok: false }, data: {} }));
       if (!response.ok) { showError(typeof data.error === 'string' ? data.error : 'Origin projects could not be loaded. Board, Compose and Base data are unaffected.'); return false; }
-      projects = Array.isArray(data.projects) ? data.projects : [];
+      projects = Array.isArray(data.projects) ? data.projects : []; renderProjects(); // A project deleted elsewhere is never offered again.
       if (data.unreadable > 0) showNotice(`${plural(data.unreadable, 'Origin project was', 'Origin projects were')} left out: ${data.unreadable === 1 ? 'its file was' : 'their files were'} saved by a newer Promptboard version or cannot be read. The files were not changed.`);
       return true;
     }
@@ -314,8 +314,8 @@ window.PromptboardOrigin = (() => {
       projectSelect.replaceChildren(...projects.map(item => Object.assign(el('option', '', item.name), { value: item.id })));
       projectSelect.value = projectId || '';
       const current = project();
-      // After a failed load the selector stays, so you can choose another project; it hides only when there is none.
-      projectSelect.hidden = !projects.length || (!current && !loadError);
+      // After a failed load, or once this project was deleted elsewhere, the selector stays so you can choose another; it hides only when there is none.
+      projectSelect.hidden = !projects.length || (!current && !loadError && saveState !== 'gone');
       menu.hidden = linkChip.hidden = !current;
       if (!current) return;
       const linked = current.kanban;
