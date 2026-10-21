@@ -102,3 +102,24 @@ test('Origin: prerequisite chains, deleted prerequisite cards, stored text, dele
   await wait(`document.querySelector('#origin-project').value === ${J(other.id)} && document.querySelector('#origin-view').dataset.save === 'saved'`, 'switched project');
   assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
 });
+
+test('Origin: after "Deleted in another window" the project selector offers only projects that exist', { skip: !await findChrome(), timeout: 90000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const store = new OriginStore(app.board.store.dir);
+  const shop = await store.create({ name: 'Shop design' }), other = await store.create({ name: 'Other design' });
+  const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
+  const ev = code => browser.eval(code), wait = (expression, label, ms = 10000) => browser.until(expression, label, ms);
+  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('promptboard.origin.project', ${J(shop.id)}); localStorage.setItem('promptboard.origin.section', 'vision');` });
+  await browser.goto(`${app.url}/#/origin`);
+  await wait(`document.querySelector('#origin-project').value === ${J(shop.id)} && document.querySelector('#origin-main textarea')`, 'Vision of Shop design');
+  const { token } = await (await fetch(`${app.url}/api/session`)).json();
+  const gone = await fetch(`${app.url}/api/origin/projects/${shop.id}/delete`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: J({ expectedRevision: shop.revision }) });
+  assert.equal(gone.status, 200);
+  await ev(`const t = document.querySelector('#origin-main textarea'); t.value = 'Edited after delete'; t.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await wait(`document.querySelector('#origin-view').dataset.save === 'gone'`, 'deleted elsewhere', 15000);
+  await wait(`document.querySelector('#origin-project').options.length === 1`, 'the list is read again');
+  assert.deepEqual(await ev(`const s = document.querySelector('#origin-project'); return [[...s.options].map(o => o.textContent), s.hidden, document.querySelector('#origin-project-menu').hidden];`), [['Other design'], false, true],
+    'the deleted project is gone from the selector and its menu, and another one can be chosen');
+  await ev(`const s = document.querySelector('#origin-project'); s.value = ${J(other.id)}; s.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await wait(`document.querySelector('#origin-project').value === ${J(other.id)} && document.querySelector('#origin-view').dataset.save === 'saved'`, 'switched project');
+});

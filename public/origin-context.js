@@ -184,6 +184,7 @@ window.PromptboardOriginContext = (() => {
     }
     function render() {
       if (!isOpen) return;
+      const hadFocus = drawer.contains(document.activeElement);
       drawer.dataset.mode = 'context'; view.dataset.drawer = 'open'; drawer.hidden = false;
       const grip = el('div', 'origin-context-resize'); grip.tabIndex = 0;
       for (const [name, value] of Object.entries({ role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize the Project Context panel', 'aria-valuemin': '360', 'aria-valuemax': String(maxWidth()), 'aria-valuenow': String(width()) })) grip.setAttribute(name, value);
@@ -212,6 +213,8 @@ window.PromptboardOriginContext = (() => {
       errorBox = el('p', 'origin-inline-error'); errorBox.setAttribute('role', 'alert'); errorBox.hidden = true;
       drawer.replaceChildren(grip, head, body, errorBox);
       renderMeta(); renderSave(); renderBody();
+      // The control you used is gone with the redraw: focus stays in the panel, so Escape still closes it.
+      if (hadFocus && !drawer.contains(document.activeElement)) title.focus();
     }
     function renderBody() {
       if (!body) return;
@@ -243,11 +246,13 @@ window.PromptboardOriginContext = (() => {
       });
       return node;
     }
-    function showSub(name) { sub = name; error = ''; renderBody(); renderSave(); for (const tabButton of drawer.querySelectorAll('.origin-context-tabs [role=tab]')) tabButton.setAttribute('aria-selected', 'false'); body.querySelector('h3')?.focus(); }
+    function showSub(name) { sub = name; error = ''; renderBody(); renderSave(); for (const tabButton of drawer.querySelectorAll('.origin-context-tabs [role=tab]')) tabButton.setAttribute('aria-selected', 'false'); }
+    /** Every view (also the comparison and an older version) starts at its heading, which takes focus. */
     function subHead(title, lead) {
       const heading = el('h3', 'origin-context-subtitle', title); heading.tabIndex = -1;
       const back = button('← Back to the document', () => { sub = null; render(); }, 'origin-link');
       body.append(back, heading, ...(lead ? [el('p', 'origin-hint', lead)] : []));
+      heading.focus();
     }
     function fail(message) { error = message; renderSave(); }
 

@@ -1658,7 +1658,7 @@ button.timeline-task:hover { text-decoration: underline; }
 .origin-next.advisory { border-color: var(--line); background: var(--og-glass); }
 .origin-next-label { flex: none; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--og-warn) 18%, transparent); color: color-mix(in srgb, var(--og-warn) 75%, var(--ink)); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .origin-next.advisory .origin-next-label { background: var(--og-glass-2); color: var(--muted); }
-.origin-next-text { flex: 1; min-width: 0; color: var(--text); }
+.origin-next-text { flex: 1; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
 .origin-next-more { color: var(--subtle); font-size: 12.5px; }
 .origin-next-open { color: var(--ink); font-weight: 650; }
 
@@ -1735,12 +1735,12 @@ button.timeline-task:hover { text-decoration: underline; }
 .origin-panels { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; margin-top: 16px; }
 .origin-panel { padding: 18px 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--og-glass); box-shadow: var(--og-shadow); }
 .origin-panel h3 { margin: 0 0 12px; color: var(--ink); font-size: 14px; font-weight: 650; }
-.origin-steps { list-style: none; margin: 0 -8px; padding: 0; display: grid; gap: 2px; }
+.origin-steps { list-style: none; margin: 0 -8px; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
 .origin-step { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 40px; padding: 6px 8px; border: 0; border-radius: 10px; background: transparent; color: var(--text); font-size: 13.5px; text-align: left; }
 .origin-step:hover { background: var(--og-glass-2); }
 .origin-step.advisory { color: var(--muted); }
-.origin-step-text { flex: 1; min-width: 0; }
-.origin-step-where { color: var(--subtle); font-size: 12px; white-space: nowrap; }
+.origin-step-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.origin-step-where { max-width: 40%; overflow: hidden; color: var(--subtle); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .origin-step svg { color: var(--subtle); flex: none; }
 .origin-state { display: flex; align-items: center; gap: 9px; margin: 0 0 6px; color: var(--ink); font-size: 15px; font-weight: 650; }
 .origin-stats { display: grid; grid-template-columns: auto 1fr; gap: 7px 16px; margin: 14px 0 10px; font-size: 13px; }
@@ -2070,6 +2070,9 @@ dialog.origin-modal.wide { width: min(980px, calc(100vw - 32px)); max-width: non
 @media (max-width: 1100px) { .origin-panels { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 730px) {
   .origin-header { padding: 10px 16px; }
+  /* The project menu opens under its button but from the header's edge, so a long project name cannot push it off screen. */
+  #origin-project-menu { position: static; }
+  #origin-project-menu .origin-menu-list { top: auto; left: 16px; margin-top: 6px; }
   .origin-link-pill { max-width: 170px; }
   .origin-header-status .origin-save span:not(.origin-save-dot) { display: none; }
   .origin-research-label { display: none; }
@@ -2151,7 +2154,7 @@ button.origin-context-badge { cursor: pointer; }
 .origin-research-modes button { flex: 1; height: 28px; padding: 0 8px; font-size: 12.5px; }
 .origin-drawer .origin-research-scope { min-height: 34px; padding: 6px 10px; font-size: 13px; }
 .origin-research-body { gap: 0; padding: 14px 18px; }
-.origin-research-log { display: grid; align-content: start; gap: 16px; }
+.origin-research-log { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 16px; }
 .origin-research-hint { margin: 0; color: var(--subtle); font-size: 12.5px; line-height: 1.55; }
 .origin-research-message { min-width: 0; font-size: 13.5px; line-height: 1.6; }
 .origin-research-message .md-view { font-size: 13.5px; }
@@ -2203,13 +2206,13 @@ button.origin-context-badge { cursor: pointer; }
 .origin-research-proposal[data-status="applied"] { border-color: color-mix(in srgb, var(--og-ok) 45%, var(--line)); background: color-mix(in srgb, var(--og-ok) 6%, transparent); }
 .origin-research-proposal[data-status="rejected"] { opacity: .6; border-style: dashed; }
 .origin-research-proposal[data-status="conflict"] { border-color: color-mix(in srgb, var(--og-warn) 55%, var(--line)); }
-.origin-research-proposal-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; }
+.origin-research-proposal-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; overflow-wrap: anywhere; }
 .origin-research-proposal-head input { width: 15px !important; min-height: 15px !important; margin: 0; }
 .origin-research-badge { padding: 1px 8px; border-radius: 999px; background: var(--surface-3); color: var(--muted); font-size: 11px; font-weight: 600; }
 .origin-research-badge.is-applied { background: color-mix(in srgb, var(--og-ok) 18%, transparent); color: color-mix(in srgb, var(--og-ok) 75%, var(--ink)); }
 .origin-research-badge.is-conflict, .origin-research-badge.is-disagree { background: color-mix(in srgb, var(--og-warn) 18%, transparent); color: color-mix(in srgb, var(--og-warn) 75%, var(--ink)); }
 .origin-research-target, .origin-research-from, .origin-research-evidence { margin: 0; color: var(--subtle); font-size: 11.5px; overflow-wrap: anywhere; }
-.origin-research-why { margin: 0; color: var(--text); line-height: 1.5; }
+.origin-research-why { margin: 0; color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
 .origin-research-diff { display: grid; gap: 4px; }
 .origin-research-diff p { margin: 0; padding: 6px 8px; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 .origin-research-diff .is-old { background: color-mix(in srgb, var(--error) 8%, transparent); color: var(--muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--error) 50%, transparent); }
@@ -2241,7 +2244,9 @@ button.origin-context-badge { cursor: pointer; }
 .origin-research-mini:hover { border-color: var(--sash); }
 .origin-research-mini-status { color: var(--muted); font-weight: 500; }
 .origin-research-mini-status:empty { display: none; }
-@media (max-width: 730px) { .origin-drawer[data-mode="research"] { width: auto; } .origin-research-cli { max-width: 120px; } }
+@media (max-width: 730px) { .origin-drawer[data-mode="research"] { width: auto; } .origin-research-cli { max-width: 120px; }
+  /* The full-width Improve card sits above the minimized Research button (38 px high) instead of covering it. */
+  body:has(#origin-view:not([hidden]) > #origin-research-mini:not([hidden])) .origin-improve-mini { bottom: 66px; } }
 
 /* Safe Markdown preview (Project Context). */
 .md-view { color: var(--text); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }

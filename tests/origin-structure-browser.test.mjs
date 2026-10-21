@@ -253,3 +253,23 @@ test('Research follows the structure while open: new sections are offered and re
   assert.deepEqual([after.technologies.length, after.customSections.some(entry => entry.id === launch), after.structure.sections.some(entry => entry.id === 'technology'), after.vision.goal],
     [0, false, false, 'Sell 100 items a month'], 'nothing removed came back');
 });
+
+test('a ⋯ menu choice (the keyboard way to move things) keeps focus on that menu, in the sidebar and on the page', { skip: !chrome, timeout: 120000 }, async t => {
+  const { ev, wait } = await researchPage(t);
+  // As a keyboard user does it: focus the ⋯ button, open it, focus the choice and press it.
+  const choose = async (key, text) => {
+    await ev(`const s = document.querySelector(${J(`[data-nav="menu:${key}"]`)}); s.focus(); s.click();`);
+    await ev(`const b = [...document.querySelector(${J(`[data-nav="menu:${key}"]`)}).parentElement.querySelectorAll('.origin-menu-item')].find(b => b.textContent === ${J(text)}); b.focus(); b.click();`);
+  };
+  const focused = () => ev(`const a = document.activeElement; return a === document.body ? 'body' : a.dataset.nav || a.textContent;`);
+  await choose('section:vision', 'Move down');
+  assert.equal(await ev(`return [...document.querySelectorAll('.origin-phase[data-phase="define"] .origin-nav-item')].map(n => n.dataset.section).join(',');`), 'requirements,vision');
+  assert.equal(await focused(), 'menu:section:vision', 'the sidebar keeps focus on the moved section’s menu');
+  await ev(`document.querySelector('.origin-nav-item[data-section="vision"]').click();`);
+  await wait(`document.querySelector('[data-nav="menu:vision:summary"]')`, 'Vision page');
+  await choose('vision:summary', 'Move down');
+  assert.equal(await ev(`return [...document.querySelectorAll('[data-vision]')].slice(0, 2).map(q => q.dataset.vision).join(',');`), 'problem,summary');
+  assert.equal(await focused(), 'menu:vision:summary', 'the page keeps focus on the moved question’s menu');
+  await choose('vision:summary', 'Remove question');
+  assert.equal(await focused(), 'Undo', 'a removal leaves focus on its Undo');
+});

@@ -172,6 +172,8 @@ window.PromptboardOrigin = (() => {
       if (renderFrame) return;
       renderFrame = requestAnimationFrame(() => { renderFrame = 0; if (main.contains(document.activeElement)) renderDerived(); else renderMain(); });
     }
+    // News from elsewhere (a card's status, a finished run) redraws the page, but never the field you are typing in.
+    function refreshMain() { if (main.contains(document.activeElement) && document.activeElement.matches('input, textarea, select')) renderDerived(); else renderMain(); }
     async function save({ force = false } = {}) {
       clearTimeout(saveTimer); saveTimer = null;
       if (saveState === 'conflict' && !force) return false; // Not saved: only Reload or Keep mine resolves it.
@@ -270,7 +272,7 @@ window.PromptboardOrigin = (() => {
     async function refreshProjects() {
       const { response, data } = await app.api('/api/origin/projects', { timeoutMs: 30000 }).catch(() => ({ response: { ok: false }, data: {} }));
       if (!response.ok) { showError(typeof data.error === 'string' ? data.error : 'Origin projects could not be loaded. Board, Compose and Base data are unaffected.'); return false; }
-      projects = Array.isArray(data.projects) ? data.projects : [];
+      projects = Array.isArray(data.projects) ? data.projects : []; renderProjects(); // A project deleted elsewhere is never offered again.
       if (data.unreadable > 0) showNotice(`${plural(data.unreadable, 'Origin project was', 'Origin projects were')} left out: ${data.unreadable === 1 ? 'its file was' : 'their files were'} saved by a newer Promptboard version or cannot be read. The files were not changed.`);
       return true;
     }
@@ -321,8 +323,8 @@ window.PromptboardOrigin = (() => {
       projectSelect.replaceChildren(...projects.map(item => Object.assign(el('option', '', item.name), { value: item.id })));
       projectSelect.value = projectId || '';
       const current = project();
-      // After a failed load the selector stays, so you can choose another project; it hides only when there is none.
-      projectSelect.hidden = !projects.length || (!current && !loadError);
+      // After a failed load, or once this project was deleted elsewhere, the selector stays so you can choose another; it hides only when there is none.
+      projectSelect.hidden = !projects.length || (!current && !loadError && saveState !== 'gone');
       menu.hidden = linkChip.hidden = !current;
       if (!current) return;
       const linked = current.kanban;
@@ -453,7 +455,11 @@ window.PromptboardOrigin = (() => {
       summary.append(icon(ICON.dots, 14));
       const list = el('div', 'origin-menu-list');
       for (const [text, run, { disabled = false, danger = false } = {}] of items) {
-        const item = button(text, () => { box.open = false; run(); }, `origin-menu-item${danger ? ' danger' : ''}`);
+        const item = button(text, () => {
+          // The choice usually redraws this menu away: keyboard focus goes to its ⋯ button, or to Undo when the thing is gone.
+          box.open = false; summary.focus(); run();
+          if (document.activeElement === document.body) (document.querySelector(`[data-nav="${CSS.escape(summary.dataset.nav)}"]`) || undoBar.querySelector('.origin-undo-button'))?.focus({ preventScroll: true });
+        }, `origin-menu-item${danger ? ' danger' : ''}`);
         item.disabled = disabled; list.append(item);
       }
       box.addEventListener('toggle', () => { if (box.open) for (const other of document.querySelectorAll('.origin-menu[open]')) if (other !== box) other.open = false; });
@@ -1387,7 +1393,9 @@ window.PromptboardOrigin = (() => {
       if (contextPanel.isOpen() || researchPanel.isOpen()) return; // Project Context or Research owns the panel while it is open.
       const entry = open && record?.exists ? bp()[open.collection]?.find(item => item.id === open.id) : null;
       if (!entry) { open = null; drawer.hidden = true; drawer.replaceChildren(); view.dataset.drawer = 'closed'; return; }
-      const focusKey = restore && drawer.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
+      const focused = restore && drawer.contains(document.activeElement) ? document.activeElement : null, focusKey = focused?.dataset.focusKey;
+      // The caret too: a redraw while you type must not move your next keystrokes to the end.
+      const caret = typeof focused?.selectionStart === 'number' ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
       const scroll = drawer.querySelector('.origin-drawer-body')?.scrollTop || 0;
       drawerMessage = el('p', 'origin-inline-error'); drawerMessage.hidden = true; drawerMessage.setAttribute('role', 'alert');
       const spec = DRAWER[open.collection](entry), collection = open.collection;
@@ -1419,7 +1427,9 @@ window.PromptboardOrigin = (() => {
       drawer.replaceChildren(head, body, message, foot);
       drawer.hidden = false; view.dataset.drawer = 'open';
       body.scrollTop = scroll;
-      if (focusKey) drawer.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
+      const again = focusKey ? drawer.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`) : null;
+      again?.focus();
+      if (caret && typeof again?.selectionStart === 'number') again.setSelectionRange(...caret);
     }
     drawer.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); if (contextPanel.isOpen()) contextPanel.close(); else if (researchPanel.isOpen()) researchPanel.close(); else closeDrawer(); } });
     // Saved project prompts (and their cards) that link to this record. Read-only here; open them to change them.
@@ -2394,6 +2404,10 @@ window.PromptboardOrigin = (() => {
       const svg = document.createElementNS(ns, 'svg'); svg.classList.add('origin-map'); svg.setAttribute('role', 'group');
       svg.setAttribute('aria-label', 'Project map: click a branch to open it, drag or use arrow keys to move it');
       const make = svgMaker(svg);
+      // Names are cut to the room in their shape, measured in the map's own fonts (.origin-map-label, -count and -title).
+      const ruler = document.createElement('canvas').getContext('2d'), sans = getComputedStyle(document.documentElement).getPropertyValue('--sans');
+      const textWidth = (text, font) => { ruler.font = `${font} ${sans}`; return ruler.measureText(text).width; };
+      const fitText = (text, room, font) => { let value = text.trim(); if (textWidth(value, font) <= room) return value; while (value && textWidth(`${value}…`, font) > room) value = value.slice(0, -1); return `${value.trimEnd()}…`; };
       const decor = make('g', { class: 'origin-map-decor' }), links = make('g', { class: 'origin-map-links' }), nodes = make('g');
       const curve = (x1, y1, x2, y2, bend) => `M${x1} ${y1}C${x1 + bend} ${y1} ${x2 - bend} ${y2} ${x2} ${y2}`;
       const named = id => (id === 'center' ? project()?.name || 'Project' : sectionName(id));
@@ -2502,8 +2516,8 @@ window.PromptboardOrigin = (() => {
         const node = make('g', { class: `origin-map-section phase-${phase} state-${state}`, transform: `translate(${p.x - SECTION_W / 2} ${p.y - SECTION_H / 2})` }, branch);
         make('rect', { width: SECTION_W, height: SECTION_H, rx: SECTION_H / 2 }, node);
         make('circle', { cx: 20, cy: SECTION_H / 2, r: 4.5, class: 'origin-map-dot' }, node);
-        const label = make('text', { x: 36, y: SECTION_H / 2 + 5, class: 'origin-map-label' }, node); label.textContent = clip(sectionName(block.id), 18);
         const count = block.id === 'vision' ? 0 : sectionCount(block.id);
+        const label = make('text', { x: 36, y: SECTION_H / 2 + 5, class: 'origin-map-label' }, node); label.textContent = fitText(sectionName(block.id), SECTION_W - 52 - (count ? textWidth(String(count), '600 13px') + 10 : 0), '600 15px');
         if (count) { const number = make('text', { x: SECTION_W - 18, y: SECTION_H / 2 + 4.5, 'text-anchor': 'end', class: 'origin-map-count' }, node); number.textContent = String(count); }
         movable(node, block.id, `${sectionName(block.id)}: ${M.SECTION_STATE[state][1]}${count ? `, ${count}` : ''}`, () => openSection(block.id));
         grow(p.x - SECTION_W / 2, p.y - SECTION_H / 2, p.x + SECTION_W / 2, p.y + SECTION_H / 2);
@@ -2525,7 +2539,7 @@ window.PromptboardOrigin = (() => {
       }
       const centerNode = make('g', { class: `origin-map-center${mapLinkFrom === 'center' ? ' linking' : ''}`, transform: `translate(${center.x - CENTER_W / 2} ${center.y - centerH / 2})` }, make('g', { class: 'origin-map-branch' }, nodes));
       make('rect', { width: CENTER_W, height: centerH, rx: 20 }, centerNode);
-      const name = make('text', { x: CENTER_W / 2, y: 38, 'text-anchor': 'middle', class: 'origin-map-title' }, centerNode); name.textContent = clip(project()?.name || 'Project', 30);
+      const name = make('text', { x: CENTER_W / 2, y: 38, 'text-anchor': 'middle', class: 'origin-map-title' }, centerNode); name.textContent = fitText(project()?.name || 'Project', CENTER_W - 32, '700 21px');
       lines.forEach((line, index) => { const text = make('text', { x: CENTER_W / 2, y: 64 + index * 20, 'text-anchor': 'middle', class: 'origin-map-summary' }, centerNode); text.textContent = line; });
       // The idea is written on the Vision section; without one, the center shows the project's description only.
       const describable = M.hasPage(blueprint, 'vision');
@@ -2812,7 +2826,7 @@ window.PromptboardOrigin = (() => {
       const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(projectId)}/context-status`, { method: 'POST', body: { expectedRevision: revision }, timeoutMs: 30000 })
         .catch(() => ({ response: { ok: false }, data: {} }));
       contextStatus = response.ok && record?.revision === revision ? { revision, loading: false, map: new Map(data.tasks.map(task => [task.itemId, task])) } : { ...contextStatus, loading: false, revision };
-      if (section === 'plan') renderMain();
+      if (section === 'plan') refreshMain();
       if (open?.collection === 'items') renderDrawer();
     }
     function sentPanel(item, message) {
@@ -3141,7 +3155,7 @@ window.PromptboardOrigin = (() => {
         const ready = run.rows.filter(row => row.state === 'ready').length, failed = run.rows.filter(row => row.state === 'failed').length;
         run.message = `${plural(ready, 'proposal')} ready to review${failed ? `; ${plural(failed, 'task')} failed` : ''}. Nothing was changed or sent.`;
         app.announce(run.message);
-        renderImprove(); renderMain(); renderDrawer();
+        renderImprove(); refreshMain(); renderDrawer();
       } else if (changes.length && dialogs['origin-improve-dialog']?.open) renderImprove();
     }
     async function cancelImprove(run) {

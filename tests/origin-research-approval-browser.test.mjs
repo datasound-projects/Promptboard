@@ -222,3 +222,21 @@ test('a suggestion applied while its state cannot be saved is shown as applied, 
   await wait(`document.querySelector('#origin-view').dataset.save === 'saved'`, 'saved');
   assert.equal((await call(`/api/origin/projects/${originId}`)).blueprint.technologies.filter(entry => entry.name === 'Redis').length, 1);
 });
+
+test('a suggestion that cites a long link stays inside the Research panel at 390 and 1440 px', { skip: !chrome, timeout: 120000 }, async t => {
+  const link = 'https://github.com/questdb/questdb/blob/master/core/src/main/java/io/questdb/cutlass/line/tcp/LineTcpReceiverConfiguration.java';
+  const long = { suggestions: [{ title: `Read ${link}`, why: `Documented at ${link} which fits the checkout flow.`, target: { kind: 'add', collection: 'components' }, value: { name: 'Payments', type: 'external', purpose: 'Card payments' } }] };
+  const researchRunner = async call => ({ text: `Use Stripe.\n\n\`\`\`origin-suggestions\n${J(long)}\n\`\`\``, session: call.session?.id || 'thread-1' });
+  const { browser, ev, wait } = await researchPage(t, { width: 390, height: 844, server: { researchRunner } });
+  await ev(`document.querySelector('#origin-research-open').click();`);
+  await wait(`document.querySelector('#origin-research-send') && !document.querySelector('#origin-research-send').disabled`, 'ready');
+  await ev(`const i = document.querySelector('#origin-research-input'); i.value = 'Payments?'; i.form.requestSubmit();`);
+  await wait(`document.querySelector('.origin-research-proposal')`, 'suggestion', 30000);
+  for (const [width, height] of [[390, 844], [1440, 900]]) {
+    await browser.resize(width, height);
+    const box = await ev(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
+      const body = document.querySelector('#origin-research-body'), card = document.querySelector('.origin-research-proposal').getBoundingClientRect(), panel = document.querySelector('#origin-drawer').getBoundingClientRect();
+      return { body: body.scrollWidth - body.clientWidth, card: Math.round(card.right - panel.right), page: document.documentElement.scrollWidth - innerWidth };`);
+    assert.ok(box.body <= 1 && box.card <= 0 && box.page <= 0, `${width} px: no sideways scroll, the card inside the panel: ${J(box)}`);
+  }
+});

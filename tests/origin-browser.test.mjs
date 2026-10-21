@@ -907,3 +907,92 @@ test('Origin flags only sent tasks whose context changed, compares, and updates 
   await saved();
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
+
+/** A Kanban-linked project whose task is on Kanban, so every save on its Tasks page also reads the cards' context status. */
+async function sentTaskPage(t) {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const kanban = await app.board.createProject({ name: 'Shop', workflowMode: 'pipeline' });
+  const store = new OriginStore(app.board.store.dir);
+  let record = await store.create({ name: 'Shop design' });
+  record = await store.link(record.id, { expectedRevision: record.revision, kanbanProjectId: kanban.id });
+  record = await store.write(record.id, { expectedRevision: record.revision, blueprint: { idea: 'Shop', sequence: { items: 1 },
+    items: [{ id: 't1', key: 'IMP-001', title: 'Build checkout', description: 'Hello world', acceptanceCriteria: 'Works' }],
+    blocks: [{ id: 'nb', origin: 'human', sectionId: 'plan', type: 'notes', title: 'Plan notes', text: '' }] } });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const sent = await fetch(`${app.url}/api/origin/projects/${record.id}/handoff`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: J({ expectedRevision: record.revision, itemIds: ['t1'] }) });
+  assert.equal(sent.status, 200);
+  const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
+  const tools = pageTools(browser);
+  await browser.goto(`${app.url}/#/origin`);
+  await tools.wait(`document.querySelector('.origin-map')`, 'map');
+  await tools.section('plan');
+  await tools.wait(`document.querySelector('.origin-block[data-type="notes"] textarea')`, 'Tasks page');
+  // A save ends with that status read and its redraw: wait for both before typing on.
+  const statusReads = () => tools.ev(`return performance.getEntriesByType('resource').filter(entry => entry.name.endsWith('/context-status')).length;`);
+  const refreshed = async before => { await tools.wait(`performance.getEntriesByType('resource').filter(entry => entry.name.endsWith('/context-status')).length > ${before}`, 'context status read'); await tools.ev(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);`); };
+  return { browser, store, record, ...tools, statusReads, refreshed };
+}
+
+test('Origin keeps the field you type in on the Tasks page when a save refreshes the sent cards’ status', { skip: !await findChrome(), timeout: 90000 }, async t => {
+  const { browser, store, record, ev, saved, statusReads, refreshed } = await sentTaskPage(t);
+  await ev(`document.querySelector('.origin-block[data-type="notes"] textarea').focus();`);
+  await browser.type('Hello ');
+  const before = await statusReads();
+  await saved(); await refreshed(before);
+  assert.equal(await ev(`return document.activeElement?.closest('.origin-block')?.dataset.block;`), 'nb', 'the notes field keeps focus after the autosave');
+  await browser.type('world');
+  await saved();
+  assert.equal((await store.read(record.id)).blueprint.blocks.find(block => block.id === 'nb').text, 'Hello world', 'no keystroke is lost');
+});
+
+test('Origin keeps the caret where you type in the task editor when a save redraws it', { skip: !await findChrome(), timeout: 90000 }, async t => {
+  const { browser, store, record, ev, saved, open, statusReads, refreshed } = await sentTaskPage(t);
+  await open('Build checkout');
+  await ev(`const area = document.querySelector('#origin-drawer textarea[data-focus-key="description"]'); area.focus(); area.setSelectionRange(5, 5);`);
+  await browser.type(' big');
+  const before = await statusReads();
+  await saved(); await refreshed(before);
+  assert.deepEqual(await ev(`const a = document.activeElement; return [a?.dataset.focusKey, a?.selectionStart, a?.selectionEnd];`), ['description', 9, 9], 'the redrawn field has the caret where it was');
+  await browser.type('!');
+  await saved();
+  assert.equal((await store.read(record.id)).blueprint.items[0].description, 'Hello big! world');
+});
+
+test('Origin’s project menu opens on screen at 390 px, for a short and a long project name', { skip: !await findChrome(), timeout: 90000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const store = new OriginStore(app.board.store.dir);
+  const ids = [];
+  for (const name of ['A', 'Customer onboarding portal']) { const record = await store.create({ name }); await store.write(record.id, { expectedRevision: record.revision, blueprint: { idea: name } }); ids.push(record.id); }
+  const browser = await launch({ width: 390, height: 844 }); assert.ok(browser); t.after(() => browser.close());
+  await browser.resize(390, 844);
+  const { ev, wait } = pageTools(browser);
+  await browser.goto(`${app.url}/#/origin`);
+  for (const id of ids) {
+    await ev(`const s = document.querySelector('#origin-project'); s.value = ${J(id)}; s.dispatchEvent(new Event('change'));`);
+    await wait(`document.querySelector('#origin-project').value === ${J(id)} && document.querySelector('.origin-map')`, 'project open');
+    await ev(`document.querySelector('#origin-project-menu').open = true;`);
+    const box = await ev(`await new Promise(requestAnimationFrame); const list = document.querySelector('#origin-project-menu .origin-menu-list').getBoundingClientRect(), button = document.querySelector('#origin-project-menu summary').getBoundingClientRect();
+      return { left: Math.round(list.left), right: Math.round(list.right), below: list.top >= button.bottom, page: document.documentElement.scrollWidth };`);
+    assert.ok(box.left >= 0 && box.right <= 390 && box.below && box.page <= 390, `the menu stays on screen below its button: ${J(box)}`);
+    await ev(`document.querySelector('#origin-project-menu').open = false;`);
+  }
+});
+
+test('Origin’s next steps wrap long section names and unbroken words at 390 px instead of scrolling sideways', { skip: !await findChrome(), timeout: 90000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const store = new OriginStore(app.board.store.dir);
+  const record = await store.create({ name: 'Clinic portal' });
+  await store.write(record.id, { expectedRevision: record.revision, blueprint: { idea: 'A clinic portal', labels: { phases: {}, sections: { requirements: 'Functional and non-functional requirements with acceptance' } },
+    requirements: [{ id: 'r1', key: 'REQ-001', title: `People sign in ${'x'.repeat(90)}` }], sequence: { requirements: 1 } } });
+  const browser = await launch({ width: 390, height: 844 }); assert.ok(browser); t.after(() => browser.close());
+  await browser.resize(390, 844);
+  const { ev, wait, section } = pageTools(browser);
+  await browser.goto(`${app.url}/#/origin`);
+  await wait(`document.querySelectorAll('.origin-step').length >= 2`, 'Overview with next steps');
+  const wide = () => ev(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
+    return { page: document.documentElement.scrollWidth, past: [...document.querySelectorAll('.origin-step, .origin-step-where, .origin-next, .origin-next-text')].filter(node => node.getBoundingClientRect().right > innerWidth || node.scrollWidth > node.clientWidth + 1 && !node.matches('.origin-step-where')).map(node => node.className) };`);
+  assert.deepEqual(await wide(), { page: 390, past: [] }, 'Overview: Next steps stay inside the page');
+  await section('requirements');
+  await wait(`document.querySelector('.origin-next-text')`, 'Next bar');
+  assert.deepEqual(await wide(), { page: 390, past: [] }, 'Requirements: the Next bar stays inside the page');
+});
