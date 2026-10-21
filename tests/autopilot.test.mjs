@@ -171,6 +171,33 @@ test('resume follows a stage agent that is still running instead of starting a s
   assert.deepEqual(starts, [run.id], 'no second run');
 });
 
+test('Restart Autopilot while paused continues the card in progress; the next card never starts beside it', async t => {
+  const root = await temp(t, 'pb-ap-repo-'), board = new Board({ dataDir: await temp(t, 'pb-ap-data-') }), starts = [];
+  git(root, 'init', '-q', '-b', 'trunk'); git(root, 'config', 'user.email', 't@example.com'); git(root, 'config', 'user.name', 'Tester');
+  await writeFile(join(root, 'readme.txt'), 'hello\n'); git(root, 'add', '.'); git(root, 'commit', '-q', '-m', 'init');
+  board.executor = { validate: async ({ stage, config }) => resolveConfig(stage, config), start: async payload => { starts.push(payload.run.id); } };
+  const project = await board.createProject({ name: 'Legacy' });
+  await board.linkRepository(project.id, { path: root, expectedRevision: project.revision });
+  const now = async () => (await board.state()).projects[0];
+  const first = await board.createTask({ projectId: project.id, title: 'First', prompt: 'Do it' }), second = await board.createTask({ projectId: project.id, title: 'Second', prompt: 'Then this' });
+  const save = async () => board.setAutopilot(project.id, { route: ['executing'], finish: 'pull_request', queue: [first.id, second.id], expectedRevision: (await now()).revision });
+  await save();
+  await board.controlAutopilot(project.id, { action: 'start', confirm: true });
+  const autopilot = new Autopilot(board);
+  for (let index = 0; index < 4; index++) await autopilot.tick();
+  const [run] = (await board.state()).runs;
+  // The dialog's Restart Autopilot: Pause, then Save and Start while its agent still works.
+  await board.controlAutopilot(project.id, { action: 'pause' });
+  await save();
+  await board.controlAutopilot(project.id, { action: 'start', confirm: true });
+  for (let index = 0; index < 4; index++) await autopilot.tick();
+  const ap = (await now()).autopilot;
+  assert.equal(ap.status, 'running', ap.reason); assert.equal(ap.current.taskId, first.id); assert.equal(ap.current.runId, run.id);
+  assert.deepEqual(starts, [run.id], 'one card at a time');
+  assert.equal((await now()).tasks.find(task => task.id === second.id).column, 'todo');
+  assert.equal(ap.log.at(-1).text, 'Autopilot restarted by you. It continues “First” first.');
+});
+
 test('a target that moves during the merge is prepared again on the next step, not a pause; other merge failures still pause', async () => {
   const writes = [], failure = code => Object.assign(new Error(`failed (${code})`), { code });
   let error = failure('TARGET_CHANGED');

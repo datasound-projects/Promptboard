@@ -1141,8 +1141,12 @@ export class Board {
       const ap = current.autopilot;
       if (!ap) throw new BoardError('Save the Autopilot settings first.', 'AUTOPILOT_EMPTY');
       const log = text => { ap.log = [...(ap.log || []), { at: Date.now(), text: clip(text, 500) }].slice(-200); };
-      if (action === 'start') Object.assign(ap, { status: 'running', current: null, done: [], reason: '', startedAt: Date.now() }), log(`Autopilot started by ${by}.`);
-      else if (action === 'pause') { if (ap.status !== 'running') throw conflict('Autopilot is not running.', 'AUTOPILOT_NOT_RUNNING'); ap.status = 'paused'; ap.reason = 'Paused by you.'; log('Paused by you.'); }
+      if (action === 'start') {
+        // Restart (offered while paused): the card in progress is continued where it is, as Resume does, before the next one.
+        const card = ['running', 'paused'].includes(ap.status) && ap.current ? current.tasks.find(task => task.id === ap.current.taskId) : null;
+        Object.assign(ap, { status: 'running', current: card ? { ...ap.current, step: 'resume' } : null, done: [], reason: '', startedAt: Date.now() });
+        log(card ? `Autopilot restarted by ${by}. It continues “${card.title}” first.` : `Autopilot started by ${by}.`);
+      } else if (action === 'pause') { if (ap.status !== 'running') throw conflict('Autopilot is not running.', 'AUTOPILOT_NOT_RUNNING'); ap.status = 'paused'; ap.reason = 'Paused by you.'; log('Paused by you.'); }
       else if (action === 'resume') { if (ap.status !== 'paused') throw conflict('Autopilot is not paused.', 'AUTOPILOT_NOT_PAUSED'); ap.status = 'running'; ap.reason = ''; if (ap.current) ap.current.step = 'resume'; log('Resumed by you.'); }
       else if (action === 'skip') {
         if (!ap.current) throw conflict('No card is in progress.', 'AUTOPILOT_IDLE');
