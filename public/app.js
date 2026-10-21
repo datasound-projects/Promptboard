@@ -1683,6 +1683,7 @@ function renderBoard() {
   $('#view-timeline').disabled = !project;
   for (const id of ['#autopilot-open', '#columns-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView;
   $('#agents-open').hidden = timelineView || project?.workflowMode === 'pipeline';
+  $('#schedules-open').hidden = timelineView; $('#schedules-open').disabled = !project; // Scheduled cards (public/schedules.js).
   $('#columns-open').disabled = !project;
   // Missing terminal support never blocks the board or the prompt editor; it only disables runs.
   $('#execution-status').hidden = !board || board.execution?.available !== false || !board.execution.setupMessage;
@@ -2211,6 +2212,7 @@ function renderCard(card, index, count) {
     tag.textContent = ap.current?.taskId === card.id ? 'Autopilot · now' : `Autopilot · #${waiting.indexOf(card.id) + 1}`;
     tags.push(tag);
   }
+  if (card.scheduleId) tags.push(Object.assign(document.createElement('span'), { className: 'schedule-tag', textContent: 'Scheduled' }));
   const meta = paragraph(details.join(' · '), 'kanban-meta');
   meta.title = meta.textContent;
   const context = document.createElement('details'); context.className = 'card-workspace';
@@ -3252,6 +3254,7 @@ async function openTaskDetails(taskId) {
       detailActions(detailButton('Open in Origin', () => { $('#task-dialog').close(); openOrigin(card.originSource.originProjectId, { collection: 'items', id: card.originSource.originTaskId }); }, 'text-button')))] : []),
     ...(card.source?.promptId ? [section('From a saved prompt', paragraph(`Made from revision ${card.source.promptRevision} of a saved project prompt. Newer revisions reach this card only when you update it.`, 'note'),
       detailActions(detailButton('Open the saved prompt in Compose', () => { $('#task-dialog').close(); void projectsView?.openPrompt(card.source.projectId, card.source.promptId); }, 'text-button')))] : []),
+    ...(card.scheduleId && schedulesView ? [section('Scheduled', schedulesView.detail(card, project))] : []),
     ...(coordinatorView ? [section('Coordinator', detailActions(detailButton('Ask Coordinator about this card', () => { $('#task-dialog').close(); if (projectView() !== 'board') setProjectView('board'); coordinatorView.askAbout({ kind: 'task', id: card.id }); }, 'text-button')))] : []),
     ...(card.prompt?.trim() ? [section('Original prompt', pre(card.prompt))] : []),
     section('Branch and worktree', taskLocation(card, project)),
@@ -6199,6 +6202,8 @@ projectsView = window.PromptboardProjects?.create({ api, announce, getResult: ()
 coordinatorView = window.PromptboardCoordinator?.create({ api, announce, project: () => currentProject(), runs: () => board?.runs || [],
   openTask: taskId => void openTaskDetails(taskId), composeSettings: () => settings(),
   copy: text => navigator.clipboard.writeText(text).then(() => announce('Commit ID copied.'), () => announce(`Commit ${text}`)) }) || null;
+// Schedules: recurring To Do cards of the open project. Its button sits in the board actions; nothing runs until a schedule's time.
+const schedulesView = window.PromptboardSchedules?.create({ api, announce, project: () => currentProject(), acceptBoard: next => { acceptBoard(next); renderBoard(); } }) || null;
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();
