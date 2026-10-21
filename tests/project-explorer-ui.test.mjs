@@ -222,3 +222,19 @@ test('Open in IDE opens the remembered editor, or lets the owner choose one', as
   choose.press('Visual Studio Code'); await settle();
   assert.deepEqual(choose.calls.filter(call => call.action === 'open').map(call => call.body), [{ target: 'editor', editor: 'code' }]);
 });
+
+test('Refresh shows files a merge added, updates clean tabs and flags a changed file that has unsaved edits', async t => {
+  const { $, row, type, press, files, disk } = explorer(t, shop());
+  await settle(); row('src').click(); await settle();
+  row('src/cart.js').click(); await settle(); row('readme.md').click(); await settle();
+  type('# Mine\n');
+  // A merge lands: a new file, a new version of a clean open file and of the edited one.
+  files.src.push({ name: 'shipping.js', kind: 'file', blocked: false });
+  disk['src/cart.js'] = 'export const total = 5;\n'; disk['readme.md'] = '# Merged\n';
+  press('Refresh'); await settle();
+  assert.ok(row('src/shipping.js'), 'The new file is in the tree, with its folder still open');
+  assert.match($('.explorer-confirm').textContent, /changed on disk/); assert.equal($('.explorer .file-editor').value, '# Mine\n');
+  press('cart.js'); await settle();
+  assert.equal($('.explorer .file-editor').value, 'export const total = 5;\n');
+  assert.equal($('.explorer-status').textContent, 'Updated from disk.');
+});
