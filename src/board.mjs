@@ -196,9 +196,9 @@ const validOrigin = value => { try { return value !== undefined && Boolean(origi
 const COMPLETION_DETAILS = ['branch', 'taskCommit', 'uncommittedChanges', 'targetBranch', 'previousTarget', 'mergedCommit', 'method', 'squash', 'commits', 'trigger', 'url', 'number', 'base', 'mergedAt'];
 function backupCompletion(value) {
   if (!['merged', 'pull_request', 'no_changes', 'unmerged', 'closed'].includes(value?.kind)) return {};
-  const completion = { kind: value.kind, at: time(value.at) };
-  for (const key of COMPLETION_DETAILS) if (typeof value[key] === 'string' ? value[key].length <= 2048 : typeof value[key] === 'boolean' || Number.isFinite(value[key])) completion[key] = value[key];
-  return { completion };
+  const kept = { kind: value.kind, at: time(value.at) }; // A restore is not a merge: it queues no lessons job (completeTask).
+  for (const key of COMPLETION_DETAILS) if (typeof value[key] === 'string' ? value[key].length <= 2048 : typeof value[key] === 'boolean' || Number.isFinite(value[key])) kept[key] = value[key];
+  return { completion: kept };
 }
 /** Prerequisite cards: other cards of the same project that must be done before this one starts. */
 /** The first prerequisite loop reachable from `startId` (card IDs, ending where it began), or null. */
