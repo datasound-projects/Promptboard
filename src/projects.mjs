@@ -82,7 +82,13 @@ export async function ensureProject(services, { name }) {
 export async function createBoardFor({ origin, board }, record, { name = record.name, folder = 'new', workflowMode = 'pipeline' } = {}) {
   const free = !(await board.state()).projects.some(entry => entry.id === record.id);
   const made = await board.createProjectWithRepository({ name, folder, workflowMode, ...(free ? { id: record.id } : {}) });
-  return { ...made, record: await origin.link(record.id, { expectedRevision: record.revision, kanbanProjectId: made.project.id }) };
+  const link = expectedRevision => origin.link(record.id, { expectedRevision, kanbanProjectId: made.project.id });
+  return { ...made, record: await link(record.revision).catch(async error => {
+    // The revision was checked before the board was made; a save in that (slow) time changed only the blueprint.
+    const fresh = error.code === 'ORIGIN_REVISION_CONFLICT' && await origin.read(record.id, { report: false });
+    if (!fresh || fresh.damaged || fresh.kanbanProjectId !== record.kanbanProjectId) throw error;
+    return link(fresh.revision);
+  }) };
 }
 
 /** The project's Kanban board, created now (with the project's ID when free) if it has none. */

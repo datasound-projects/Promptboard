@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
 import { OriginError, OriginStore, originRoute } from '../src/origin.mjs';
-import { PromptStore, ensureProject, findProject, projectsRoute } from '../src/projects.mjs';
+import { PromptStore, createBoardFor, ensureProject, findProject, projectsRoute } from '../src/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
 async function client(t) {
@@ -176,6 +176,19 @@ test('one name and one ID belong to one project, also when two windows ask at on
   await board.createProject({ name: 'Shared board', id: 'shared-x' });
   await origin.create({ name: 'Owner', id: 'shared-x' });
   assert.equal((await findProject(services, 'shared-x')).name, 'Owner');
+});
+
+test('a board made for an Origin project is linked although the blueprint was saved meanwhile, never over a link made meanwhile', async t => {
+  const { origin } = await local(t);
+  // The board service takes a while (folder, git init, first commit); another save lands in that time.
+  const slow = meanwhile => ({ state: async () => ({ projects: [] }), createProjectWithRepository: async ({ id }) => { await meanwhile(); return { project: { id } }; } });
+  const record = await origin.create({ name: 'Race' });
+  const made = await createBoardFor({ origin, board: slow(() => origin.write(record.id, { expectedRevision: record.revision, blueprint: { ...record.blueprint, idea: 'typed meanwhile' } })) }, record);
+  assert.deepEqual([made.record.kanbanProjectId, made.record.blueprint.idea], [record.id, 'typed meanwhile']);
+  // Another window linked another board in that time: its link stays.
+  const other = await origin.create({ name: 'Race two' });
+  await assert.rejects(createBoardFor({ origin, board: slow(() => origin.link(other.id, { expectedRevision: other.revision, kanbanProjectId: 'chosen' })) }, other), { code: 'ORIGIN_REVISION_CONFLICT' });
+  assert.equal((await origin.read(other.id)).kanbanProjectId, 'chosen');
 });
 
 test('saved prompts stay with a kept board when the Origin side of an older link is deleted', async t => {
