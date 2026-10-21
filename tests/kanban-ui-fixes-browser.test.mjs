@@ -209,6 +209,26 @@ test('board feedback shows on the board on a phone and with the sidebar collapse
   assert.deepEqual(exceptions(browser), []);
 });
 
+test('a slow request that started earlier never clears the feedback of a later action', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await app.board.createProject({ name: 'Race' });
+  const slow = await app.board.createTask({ projectId: project.id, title: 'Slow one', prompt: 'x' });
+  const refused = await app.board.createTask({ projectId: project.id, title: 'Refused one', prompt: 'y' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${refused.id}"]')`, 'cards');
+  // The duplicate answers after 2 s here; a merge or a pull request can take minutes.
+  await browser.eval(`window.__api = window.api; window.api = async (path, options) => { if (/duplicate/.test(path)) await new Promise(resolve => setTimeout(resolve, 2000)); return window.__api(path, options); };
+    window.__slow = duplicateCard(${JSON.stringify(slow.id)});`);
+  await browser.eval(`const item = document.querySelector('[data-id="${refused.id}"]'); if (item.querySelector('.kanban-more').hidden) item.querySelector('.kanban-more-toggle').click();
+    const select = item.querySelector('.kanban-move-to'); select.value = [...select.options].find(option => option.value).value; select.dispatchEvent(new Event('change'));`);
+  await browser.until(`/“Refused one” stayed in To Do/.test(document.querySelector('#project-detail').textContent)`, 'refusal shown');
+  await browser.eval(`await window.__slow;`);
+  assert.equal((await app.board.state()).projects[0].tasks.length, 3);
+  assert.equal(await browser.eval(`return !document.querySelector('#project-detail').hidden && /“Refused one” stayed in To Do/.test(document.querySelector('#project-detail').textContent);`), true, 'the later refusal stays');
+  // A change that starts while the refusal shows, and goes through, clears it.
+  await browser.eval(`window.api = window.__api; await duplicateCard(${JSON.stringify(slow.id)});`);
+  assert.equal(await browser.eval(`return document.querySelector('#project-detail').hidden;`), true);
+});
+
 test('an open page takes the board of a restarted app whose board was restored from its last good copy', { skip: !chrome, timeout: 90000 }, async t => {
   const dataDir = await mkdtemp(join(tmpdir(), 'pb-kanban-ui-'));
   const options = { executor: null, dataDir, detector: async () => [], catalogReader: async provider => ({ provider, source: 'test fixture', models: [] }) };

@@ -1537,6 +1537,7 @@ function setBoardWarning(message) {
 
 /** One board request. On success the server returns the whole board, which replaces ours. */
 async function boardCall(method, path, body, timeoutMs = 60000) {
+  const feedback = $('#project-detail').firstChild; // The board feedback shown when this request started.
   let result;
   try { result = await api(path, { method, body, timeoutMs }); }
   catch { setBoardWarning('The app did not answer. Reload the board to check whether the change was saved.'); throw new Error('The app did not answer. Reload the board to check the result before trying again.'); }
@@ -1548,7 +1549,9 @@ async function boardCall(method, path, body, timeoutMs = 60000) {
     if (data.code === 'REVISION_CONFLICT' || data.code === 'NOT_FOUND') await loadBoard();
     throw error;
   }
-  setBoardWarning(''); showProjectDetail(); // A change that went through replaces the feedback about an earlier one.
+  setBoardWarning('');
+  // A change that went through replaces the feedback about an earlier one, but not feedback a later action showed meanwhile.
+  if (feedback && $('#project-detail').firstChild === feedback) showProjectDetail();
   renderBoard();
   return data;
 }
