@@ -836,15 +836,21 @@ test('an Enter on an empty prompt after a finished turn starts nothing; typed te
   }
 });
 
-test('legacy Codex: a key that answered an approval during the turn is no draft for a later Enter', { skip }, async t => {
-  const w = await world(t), card = await w.task('Key answer', 'Implement it. ASK_PERMISSION KEY_ANSWER EMPTY_ENTER_IGNORED');
-  const run = await w.board.requestRun(card.id, { stage: 'executing', consent: true, config: { provider: 'codex' } });
-  await until(async () => /Allow Bash\?/.test(await w.supervisor.artifact(run.id, 'output')), 'approval asked');
-  w.supervisor.input(run.id, 'y'); // One key, no Enter; a legacy run has no way to see the approval.
-  await until(async () => (await w.run(run.id)).turnComplete, 'turn');
-  w.supervisor.input(run.id, '\r');
-  assert.equal(w.supervisor.sessions.get(run.id).status, 'waiting_for_input');
-  await w.supervisor.confirm(run.id);
+test('legacy Codex: a key that answered an approval is no draft for a later Enter; text typed during the turn is', { skip }, async t => {
+  const w = await world(t);
+  for (const [typeAhead, status] of [['', 'waiting_for_input'], ['Next step', 'running']]) {
+    const card = await w.task(`Key answer ${status}`, 'Implement it. ASK_PERMISSION KEY_ANSWER EMPTY_ENTER_IGNORED');
+    const run = await w.board.requestRun(card.id, { stage: 'executing', consent: true, config: { provider: 'codex' } });
+    const shown = text => until(async () => (await w.supervisor.artifact(run.id, 'output')).includes(text), text);
+    await shown('Allow Bash?');
+    if (typeAhead) { w.supervisor.input(run.id, typeAhead); await shown(`prompt: ${typeAhead}`); } // Typed during the turn, not sent.
+    w.supervisor.input(run.id, 'y'); // One key, no Enter; a legacy run has no way to see the approval.
+    await until(async () => (await w.run(run.id)).turnComplete, 'turn');
+    w.supervisor.input(run.id, '\r'); // Submits the typed-ahead text as the next turn, or nothing.
+    assert.equal(w.supervisor.sessions.get(run.id).status, status, typeAhead || 'stray Enter');
+    await until(async () => { const r = await w.run(run.id); return r.status === 'waiting_for_input' && r.turnComplete && r.turns === (typeAhead ? 2 : 1); }, 'settled');
+    await w.supervisor.confirm(run.id);
+  }
 });
 
 test('failures are classified once; unconfirmed exits are interrupted; waiting states surface; streams resume in order', { skip }, async t => {
