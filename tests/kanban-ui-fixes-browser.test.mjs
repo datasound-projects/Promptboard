@@ -196,6 +196,27 @@ test('the Agents dialog refuses to save over a custom column agent changed elsew
   assert.deepEqual(exceptions(browser), []);
 });
 
+test('a settings dialog never takes a change saved elsewhere during its own save as its own', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await linked(app, 'Saved meanwhile');
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`!document.querySelector('#agents-open').disabled`, 'board');
+  // Another window saves Planning right after this window's workflow save is written, before the answer is built.
+  await browser.eval(`document.querySelector('#agents-open').click();`); await browser.until(`document.querySelector('#workflow-dialog').open`, 'Agents dialog');
+  const setWorkflow = app.board.setWorkflow.bind(app.board);
+  app.board.setWorkflow = async (...input) => {
+    const written = await setWorkflow(...input); app.board.setWorkflow = setWorkflow;
+    const current = (await app.board.state()).projects[0];
+    await setWorkflow(project.id, { workflow: { ...current.workflow, planning: { policy: 'manual', instructions: 'Other window' } }, expectedRevision: current.revision });
+    return written;
+  };
+  await browser.eval(`document.querySelector('#test-commands').value = 'nodee --test'; document.querySelector('#workflow-form').requestSubmit();`);
+  await browser.until(`!document.querySelector('#workflow-error').hidden`, 'first save answered');
+  await browser.eval(`document.querySelector('#test-commands').value = 'node --test'; document.querySelector('#workflow-form').requestSubmit();`);
+  await browser.until(`/changed since you loaded/.test(document.querySelector('#workflow-error').textContent)`, 'the change made during the save is kept');
+  assert.equal((await app.board.state()).projects[0].workflow.planning.policy, 'manual');
+  assert.deepEqual(exceptions(browser), []);
+});
+
 test('a legacy Column Manager switched to a pipeline refuses to save over test commands saved elsewhere', { skip: !chrome, timeout: 90000 }, async t => {
   const { app, browser } = await open(t);
   const project = await linked(app, 'Switch');

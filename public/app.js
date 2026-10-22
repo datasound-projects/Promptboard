@@ -1578,7 +1578,8 @@ async function saveDialogFields(shown, send) {
     const { revision } = shownProject(shown);
     try {
       const data = await send(revision);
-      shown.value = JSON.stringify(shown.fields((data.board || board).projects.find(item => item.id === shown.projectId)));
+      // The project as this request wrote it: a later write that the answer's board already includes is not the dialog's.
+      shown.value = JSON.stringify(shown.fields(data.project || (data.board || board).projects.find(item => item.id === shown.projectId)));
       return data;
     } catch (error) { if (error.code !== 'REVISION_CONFLICT' || retried) throw error; } // boardCall loaded the newer board.
   }
