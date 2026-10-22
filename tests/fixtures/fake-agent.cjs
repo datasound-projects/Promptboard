@@ -233,11 +233,12 @@ process.stdin.on('data', chunk => {
     if (codexQuestion) { codexQuestion = false; process.stdout.write('\x1b]0;⠋ thread-1\x07'); }
     turn(prompt); return;
   }
-  // EMPTY_ENTER_IGNORED: as the real CLIs do, Backspace deletes a character, Ctrl+C clears the prompt, and an Enter
-  // on an empty prompt submits nothing (no hook, no turn).
+  // EMPTY_ENTER_IGNORED: as the real CLIs do, typed text shows in the prompt, Backspace deletes a character, Ctrl+C
+  // clears the prompt, and an Enter on an empty prompt submits nothing (no hook, no turn).
   const edits = prompt.includes('EMPTY_ENTER_IGNORED');
   if (edits) for (const key of chunk.toString()) line = key === '\x7f' ? line.slice(0, -1) : key === '\x03' ? '' : line + key;
   else line += chunk.toString();
+  if (edits && !/[\r\n]/.test(line)) process.stdout.write(`prompt: ${line}\r\n`);
   if (!/[\r\n]/.test(line)) return;
   const text = line.trim(); line = '';
   if (!text && edits) return;

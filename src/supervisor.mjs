@@ -583,9 +583,8 @@ export class Supervisor {
   async #setStatus(session, status, fields = {}) {
     session.status = status;
     session.turnEnded = 'turns' in fields; // Only a finished turn reports its count; other waits are inside a turn.
-    // Without activity there is no dialog evidence: a key may have answered an approval, so only later text is a draft.
-    // ponytail: text typed into a legacy Codex prompt during its turn is dropped too; its later Enter is then not seen.
-    if (session.turnEnded && !session.activity) session.draft = 0;
+    // Without activity there is no dialog evidence: the lone keys that may have answered an approval are taken back.
+    if (session.turnEnded && !session.activity) { session.draft = Math.max(0, (session.draft || 0) - (session.keyAnswers || 0)); session.keyAnswers = 0; }
     await this.board.updateRun(session.runId, { status, ...fields }).catch(() => {});
     this.#push(session, { status, ...(fields.waitingReason ? { reason: fields.waitingReason } : {}) });
   }
@@ -705,15 +704,17 @@ export class Supervisor {
     // What the prompt holds, as far as the keys show: text adds, Backspace takes one back, Ctrl+C and every Enter clear
     // it, and an escape sequence (a history key, a paste) may leave anything. A key answering a CLI dialog types nothing.
     // ponytail: no line editor; other edits (cursor keys, Ctrl+W) count as text, so their Enter is taken as a new turn.
-    let draft = session.draft || 0, submits = false;
+    let draft = session.draft || 0, answers = session.keyAnswers || 0, submits = false;
     if (!dialog || /[\r\n]/.test(keys)) for (const key of keys) {
-      if (key === '\r' || key === '\n') { submits ||= draft > 0; draft = 0; }
-      else if (key === '\x03') draft = 0;
+      if (key === '\r' || key === '\n') { submits ||= draft > 0; draft = answers = 0; }
+      else if (key === '\x03') draft = answers = 0;
       else if (key === '\x7f' || key === '\b') draft = Math.max(0, draft - 1);
       else if (key === '\x1b') draft = Infinity;
       else if (key >= ' ') draft++;
     }
-    session.draft = draft;
+    // A run without activity cannot see a dialog: a lone y, n, p or digit may answer one rather than type (see #setStatus).
+    if (!session.activity && /^[0-9ynp]$/i.test(keys)) answers++;
+    session.draft = draft; session.keyAnswers = answers;
     // After a finished turn an Enter on an empty prompt submits nothing: each CLI ignores it. Claude and Gemini report a
     // new turn with their prompt hook; Codex has none, so its Enter that submits text starts the turn here. Inside a turn
     // (a permission or question wait) Enter answers and the turn goes on.
