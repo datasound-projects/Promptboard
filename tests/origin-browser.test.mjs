@@ -979,6 +979,25 @@ test('Origin draws what a save changed on the Tasks page once you leave the fiel
   assert.deepEqual(blocks.map(block => block.text), ['Card wallets', 'Two couriers'], 'every keystroke was kept');
 });
 
+test('Origin keeps what a click on a page control did while a refresh waits, also where a click does not focus the control (Safari)', { skip: !await findChrome(), timeout: 120000 }, async t => {
+  const { browser, ev, wait, saved, statusReads, refreshed } = await sentTaskPage(t, {
+    items: [{ id: 't1', key: 'IMP-001', title: 'Build checkout', acceptanceCriteria: 'Works', contextIds: [{ collection: 'blocks', id: 'nb' }] }] });
+  // Safari (iPhone, Mac) does not focus a clicked button or summary: focus leaves the field for the page body.
+  await ev(`document.addEventListener('mousedown', event => { if (event.target.closest('summary, button')) { event.preventDefault(); document.activeElement?.blur(); } }, true);`);
+  await ev(`document.querySelector('.origin-block[data-block="nb"] textarea').focus();`);
+  await browser.type('Card wallets');
+  const before = await statusReads();
+  await saved(); await refreshed(before);
+  const middle = selector => ev(`const box = document.querySelector(${J(selector)}).getBoundingClientRect(); return [box.left + box.width / 2, box.top + box.height / 2];`);
+  await browser.click(...await middle('[data-nav="menu:block:nb"]'));
+  // Any redraw the click starts runs on the next timer turn; this check runs after it.
+  assert.deepEqual(await ev(`await new Promise(resolve => setTimeout(resolve)); return [document.querySelector('[data-nav="menu:block:nb"]').closest('details').open, document.activeElement === document.body];`), [true, true],
+    'the ⋯ menu the click opened stays open');
+  // A click on an empty part of the page still draws what was held back.
+  await browser.click(...await ev(`const box = document.querySelector('#origin-main').getBoundingClientRect(); return [box.left + 6, box.top + 6];`));
+  await wait(`[...document.querySelectorAll('#origin-main .origin-row')].some(row => row.dataset.id === 't1' && row.textContent.includes('Context changed'))`, 'IMP-001 flagged');
+});
+
 test('Origin keeps the caret where you type in the task editor when a save redraws it', { skip: !await findChrome(), timeout: 90000 }, async t => {
   const { browser, store, record, ev, saved, open, statusReads, refreshed } = await sentTaskPage(t);
   await open('Build checkout');
@@ -1000,20 +1019,27 @@ test('Origin’s project menu opens next to its button and on screen from 320 to
   const browser = await launch({ width: 390, height: 844 }); assert.ok(browser); t.after(() => browser.close());
   const { ev, wait } = pageTools(browser);
   await browser.goto(`${app.url}/#/origin`);
+  // Under its button, covering it from left to right, never past the window's edge; at the button's left edge whenever there is room.
+  const placed = async (width, what) => {
+    const box = await ev(`const list = document.querySelector('#origin-project-menu .origin-menu-list').getBoundingClientRect(), button = document.querySelector('#origin-project-menu summary').getBoundingClientRect();
+      return { list: [Math.round(list.left), Math.round(list.right)], button: [Math.round(button.left), Math.round(button.right)], gap: Math.round(list.top - button.bottom), page: document.documentElement.scrollWidth };`);
+    const room = box.button[0] + (box.list[1] - box.list[0]) <= width - 16;
+    assert.ok(box.list[0] >= 0 && box.list[1] <= width && box.page <= width && box.list[0] <= box.button[0] && box.list[1] >= box.button[1] && box.gap >= 0 && box.gap <= 12 && (!room || box.list[0] === box.button[0]),
+      `${width} px, ${what}: the menu is next to its button and on screen: ${J(box)}`);
+  };
   for (const id of ids) {
     await ev(`const s = document.querySelector('#origin-project'); s.value = ${J(id)}; s.dispatchEvent(new Event('change'));`);
     await wait(`document.querySelector('#origin-project').value === ${J(id)} && document.querySelector('.origin-map')`, 'project open');
     for (const width of [320, 390, 600, 700, 1440]) {
       await browser.resize(width, 844);
       await ev(`document.querySelector('#origin-project-menu summary').click();`);
-      // Under its button, covering it from left to right, never past the window's edge.
-      const box = await ev(`const list = document.querySelector('#origin-project-menu .origin-menu-list').getBoundingClientRect(), button = document.querySelector('#origin-project-menu summary').getBoundingClientRect();
-        return { list: [Math.round(list.left), Math.round(list.right)], button: [Math.round(button.left), Math.round(button.right)], gap: Math.round(list.top - button.bottom), page: document.documentElement.scrollWidth };`);
-      assert.ok(box.list[0] >= 0 && box.list[1] <= width && box.page <= width && box.list[0] <= box.button[0] && box.list[1] >= box.button[1] && box.gap >= 0 && box.gap <= 12,
-        `${width} px: the menu opens next to its button and on screen: ${J(box)}`);
+      await placed(width, 'opened');
       await ev(`document.querySelector('#origin-project-menu').open = false;`);
     }
   }
+  // Left open while the window narrows (a phone turned) and widens again, it follows its button.
+  await ev(`document.querySelector('#origin-project-menu summary').click();`);
+  for (const width of [320, 700, 1440]) { await browser.resize(width, 844); await placed(width, 'open while the window changed'); }
 });
 
 test('Origin’s next steps wrap long section names and unbroken words at 390 px instead of scrolling sideways', { skip: !await findChrome(), timeout: 90000 }, async t => {
