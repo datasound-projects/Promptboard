@@ -84,7 +84,7 @@ test('settings inherit from Compose defaults, then the batch, then the task; ano
   assert.throws(() => normalizeOverrides({ secret: 1 }), /unknown field/);
   assert.throws(() => normalizeOverrides({ instructions: 'Call it with api_key=abcdef0123456789' }), /secret/);
   assert.throws(() => normalizeOverrides({ instructions: 'Run it with --token xoxb-1234-5678-abcdefgh.' }), /secret/);
-  assert.equal(normalizeOverrides({ instructions: 'Every task: keep the column sk_customer_12345678 as the join key; --max-token 4096.' }).instructions.length > 0, true, 'words that only look like secrets are accepted');
+  assert.equal(normalizeOverrides({ instructions: 'Every task: keep the column sk_customer_12345678 as the join key; --max-token 4096 and --refresh-token 3600.' }).instructions.length > 0, true, 'words that only look like secrets are accepted');
 });
 
 test('integrity: exact literals, confirmed review findings and edits gate approval; the trace links requirement, section and check', () => {
