@@ -3424,7 +3424,8 @@ function openWorkflowDialog(focusStage = null) {
   if (currentProject()?.workflowMode === 'pipeline') { openColumns(); if (focusStage) { columnsDraft.selected = focusStage; renderColumns(); } return; }
   const project = currentProject();
   if (!project) return;
-  workflowShown = dialogFields(project, item => [item.workflow, item.agentDefaults, item.testCommands]);
+  // Everything a save writes: setWorkflow also writes the custom agent columns' settings into the column layout.
+  workflowShown = dialogFields(project, item => [item.workflow, item.agentDefaults, item.testCommands, (item.columnLayout || []).filter(entry => entry.custom).map(entry => [entry.id, entry.agent])]);
   $('#workflow-dialog-project').textContent = `${project.name} · WORKFLOW`;
   const stages = [];
   const customAgents = (project.columnLayout || []).filter(entry => entry.custom && entry.agent?.enabled);

@@ -178,6 +178,24 @@ test('the pipeline Column Manager saves after a revision change the app makes it
   assert.deepEqual(exceptions(browser), []);
 });
 
+test('the Agents dialog refuses to save over a custom column agent changed elsewhere', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await linked(app, 'Custom agents');
+  const layout = instructions => [{ id: 'todo' }, { id: 'planning' }, { id: 'executing' }, { id: 'c_docs000001', custom: true, title: 'Docs', agent: { enabled: true, policy: 'manual', instructions } }, { id: 'code_review' }, { id: 'testing' }, { id: 'merge' }, { id: 'done' }];
+  await app.board.setColumns(project.id, { columns: layout('Write the docs'), expectedRevision: (await app.board.state()).projects[0].revision });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`!document.querySelector('#agents-open').disabled`, 'board');
+  const docs = () => app.board.state().then(state => state.projects[0].columnLayout.find(entry => entry.id === 'c_docs000001').agent.instructions);
+  // Another window gives the Docs column's agent new instructions.
+  await browser.eval(`document.querySelector('#agents-open').click();`); await browser.until(`document.querySelector('#workflow-dialog').open`, 'Agents dialog');
+  await app.board.setColumns(project.id, { columns: layout('Changed in another window'), expectedRevision: (await app.board.state()).projects[0].revision });
+  await polled(app, browser);
+  await browser.eval(`document.querySelector('#workflow-form').requestSubmit();`);
+  await browser.until(`!document.querySelector('#workflow-error').hidden`, 'save refused');
+  assert.match(await shownError(browser, 'workflow-error'), /changed since you loaded/);
+  assert.equal(await docs(), 'Changed in another window');
+  assert.deepEqual(exceptions(browser), []);
+});
+
 // Visible: painted inside the viewport, with no hidden ancestor (a closed drawer is visibility: hidden).
 const shown = text => `return [...document.querySelectorAll('body *')].filter(node => !node.children.length && node.textContent.includes(${JSON.stringify(text)})).some(node => {
   for (let item = node; item; item = item.parentElement) { const style = getComputedStyle(item); if (style.visibility === 'hidden' || style.display === 'none') return false; }
