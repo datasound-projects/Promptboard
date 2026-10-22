@@ -70,7 +70,7 @@ test('the Agents, Columns and Autopilot dialogs never save over a change saved m
   const project = await linked(app, 'Lost update');
   const card = await app.board.createTask({ projectId: project.id, title: 'Card', prompt: 'c' });
   await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${card.id}"]') && !document.querySelector('#agents-open').disabled`, 'board');
-  const conflict = /changed since you loaded it/;
+  const conflict = /changed since you loaded/;
   // Agents (workflow): the other window chose Manual for Planning.
   await browser.eval(`document.querySelector('#agents-open').click();`); await browser.until(`document.querySelector('#workflow-dialog').open`, 'Agents dialog');
   let current = (await app.board.state()).projects[0];
@@ -108,6 +108,76 @@ test('the Agents, Columns and Autopilot dialogs never save over a change saved m
   assert.deepEqual(exceptions(browser), []);
 });
 
+// What Autopilot does before each card (src/autopilot.mjs): the project revision moves, no setting changes.
+const bumpRevision = async (app, browser, projectId) => {
+  const current = (await app.board.state()).projects.find(project => project.id === projectId);
+  await app.board.setTargetBranch(projectId, { branch: current.targetBranch.name, expectedRevision: current.revision });
+  await polled(app, browser);
+};
+const shownError = (browser, id) => browser.eval(`return document.querySelector('#${id}').hidden ? '' : document.querySelector('#${id}').textContent;`);
+
+test('the Agents, Columns and Autopilot dialogs save again after their own save, a refused start and a revision change the app makes itself', { skip: !chrome, timeout: 120000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await linked(app, 'One window');
+  const card = await app.board.createTask({ projectId: project.id, title: 'Card', prompt: 'c' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${card.id}"]') && !document.querySelector('#agents-open').disabled`, 'board');
+  // Agents: the workflow saves, then a mistyped test command is refused; corrected after a revision change, Save goes through.
+  await browser.eval(`document.querySelector('#agents-open').click();`); await browser.until(`document.querySelector('#workflow-dialog').open`, 'Agents dialog');
+  await browser.eval(`document.querySelector('#test-commands').value = 'nodee --test'; document.querySelector('#workflow-form').requestSubmit();`);
+  await browser.until(`!document.querySelector('#workflow-error').hidden`, 'mistyped command refused');
+  assert.match(await shownError(browser, 'workflow-error'), /not a program installed/);
+  await bumpRevision(app, browser, project.id);
+  await browser.eval(`document.querySelector('#test-commands').value = 'node --test'; document.querySelector('#workflow-form').requestSubmit();`);
+  await browser.until(`!document.querySelector('#workflow-dialog').open`, 'Agents saved');
+  assert.deepEqual((await app.board.state()).projects[0].testCommands.map(item => item.argv.join(' ')), ['node --test']);
+  // Columns: two saves in a row, each after a revision change.
+  for (const title of ['Plan', 'Plan first']) {
+    await browser.eval(`document.querySelector('#columns-open').click();`); await browser.until(`document.querySelector('#columns-dialog').open`, 'Columns dialog');
+    await bumpRevision(app, browser, project.id);
+    await browser.eval(`columnsDraft.list.find(entry => entry.id === 'planning').title = ${JSON.stringify(title)}; document.querySelector('#columns-form').requestSubmit();`);
+    await browser.until(`!document.querySelector('#columns-dialog').open`, `Columns saved: ${title}`);
+    assert.equal((await app.board.view()).projects[0].columns.find(column => column.id === 'planning').title, title);
+  }
+  // Autopilot: Start saves the settings, then no agent can run here. Start again gives that reason again, not a conflict.
+  await browser.eval(`document.querySelector('#autopilot-open').click();`); await browser.until(`document.querySelector('#autopilot-dialog').open`, 'Autopilot dialog');
+  for (const attempt of [1, 2]) {
+    await browser.eval(`document.querySelector('#autopilot-error').hidden = true; document.querySelector('#autopilot-consent').checked = true; document.querySelector('#autopilot-form').requestSubmit();`);
+    await browser.until(`!document.querySelector('#autopilot-error').hidden`, `start ${attempt} refused`);
+    assert.match(await shownError(browser, 'autopilot-error'), /Agent execution is not available/, `start ${attempt}`);
+    await bumpRevision(app, browser, project.id);
+  }
+  await browser.eval(`document.querySelector('#autopilot-save').click();`);
+  await browser.until(`!document.querySelector('#autopilot-dialog').open`, 'Autopilot saved');
+  assert.deepEqual(exceptions(browser), []);
+});
+
+test('the pipeline Column Manager saves after a revision change the app makes itself, and refuses settings changed elsewhere', { skip: !chrome, timeout: 120000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await linked(app, 'Pipeline window', { workflowMode: 'pipeline' });
+  const card = await app.board.createTask({ projectId: project.id, title: 'Card' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${card.id}"]')`, 'board');
+  const active = (await app.board.state()).projects[0].pipeline.columns.find(column => column.role === 'active').id;
+  for (const [name, tests] of [['Shape', ''], ['Shape it', 'node --test']]) {
+    await browser.eval(`document.querySelector('#columns-open').click();`); await browser.until(`document.querySelector('#columns-dialog').open`, 'Columns dialog');
+    await bumpRevision(app, browser, project.id);
+    await browser.eval(`columnsDraft.list.find(entry => entry.id === ${JSON.stringify(active)}).name = ${JSON.stringify(name)}; columnsDraft.tests = ${JSON.stringify(tests)}; document.querySelector('#columns-form').requestSubmit();`);
+    await browser.until(`!document.querySelector('#columns-dialog').open || !document.querySelector('#columns-error').hidden`, `Columns saved: ${name}`);
+    assert.equal(await shownError(browser, 'columns-error'), '');
+    const saved = (await app.board.state()).projects[0];
+    assert.deepEqual([saved.pipeline.columns.find(column => column.id === active).name, (saved.testCommands || []).map(item => item.argv.join(' '))], [name, tests ? [tests] : []]);
+  }
+  // Test commands changed in another window: a save from the open dialog is refused and keeps them.
+  await browser.eval(`document.querySelector('#columns-open').click();`); await browser.until(`document.querySelector('#columns-dialog').open`, 'Columns dialog again');
+  await app.board.delivery.setTestCommands(project.id, { commands: [{ command: 'node --version' }], expectedRevision: (await app.board.state()).projects[0].revision });
+  await polled(app, browser);
+  await browser.eval(`columnsDraft.list.find(entry => entry.id === ${JSON.stringify(active)}).name = 'Mine'; document.querySelector('#columns-form').requestSubmit();`);
+  await browser.until(`!document.querySelector('#columns-error').hidden`, 'stale save refused');
+  assert.match(await shownError(browser, 'columns-error'), /changed since you loaded/);
+  const kept = (await app.board.state()).projects[0];
+  assert.deepEqual([kept.pipeline.columns.find(column => column.id === active).name, kept.testCommands.map(item => item.argv.join(' '))], ['Shape it', ['node --version']]);
+  assert.deepEqual(exceptions(browser), []);
+});
+
 // Visible: painted inside the viewport, with no hidden ancestor (a closed drawer is visibility: hidden).
 const shown = text => `return [...document.querySelectorAll('body *')].filter(node => !node.children.length && node.textContent.includes(${JSON.stringify(text)})).some(node => {
   for (let item = node; item; item = item.parentElement) { const style = getComputedStyle(item); if (style.visibility === 'hidden' || style.display === 'none') return false; }
@@ -136,6 +206,53 @@ test('board feedback shows on the board on a phone and with the sidebar collapse
   await browser.until(`document.querySelector('#sidebar').classList.contains('open')`, 'drawer open');
   await browser.eval(`showBoardError(new Error('Shown on the board.'));`);
   assert.equal(await browser.layout(shown('Shown on the board.')), true);
+  assert.deepEqual(exceptions(browser), []);
+});
+
+test('a slow request that started earlier never clears the feedback of a later action', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await app.board.createProject({ name: 'Race' });
+  const slow = await app.board.createTask({ projectId: project.id, title: 'Slow one', prompt: 'x' });
+  const refused = await app.board.createTask({ projectId: project.id, title: 'Refused one', prompt: 'y' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${refused.id}"]')`, 'cards');
+  // The duplicate answers after 2 s here; a merge or a pull request can take minutes.
+  await browser.eval(`window.__api = window.api; window.api = async (path, options) => { if (/duplicate/.test(path)) await new Promise(resolve => setTimeout(resolve, 2000)); return window.__api(path, options); };
+    window.__slow = duplicateCard(${JSON.stringify(slow.id)});`);
+  await browser.eval(`const item = document.querySelector('[data-id="${refused.id}"]'); if (item.querySelector('.kanban-more').hidden) item.querySelector('.kanban-more-toggle').click();
+    const select = item.querySelector('.kanban-move-to'); select.value = [...select.options].find(option => option.value).value; select.dispatchEvent(new Event('change'));`);
+  await browser.until(`/“Refused one” stayed in To Do/.test(document.querySelector('#project-detail').textContent)`, 'refusal shown');
+  await browser.eval(`await window.__slow;`);
+  assert.equal((await app.board.state()).projects[0].tasks.length, 3);
+  assert.equal(await browser.eval(`return !document.querySelector('#project-detail').hidden && /“Refused one” stayed in To Do/.test(document.querySelector('#project-detail').textContent);`), true, 'the later refusal stays');
+  // A change that starts while the refusal shows, and goes through, clears it.
+  await browser.eval(`window.api = window.__api; await duplicateCard(${JSON.stringify(slow.id)});`);
+  assert.equal(await browser.eval(`return document.querySelector('#project-detail').hidden;`), true);
+});
+
+test('after an import that waits for confirmation, the board message leads to "Check and apply" on a phone and with the sidebar collapsed', { skip: !chrome, timeout: 120000 }, async t => {
+  const { app, browser } = await open(t, {}, { width: 390, height: 844 });
+  const project = await linked(app, 'Imported');
+  await app.board.createTask({ projectId: project.id, title: 'Card', prompt: 'c' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('.kanban-card')`, 'board');
+  const backup = await browser.eval(`const { data } = await api('/api/board/export'); return JSON.stringify(data);`);
+  await app.board.deleteProject(project.id, { expectedRevision: (await app.board.state()).projects[0].revision });
+  await browser.until(`board.projects.length === 0`, 'empty board');
+  await browser.eval(`document.querySelector('#menu-toggle').click();`); await browser.until(`document.querySelector('#sidebar').classList.contains('open')`, 'drawer open');
+  await browser.eval(`const files = new DataTransfer(); files.items.add(new File([${JSON.stringify(backup)}], 'backup.json', { type: 'application/json' }));
+    const input = document.querySelector('#import-file'); input.files = files.files; input.dispatchEvent(new Event('change'));`);
+  await browser.until(`/wait for your confirmation/.test(document.querySelector('#project-detail').textContent)`, 'import waits for confirmation', 20000);
+  assert.ok((await app.board.state()).projects[0].pendingImport);
+  const review = `[...document.querySelectorAll('#project-detail button')].find(button => button.textContent === 'Review in Project settings')`;
+  const confirmShown = `const node = document.querySelector('#import-confirm'), r = node.getBoundingClientRect();
+    for (let item = node; item; item = item.parentElement) { const style = getComputedStyle(item); if (item.hidden || style.visibility === 'hidden' || style.display === 'none') return false; }
+    return document.activeElement === node && r.width > 0 && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;`;
+  for (const [width, height] of [[390, 844], [1440, 900]]) {
+    await browser.resize(width, height);
+    if (width > 730) await browser.eval(`if (document.documentElement.dataset.sidebar !== 'collapsed') document.querySelector('#menu-toggle').click(); if (!document.querySelector('#project-settings').hidden) document.querySelector('#project-settings-close').click();`);
+    assert.equal(await browser.layout(shown('Review in Project settings')), true, `${width}: the pointer shows on the board`);
+    await browser.eval(`${review}.click();`);
+    assert.equal(await browser.layout(confirmShown), true, `${width}: Check and apply is shown and focused`);
+  }
   assert.deepEqual(exceptions(browser), []);
 });
 
