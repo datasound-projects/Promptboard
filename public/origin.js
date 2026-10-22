@@ -95,8 +95,10 @@ window.PromptboardOrigin = (() => {
     menuList.append(button('Rename…', () => { menu.open = false; openRename(); }, 'origin-menu-item'), button('Connect to Kanban…', () => { menu.open = false; openConnect(); }, 'origin-menu-item'),
       button('Save structure as blueprint…', () => { menu.open = false; openSaveBlueprint(); }, 'origin-menu-item'), button('Reset structure…', () => { menu.open = false; openReset(); }, 'origin-menu-item'), button('Delete from Origin…', () => { menu.open = false; openDelete(); }, 'origin-menu-item danger'));
     menu.append(menuSummary, menuList);
-    // It opens under its button; a long project name on a narrow screen moves it left only as far as the window's edge needs.
-    menu.addEventListener('toggle', () => { menuList.style.left = ''; const past = menu.open ? menuList.getBoundingClientRect().right - (document.documentElement.clientWidth - 16) : 0; if (past > 0) menuList.style.left = `${-past}px`; });
+    // It opens under its button; a long project name on a narrow screen moves it left only as far as the window's edge needs,
+    // placed again while it is open and the window changes (a phone turned).
+    const placeMenu = () => { menuList.style.left = ''; const past = menu.open ? menuList.getBoundingClientRect().right - (document.documentElement.clientWidth - 16) : 0; if (past > 0) menuList.style.left = `${-past}px`; };
+    menu.addEventListener('toggle', () => { placeMenu(); if (menu.open) window.addEventListener('resize', placeMenu); else window.removeEventListener('resize', placeMenu); });
     const linkChip = button('', () => { const linked = project(); if (linked?.kanban?.exists) app.openKanban(linked.kanbanProjectId); else openConnect(); }, 'origin-link-pill');
     linkChip.id = 'origin-kanban-link';
     projectBox.append(projectSelect, menu, linkChip, newProject);

@@ -979,20 +979,27 @@ test('Origin’s project menu opens next to its button and on screen from 320 to
   const browser = await launch({ width: 390, height: 844 }); assert.ok(browser); t.after(() => browser.close());
   const { ev, wait } = pageTools(browser);
   await browser.goto(`${app.url}/#/origin`);
+  // Under its button, covering it from left to right, never past the window's edge; at the button's left edge whenever there is room.
+  const placed = async (width, what) => {
+    const box = await ev(`const list = document.querySelector('#origin-project-menu .origin-menu-list').getBoundingClientRect(), button = document.querySelector('#origin-project-menu summary').getBoundingClientRect();
+      return { list: [Math.round(list.left), Math.round(list.right)], button: [Math.round(button.left), Math.round(button.right)], gap: Math.round(list.top - button.bottom), page: document.documentElement.scrollWidth };`);
+    const room = box.button[0] + (box.list[1] - box.list[0]) <= width - 16;
+    assert.ok(box.list[0] >= 0 && box.list[1] <= width && box.page <= width && box.list[0] <= box.button[0] && box.list[1] >= box.button[1] && box.gap >= 0 && box.gap <= 12 && (!room || box.list[0] === box.button[0]),
+      `${width} px, ${what}: the menu is next to its button and on screen: ${J(box)}`);
+  };
   for (const id of ids) {
     await ev(`const s = document.querySelector('#origin-project'); s.value = ${J(id)}; s.dispatchEvent(new Event('change'));`);
     await wait(`document.querySelector('#origin-project').value === ${J(id)} && document.querySelector('.origin-map')`, 'project open');
     for (const width of [320, 390, 600, 700, 1440]) {
       await browser.resize(width, 844);
       await ev(`document.querySelector('#origin-project-menu summary').click();`);
-      // Under its button, covering it from left to right, never past the window's edge.
-      const box = await ev(`const list = document.querySelector('#origin-project-menu .origin-menu-list').getBoundingClientRect(), button = document.querySelector('#origin-project-menu summary').getBoundingClientRect();
-        return { list: [Math.round(list.left), Math.round(list.right)], button: [Math.round(button.left), Math.round(button.right)], gap: Math.round(list.top - button.bottom), page: document.documentElement.scrollWidth };`);
-      assert.ok(box.list[0] >= 0 && box.list[1] <= width && box.page <= width && box.list[0] <= box.button[0] && box.list[1] >= box.button[1] && box.gap >= 0 && box.gap <= 12,
-        `${width} px: the menu opens next to its button and on screen: ${J(box)}`);
+      await placed(width, 'opened');
       await ev(`document.querySelector('#origin-project-menu').open = false;`);
     }
   }
+  // Left open while the window narrows (a phone turned) and widens again, it follows its button.
+  await ev(`document.querySelector('#origin-project-menu summary').click();`);
+  for (const width of [320, 700, 1440]) { await browser.resize(width, 844); await placed(width, 'open while the window changed'); }
 });
 
 test('Origin’s next steps wrap long section names and unbroken words at 390 px instead of scrolling sideways', { skip: !await findChrome(), timeout: 90000 }, async t => {
