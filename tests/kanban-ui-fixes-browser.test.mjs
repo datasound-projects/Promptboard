@@ -210,6 +210,23 @@ test('a legacy Column Manager switched to a pipeline refuses to save over test c
   assert.deepEqual([kept.workflowMode, kept.testCommands.map(item => item.argv.join(' '))], [project.workflowMode, ['node --version']]);
 });
 
+test('"Add default instructions" in the Autopilot dialog works after a revision change the app makes itself', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await linked(app, 'Autopilot instructions', { workflowMode: 'pipeline' });
+  const current = (await app.board.state()).projects[0], pipeline = structuredClone(current.pipeline);
+  pipeline.columns.splice(pipeline.columns.findIndex(column => column.id === 'done'), 0, { id: 'c_polish', name: 'Polish', role: 'active', kind: 'custom', color: 'blue', description: '', strategy: { autoSpawn: true }, automations: { onEnter: [], onExit: [] } });
+  await app.board.setPipeline(project.id, { pipeline, expectedRevision: current.revision, confirm: true });
+  await app.board.createTask({ projectId: project.id, title: 'One' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('.kanban-card')`, 'card');
+  await browser.eval(`document.querySelector('#autopilot-open').click();`); await browser.until(`document.querySelector('#autopilot-add-instructions')`, 'Add default instructions');
+  await bumpRevision(app, browser, project.id);
+  await browser.eval(`document.querySelector('#autopilot-add-instructions').click();`);
+  await browser.until(`!document.querySelector('#autopilot-add-instructions') || !document.querySelector('#autopilot-error').hidden`, 'instructions added');
+  assert.equal(await shownError(browser, 'autopilot-error'), '');
+  assert.equal((await app.board.state()).projects[0].pipeline.columns.find(column => column.id === 'c_polish').automations.onEnter.length, 1);
+  assert.deepEqual(exceptions(browser), []);
+});
+
 // Visible: painted inside the viewport, with no hidden ancestor (a closed drawer is visibility: hidden).
 const shown = text => `return [...document.querySelectorAll('body *')].filter(node => !node.children.length && node.textContent.includes(${JSON.stringify(text)})).some(node => {
   for (let item = node; item; item = item.parentElement) { const style = getComputedStyle(item); if (style.visibility === 'hidden' || style.display === 'none') return false; }

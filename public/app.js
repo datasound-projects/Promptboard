@@ -4905,7 +4905,12 @@ function renderAutopilotDialog() {
     if (missing.length) {
       const add = detailButton('Add default instructions', async () => {
         add.disabled = true;
-        try { await addAutopilotInstructions(project, draft.route); renderAutopilotDialog(); announce('Default instructions added to the columns. You can change them in Columns.'); }
+        try {
+          // The board as it is now, not as it was drawn: a revision change since then must not refuse the click.
+          const current = currentProject(), stages = autopilotStages(current);
+          await addAutopilotInstructions(current, draft.route.filter(id => stages.includes(id)));
+          renderAutopilotDialog(); announce('Default instructions added to the columns. You can change them in Columns.');
+        }
         catch (error) { $('#autopilot-error').textContent = error.message; $('#autopilot-error').hidden = false; add.disabled = false; }
       }, 'secondary-button');
       add.id = 'autopilot-add-instructions'; add.disabled = running;
