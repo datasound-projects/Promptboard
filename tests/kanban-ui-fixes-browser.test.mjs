@@ -480,6 +480,8 @@ test('a dialog close button never covers its eyebrow text at 390 px', { skip: !c
     [`document.querySelector('#autopilot-open').click()`, 'autopilot-dialog', 'autopilot-project', 'autopilot-close'],
     // Base's dialog has its heading (a resource's own name) right after the close button; short words fill each line.
     [`document.querySelector('#base-dialog-heading').textContent = 'Release checklist a b c d e f g h i j k l m n o p q r s t u v w x y z'; document.querySelector('#base-dialog').showModal()`, 'base-dialog', 'base-dialog-heading', 'base-dialog-close'],
+    // A name without spaces wraps too.
+    [`document.querySelector('#base-dialog-heading').textContent = 'production_release_checklist_for_customers_and_partners'; document.querySelector('#base-dialog').showModal()`, 'base-dialog', 'base-dialog-heading', 'base-dialog-close'],
   ]) {
     await browser.eval(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}; ${opener};`); await browser.until(`document.querySelector('#${dialog}').open`, dialog);
     assert.equal(await browser.layout(`const c = document.querySelector('#${close}').getBoundingClientRect(), range = document.createRange(); range.selectNodeContents(document.querySelector('#${eyebrow}'));
