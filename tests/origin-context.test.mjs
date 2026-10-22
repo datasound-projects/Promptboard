@@ -355,6 +355,22 @@ test('reading for Project Context leaves a recovered-file notice for the Origin 
   assert.equal((await fresh.read(created.id)).recovery, null);
 });
 
+test('Use in Kanban after its Base copy was deleted points the assigned selection at a new copy, so the runs work again', async t => {
+  const { app, call, path, kanban, card } = await linkedApp(t);
+  const request = extra => ({ method: 'POST', body: { expectedRevision: 1, pageIds: ['s-requirements'], target: { scope: 'task', taskId: card.id }, ...extra } });
+  const first = (await call(`${path}/document/kanban`, request())).data;
+  const copy = (await app.board.state()).base.resources.find(resource => resource.id === first.copy.id);
+  await app.board.base.remove(copy.id, { expectedRevision: copy.revision, expectedBaseRevision: (await app.board.state()).base.revision, detach: true });
+  const preview = (await call(`${path}/document/kanban`, request({ preview: true }))).data;
+  assert.deepEqual([preview.plan.copy.status, preview.plan.selection.status, preview.alreadyAssigned], ['new', 'existing', false], 'the button stays available');
+  const second = (await call(`${path}/document/kanban`, request())).data;
+  assert.deepEqual([second.resource.id, second.assigned], [first.resource.id, true], 'the assigned selection is repaired, not duplicated');
+  const state = await app.board.state();
+  assert.deepEqual(state.base.resources.find(resource => resource.id === first.resource.id).configuration.sources, [{ kind: 'knowledge', resourceId: second.copy.id, pageId: 's-requirements' }]);
+  const { manifest } = await app.board.previewBase({ target: { scope: 'task', projectId: kanban.id, taskId: card.id } });
+  await prepareBase({ manifest, currentResources: state.base.resources, readRevision: ref => app.board.base.readRevision(ref), runDir: await temp(t) });
+});
+
 test('Use in Kanban counts the source line each excerpt gets in the run, so an accepted selection fits', async t => {
   const { app, call, path, kanban, card } = await linkedApp(t);
   const title = 'Payments, ledger and reconciliation services'.padEnd(150, ' x');

@@ -500,8 +500,11 @@ globalThis.PromptboardOriginModel = (() => {
   }
   const VERIFICATION_LABELS = { verified: 'Verified', unverified: 'Unverified', outdated: 'Outdated', conflict: 'Conflict' };
 
+  // A template's pages, questions and untouched starter blocks are scaffolding, not work (as for a custom section's state).
+  const SCAFFOLD = ['customSections', 'questions', 'blocks'];
   function isStarted(blueprint) {
-    return Boolean(blueprint) && (hasText(blueprint.idea) || VISION.some(key => hasText(blueprint.vision?.[key])) || Object.keys(LIMITS).some(name => blueprint[name]?.length));
+    return Boolean(blueprint) && (hasText(blueprint.idea) || VISION.some(key => hasText(blueprint.vision?.[key])) || Object.keys(LIMITS).some(name => !SCAFFOLD.includes(name) && blueprint[name]?.length)
+      || blueprint.customSections?.some(section => hasText(section.description)) || blueprint.questions?.some(question => hasText(blueprint.answers?.[question.id])) || Boolean(blueprint.blocks?.some(blockWorked)));
   }
 
   // ---- Task context: one builder for handoff, refinement and change detection ----

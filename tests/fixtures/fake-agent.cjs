@@ -2,7 +2,7 @@
 // It reads the lifecycle configuration the adapter passes (Claude --settings hooks,
 // Codex -c notify, Gemini system-settings hooks) and invokes it the same way the real
 // CLIs document. Scenario words in the task text choose the behavior.
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { appendFileSync, readFileSync, writeFileSync } = require('node:fs');
 const { basename, join } = require('node:path');
 
@@ -46,6 +46,8 @@ if (provider === 'claude') {
 }
 
 if (prompt.includes('IGNORE_TERM')) process.on('SIGTERM', () => {});
+// BACKGROUND_CHILD: leave a child in this process group that ignores SIGHUP, as `nohup server &` does (POSIX only).
+if (prompt.includes('BACKGROUND_CHILD')) appendFileSync(report, JSON.stringify({ child: spawn('/bin/sh', ['-c', 'trap "" HUP; exec sleep 300'], { stdio: 'ignore' }).pid }) + '\n');
 process.stdout.write(`fake ${provider} started in ${process.cwd()}\r\n`);
 // Report terminal size changes so tests can see resizes reach the process.
 process.on('SIGWINCH', () => process.stdout.write(`size ${process.stdout.columns}x${process.stdout.rows}\r\n`));
@@ -197,7 +199,7 @@ function turn(text) {
   process.stdout.write('turn complete\r\n');
 }
 // Codex asks through its terminal title, not a hook; answering it continues the turn.
-let codexQuestion = prompt.includes('CODEX_QUESTION');
+let codexQuestion = prompt.includes('CODEX_QUESTION'), keyAnswer = prompt.includes('KEY_ANSWER');
 if (trustScreen) drawTrust();
 else if (hooksPending) process.stdout.write('  Hooks need review\r\n  1 hook is new or changed.\r\n› 1. Review hooks\r\n  2. Trust all and continue\r\n  3. Continue without trusting\r\n');
 else if (codexQuestion) process.stdout.write('\x1b]0;[ ! ] Action Required | thread-1\x07Allow this command? (y)\r\n\x1b]0;[ . ] Action Required | thread-1\x07');
@@ -225,9 +227,21 @@ process.stdin.on('data', chunk => {
     hooksPending = false; emit('SessionStart'); if (prompt) turn(prompt);
     return;
   }
-  line += chunk.toString();
+  // KEY_ANSWER: one 'y' key answers the question or approval, with no Enter, as Codex's approval overlay does.
+  if (keyAnswer && chunk.toString() === 'y') {
+    keyAnswer = false;
+    if (codexQuestion) { codexQuestion = false; process.stdout.write('\x1b]0;⠋ thread-1\x07'); }
+    turn(prompt); return;
+  }
+  // EMPTY_ENTER_IGNORED: as the real CLIs do, typed text shows in the prompt, Backspace deletes a character, Ctrl+C
+  // clears the prompt, and an Enter on an empty prompt submits nothing (no hook, no turn).
+  const edits = prompt.includes('EMPTY_ENTER_IGNORED');
+  if (edits) for (const key of chunk.toString()) line = key === '\x7f' ? line.slice(0, -1) : key === '\x03' ? '' : line + key;
+  else line += chunk.toString();
+  if (edits && !/[\r\n]/.test(line)) process.stdout.write(`prompt: ${line}\r\n`);
   if (!/[\r\n]/.test(line)) return;
   const text = line.trim(); line = '';
+  if (!text && edits) return;
   process.stdout.write(`you said: ${text}\r\n`);
   if (codexQuestion) { codexQuestion = false; process.stdout.write('\x1b]0;\u280b thread-1\x07'); }
   if (text === 'quit') process.exit(0);

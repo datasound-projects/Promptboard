@@ -94,7 +94,7 @@ export const openTargets = (platform = process.platform) => Object.keys(OPENERS[
 
 /** Open the project folder (file manager), a terminal there, or its index.html, on this computer. */
 export async function openProject(project, target, { platform = process.platform, launch = spawn } = {}) {
-  const make = OPENERS[platform]?.[target];
+  const make = Object.hasOwn(OPENERS[platform] || {}, target) ? OPENERS[platform][target] : null; // Never an Object.prototype name.
   const folder = project.repository?.path || project.repository?.root;
   if (!folder) throw Object.assign(new Error('Link this project to a folder first.'), { code: 'REPOSITORY_REQUIRED', status: 409 });
   if (!make) throw Object.assign(new Error('This computer cannot open that from Promptboard.'), { code: 'OPEN_UNSUPPORTED', status: 400 });

@@ -442,7 +442,7 @@ test('import keeps execution inactive and waits for confirmation of paths and au
   assert.equal(project.repository, null, 'Imported paths are not linked automatically.');
   assert.deepEqual(project.workflow, {}, 'Imported automation is not active.');
   assert.equal(project.effectiveWorkflow.executing.policy, 'start', 'The default: dragging starts the stage. Imported settings wait.');
-  assert.deepEqual(project.pendingImport, { repositoryPath: root, targetBranch: 'trunk', workflow: { executing: { policy: 'start', provider: 'codex' } }, testCommands: null });
+  assert.deepEqual(project.pendingImport, { repositoryPath: root, targetBranch: 'trunk', workflow: { executing: { policy: 'start', instructions: '', provider: 'codex', model: '', effort: '', permissionMode: 'workspace-write' } }, testCommands: null });
   assert.equal(project.tasks[0].column, 'planning');
   assert.equal(project.tasks[0].prompt, 'Exact\r\ntext');
   assert.deepEqual((await other.view()).runs, []);
@@ -475,6 +475,80 @@ test('confirming an imported repository is refused while tasks own worktrees in 
   // Discarding them changes no link and stays possible.
   await other.confirmImport(project.id, { accept: false, expectedRevision: project.revision });
   assert.equal((await other.view()).projects[0].repository.root, current);
+});
+
+test('imported settings are accepted on another computer once the project is linked to its code there', { skip: process.platform === 'win32' }, async t => {
+  const source = new Board({ dataDir: await temp(t, 'pb-move-') }); await source.createProject({ name: 'Shop' });
+  const backup = await source.exportBackup(), commands = [{ label: 'Unit', argv: ['npm', 'test'], timeoutSec: 60 }];
+  Object.assign(backup.projects[0], { repository: { path: join(await temp(t, 'pb-elsewhere-'), 'shop') }, targetBranch: { name: 'main' }, testCommands: commands });
+  const board = new Board({ dataDir: await temp(t, 'pb-move-import-') });
+  await board.importBackup(backup);
+  let project = (await board.view()).projects[0];
+  await assert.rejects(board.confirmImport(project.id, { accept: true, expectedRevision: project.revision }), { code: 'PATH_NOT_FOUND', message: /does not exist\. Link the project to its code on this computer/ });
+  const root = await repo(t);
+  project = (await board.linkRepository(project.id, { path: root, expectedRevision: project.revision })).project;
+  await board.confirmImport(project.id, { accept: true, expectedRevision: project.revision });
+  project = (await board.view()).projects[0];
+  assert.deepEqual([project.repository.root, project.targetBranch.name, project.testCommands, project.pendingImport], [root, 'trunk', commands, null], 'the link made here stays');
+});
+
+test('a backup keeps validated workflow settings and test commands only: deeply nested JSON never reaches the board', async t => {
+  const board = new Board({ dataDir: await temp(t, 'pb-deep-') }), deep = JSON.parse('['.repeat(5000) + ']'.repeat(5000));
+  // A stage this version cannot use (here an unknown policy) is left out alone, and the result says for which project.
+  const result = await board.importBackup({ kind: 'promptboard-backup', version: 2, projects: [{ id: 'p1', name: 'Deep', tasks: [{ id: 't1', title: 'Card', prompt: 'Do it', column: 'todo' }],
+    workflow: { executing: { policy: 'start', x: deep }, planning: { policy: 'whenever' }, x: deep }, testCommands: [{ label: 'Unit', argv: ['npm', 'test'], x: deep }, { argv: deep }, { label: deep, argv: ['node', '-v'] }] }] });
+  assert.deepEqual(result, { projects: 1, cards: 1, workflowLeftOut: ['Deep'] });
+  let project = (await board.state()).projects[0];
+  const commands = [{ label: 'Unit', argv: ['npm', 'test'], timeoutSec: 600 }, { label: 'node -v', argv: ['node', '-v'], timeoutSec: 600 }];
+  assert.deepEqual([project.pendingImport.workflow, project.pendingImport.testCommands], [{ executing: { policy: 'start', instructions: '' } }, commands]);
+  // Later writes keep working.
+  await board.setSettings({ maxConcurrentRuns: 2 });
+  await board.confirmImport(project.id, { accept: true, expectedRevision: project.revision });
+  project = (await board.state()).projects[0];
+  assert.deepEqual([project.workflow, project.testCommands], [{ executing: { policy: 'start', instructions: '' } }, commands]);
+  // A backup of a project without such settings leaves nothing to confirm.
+  const plain = await board.exportBackup();
+  assert.deepEqual(plain.projects[0].workflow, project.workflow);
+  plain.projects[0].workflow = {}; plain.projects[0].testCommands = [];
+  assert.deepEqual(await board.importBackup(plain, { replace: true }), { projects: 1, cards: 1 });
+  assert.equal((await board.state()).projects[0].pendingImport, null);
+});
+
+test('a backup made while imported settings wait for confirmation keeps them', async t => {
+  const source = new Board({ dataDir: await temp(t, 'pb-pending-') }); await source.createProject({ name: 'Shop' });
+  const backup = await source.exportBackup();
+  Object.assign(backup.projects[0], { repository: { path: '/some/where/shop' }, targetBranch: { name: 'main' }, agentDefaults: { provider: 'codex', model: '', effort: '' },
+    workflow: { executing: { policy: 'manual', instructions: 'Be careful' } }, testCommands: [{ label: 'Unit', argv: ['npm', 'test'], timeoutSec: 60 }], preview: { argv: ['npm', 'run', 'dev'], setup: [] } });
+  const board = new Board({ dataDir: await temp(t, 'pb-pending-import-') });
+  await board.importBackup(backup);
+  const again = await board.exportBackup();
+  for (const key of ['repository', 'targetBranch', 'workflow', 'testCommands', 'preview']) assert.deepEqual(again.projects[0][key], backup.projects[0][key], key);
+  assert.equal(again.projects[0].agentDefaults.provider, 'codex');
+  const restored = new Board({ dataDir: await temp(t, 'pb-pending-again-') });
+  await restored.importBackup(again);
+  assert.deepEqual((await restored.state()).projects[0].pendingImport, (await board.state()).projects[0].pendingImport);
+});
+
+test('replacing the board by import waits until column automations stop, as deleting a project does', async t => {
+  const board = new Board({ dataDir: await temp(t, 'pb-import-scripts-') });
+  const project = await board.createProject({ name: 'Scripts', workflowMode: 'pipeline' });
+  const card = await board.createTask({ projectId: project.id, title: 'Card', prompt: 'Do it' });
+  const backup = await board.exportBackup(), before = structuredClone(await board.state());
+  board.automationMoves.set(card.id, {}); // A column script of this card is still running.
+  await assert.rejects(board.importBackup({ ...backup, projects: [] }, { replace: true }), { code: 'AUTOMATIONS_ACTIVE', status: 409, message: 'Stop the running column automations before you replace the board with a backup.' });
+  assert.deepEqual(await board.state(), before, 'nothing was imported');
+  board.automationMoves.delete(card.id);
+  await board.importBackup({ ...backup, projects: [] }, { replace: true });
+  assert.deepEqual((await board.state()).projects, []);
+});
+
+test('a name or title shortened for its suffix never ends in half an emoji', async t => {
+  const board = new Board({ dataDir: await temp(t, 'pb-emoji-') }), name = `${'x'.repeat(73)}😀`;
+  const project = await board.createProject({ name });
+  await board.migrateBrowserBoard({ version: 1, projects: [{ id: 'browser1', name, cards: [{ id: 'c1', title: 'T', prompt: 'P' }] }] });
+  assert.equal((await board.state()).projects.find(item => item.id === 'browser1').name, `${'x'.repeat(73)} (2)`);
+  const card = await board.createTask({ projectId: project.id, title: `${'x'.repeat(112)}😀`, prompt: 'P' });
+  assert.equal((await board.duplicateTask(card.id)).title, `${'x'.repeat(112)} (copy)`);
 });
 
 test('board HTTP routes need the page token, resolve paths on the server, and never start agents', { skip: process.platform === 'win32' }, async t => {

@@ -819,16 +819,22 @@ export async function useInKanban({ board, originId, input, contexts, saved }) {
   const { copies } = await baseCopies(board, meta.id), hash = version.textHash;
   const copy = copies.find(item => item.currentHash === hash && item.savedHash === hash);
   const selectionTag = `selection:${sha256(JSON.stringify([hash, [...ids].sort()])).slice(0, 32)}`;
-  const selection = state.base.resources.find(resource => resource.kind === 'context' && resource.tags?.includes(selectionTag) && (!copy || resource.configuration?.sources?.every(source => source.resourceId === copy.resource.id)));
+  // A selection whose copy was deleted lost its sources (detached): it is pointed at the saved copy again, so the scopes it
+  // is assigned to receive these sections again.
+  const stale = resource => !resource.configuration?.sources?.length || resource.configuration.sources.some(source => !state.base.resources.some(item => item.id === source.resourceId));
+  const tagged = state.base.resources.filter(resource => resource.kind === 'context' && resource.tags?.includes(selectionTag));
+  const selection = tagged.find(resource => !stale(resource) && (!copy || resource.configuration.sources.every(source => source.resourceId === copy.resource.id))) || tagged.find(stale);
   const plan = { documentRevision: meta.revision, hash, sections: chosen.map(page => ({ id: page.id, title: page.title, chars: page.markdown.length })), chars, full,
     copy: copy ? { status: 'existing', id: copy.resource.id, name: copy.resource.name } : { status: 'new', name: `Project Context: ${record.name}`.slice(0, 120) },
     selection: selection ? { status: 'existing', id: selection.id, name: selection.name } : { status: 'new', name: `Project Context r${meta.revision} · ${full ? 'full document' : `${chosen.length} ${chosen.length === 1 ? 'section' : 'sections'}`}` },
     scope: { kind: scope.kind, name: scope.name } };
-  if (input.preview === true) return { plan, alreadyAssigned: Boolean(selection && !extendBinding(scope.binding, selection.id)) };
+  const repair = Boolean(selection && stale(selection));
+  if (input.preview === true) return { plan, alreadyAssigned: Boolean(selection && !repair && !extendBinding(scope.binding, selection.id)) };
   const savedCopy = copy ? copy.resource : (await saveInBase({ board, originId, input: { expectedRevision: meta.revision, mode: 'copy' }, contexts, saved })).resource;
-  const resource = selection || await board.base.create({ kind: 'context', name: plan.selection.name, tags: ['project-context', copyTag(meta.id), selectionTag],
+  const sources = ids.map(pageId => ({ kind: 'knowledge', resourceId: savedCopy.id, pageId }));
+  const resource = repair ? await board.base.update(selection.id, { configuration: { ...selection.configuration, sources } }, { expectedRevision: selection.revision }) : selection || await board.base.create({ kind: 'context', name: plan.selection.name, tags: ['project-context', copyTag(meta.id), selectionTag],
     description: `${full ? 'The full' : 'Selected sections of the'} Project Context of “${record.name}”, document revision ${meta.revision} (SHA-256 ${hash}): ${chosen.map(page => page.title).join('; ')}`.slice(0, 2000),
-    configuration: { sources: ids.map(pageId => ({ kind: 'knowledge', resourceId: savedCopy.id, pageId })), budgetChars: Math.min(100000, Math.max(1000, needed + 1000)), maxFiles: Math.min(100, ids.length), query: '', complete: true } });
+    configuration: { sources, budgetChars: Math.min(100000, Math.max(1000, needed + 1000)), maxFiles: Math.min(100, ids.length), query: '', complete: true } });
   const binding = extendBinding(scope.binding, resource.id);
   if (binding) {
     if (scope.kind === 'profile') {
@@ -837,5 +843,5 @@ export async function useInKanban({ board, originId, input, contexts, saved }) {
       await board.base.update(scope.profile.id, { configuration }, { expectedRevision: scope.profile.revision });
     } else await board.base.apply({ expectedBaseRevision: (await board.state()).base.revision, changes: [{ target: scope.target, binding, expectedRevision: scope.revision }] });
   }
-  return { plan, resource: { id: resource.id, name: resource.name }, copy: { id: savedCopy.id, name: savedCopy.name }, assigned: Boolean(binding) };
+  return { plan, resource: { id: resource.id, name: resource.name }, copy: { id: savedCopy.id, name: savedCopy.name }, assigned: Boolean(binding) || repair };
 }

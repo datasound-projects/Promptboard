@@ -166,6 +166,24 @@ test('resume starts a stopped column agent again', async t => {
   assert.equal((await projectNow()).autopilot.status, 'running');
 });
 
+test('Restart Autopilot while paused continues the card in progress before the next card', async t => {
+  const { board, project, projectNow, live, tick, starts } = await world(t);
+  const first = await board.createTask({ projectId: project.id, title: 'First' }), second = await board.createTask({ projectId: project.id, title: 'Second' });
+  const save = async () => board.setAutopilot(project.id, { route: ['executing'], queue: [first.id, second.id], expectedRevision: (await projectNow()).revision });
+  await save();
+  await board.controlAutopilot(project.id, { action: 'start', confirm: true });
+  await tick(2);
+  const run = await live(first.id);
+  await board.controlAutopilot(project.id, { action: 'pause' });
+  await save();
+  await board.controlAutopilot(project.id, { action: 'start', confirm: true });
+  await tick(3);
+  const state = await projectNow();
+  assert.equal(state.autopilot.status, 'running', state.autopilot.reason); assert.equal(state.autopilot.current.taskId, first.id);
+  assert.equal(state.tasks.find(task => task.id === second.id).column, 'todo', 'one card at a time');
+  assert.deepEqual(starts, [run.id]);
+});
+
 test('a card profile without a plan route: Autopilot needs an instruction, then moves on from Planning after its turn', async t => {
   const profiles = [{ id: 'fast', name: 'Fast', columns: { planning: { planExitTargetId: null, permissionMode: null } } }];
   const setup = async (instruct) => {

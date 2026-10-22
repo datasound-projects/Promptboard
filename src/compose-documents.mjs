@@ -42,7 +42,7 @@ export function markdownSections(text) {
   const pages = []; let fence = null, offset = 0, start = 0, section = '';
   const push = end => { const slice = text.slice(start, end); if (slice.trim()) pages.push({ page: 1, text: slice, offset: start, section }); };
   for (const line of text.match(/[^\n]*\n|[^\n]+$/g) || []) {
-    const plain = line.replace(/\n$/, ''), marker = plain.match(/^ {0,3}(`{3,}|~{3,})(.*)$/), heading = !fence && !marker && plain.match(/^ {0,3}#{1,6}[ \t]+(.+?)[ \t#]*$/);
+    const plain = line.replace(/\r?\n$/, ''), marker = plain.match(/^ {0,3}(`{3,}|~{3,})(.*)$/), heading = !fence && !marker && plain.match(/^ {0,3}#{1,6}[ \t]+(.+?)[ \t#]*$/);
     if (fence) { if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null; }
     else if (marker) fence = marker[1];
     if (heading) { push(offset); start = offset; section = heading[1].replace(/\\(.)/g, '$1').slice(0, 120); }
@@ -58,7 +58,8 @@ export class ComposeDocuments {
   constructor({ extractor = extractPdf } = {}) { this.extractor = extractor; }
   prune() { for (const [id, row] of this.entries) if (Date.now() - row.used > TTL) this.entries.delete(id); }
   get(id) { this.prune(); const row = this.entries.get(id); if (!row) invalid('This document expired. Add it again or continue without it.'); row.used = Date.now(); return row; }
-  delete(id) { return this.entries.delete(id); }
+  // The same file added again (Research and Compose) shares one ID: it goes when every adder has removed it.
+  delete(id) { const row = this.entries.get(id); if (row && --row.refs > 0) return true; return this.entries.delete(id); }
   close() { this.entries.clear(); }
   async add(bytes, metadata, { signal } = {}) {
     const meta = documentMeta(metadata);
@@ -66,7 +67,7 @@ export class ComposeDocuments {
     if (meta.pdf && !bytes.subarray(0, 8).toString().startsWith('%PDF-')) invalid('This file is not a PDF.');
     const key = createHash('sha256').update(bytes).update(JSON.stringify([meta.from, meta.to, meta.name])).digest('hex');
     this.prune();
-    for (const row of this.entries.values()) if (row.key === key) { row.used = Date.now(); return this.summary(row); }
+    for (const row of this.entries.values()) if (row.key === key) { row.used = Date.now(); row.refs++; return this.summary(row); }
     signal?.throwIfAborted();
     let extracted;
     if (meta.pdf) extracted = await this.extractor(bytes, { from: meta.from, to: meta.to }, { signal });
@@ -79,7 +80,7 @@ export class ComposeDocuments {
     signal?.throwIfAborted();
     const chars = extracted.pages.reduce((sum, page) => sum + page.text.length, 0);
     const row = { id: randomUUID(), key, name: meta.name, sourceType: meta.pdf ? 'pdf' : 'document', pages: extracted.pages, pageCount: extracted.pageCount,
-      index: buildIndex(chunkPages(extracted.pages)), chars, used: Date.now() };
+      index: buildIndex(chunkPages(extracted.pages)), chars, used: Date.now(), refs: 1 };
     while (this.entries.size >= 8 || [...this.entries.values()].reduce((sum, item) => sum + item.chars, 0) + chars > CACHE_CHARS) {
       const oldest = [...this.entries.values()].sort((a, b) => a.used - b.used)[0];
       if (!oldest) invalid('Document exceeds the cache limit.');

@@ -473,6 +473,24 @@ test('rapid drops and repeated clicks start exactly one run', { skip: process.pl
   assert.deepEqual(ctx.executor.started.map(run => run.stage), ['executing', 'planning']);
 });
 
+test('Compose given a document it already lists gives the extra reference back, so removing its one row frees the copy', async t => {
+  const { win, $, app, idle } = await setup(t);
+  const text = '# Spec\nUse PostgreSQL 16.\n', deleted = [], fetchPage = win.fetch;
+  win.fetch = (url, options) => { if (options?.method === 'DELETE') deleted.push(String(url).split('/').at(-1)); return fetchPage(url, options); };
+  const upload = async () => (await (await fetch(`${app.url}/api/compose/sources/document?name=spec.md`, { method: 'POST', headers: { 'X-STE-Token': win.__pbTest.token, 'Content-Type': 'text/markdown' }, body: text })).json()).document.id;
+  const addTwiceAndRemove = async () => {
+    for (let i = 0; i < 2; i++) assert.equal(await win.__pbTest.attachComposeContext({ name: 'spec.md', text, label: 'Spec' }), 'ok');
+    assert.equal($('#context-source-list').querySelectorAll('.context-source').length, 1, 'one row for one document');
+    $('#context-source-list [aria-label="Remove Spec"]').click();
+    await idle();
+  };
+  await addTwiceAndRemove();
+  const research = await upload(); // Research attaches the same file now.
+  assert.notEqual(research, deleted.at(-1), 'the server copy was freed, so adding it again makes a new one');
+  await addTwiceAndRemove();
+  assert.equal(await upload(), research, 'Research keeps its copy');
+});
+
 test('“How your data is used” describes the current app in four short sections', async t => {
   const { $ } = await setup(t);
   $('#privacy-help').click();

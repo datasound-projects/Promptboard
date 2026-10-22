@@ -97,3 +97,58 @@ test('Improve with Compose runs tasks on the batch: chosen settings, parallel or
   assert.deepEqual(items.map(item => [item.key, item.description, item.refinement?.proposal.startsWith(`# Goal\n${item.key}`)]), items.map(item => [item.key, `Build part ${item.key.at(-1)} with tests.`, true]),
     'each task has its own proposal; its text is unchanged until accepted');
 });
+
+test('a run that finishes while you type on another page keeps your field and every keystroke', { skip: !await findChrome(), timeout: 120000 }, async t => {
+  const cli = agents();
+  const { browser, ev, wait, call, originId } = await researchPage(t, { runner: cli.runner, blueprint: bp => {
+    bp.items.push({ ...M.RECORD_DEFAULTS.items('Task 1'), id: 't1', origin: 'human', key: 'IMP-001', description: 'Do it', acceptanceCriteria: 'Works' }); bp.sequence = { items: 1 };
+  } });
+  await ev(`document.querySelector('.origin-nav-item[data-section="plan"]').click();`);
+  await wait(`document.querySelector('#origin-main input[type=checkbox]')`, 'tasks');
+  await ev(`document.querySelector('#origin-main input[type=checkbox]').click();`);
+  await wait(`document.querySelector('#origin-improve')`, 'selection');
+  await ev(`document.querySelector('#origin-improve').click();`);
+  await wait(`document.querySelector('#origin-improve-dialog')?.open && !document.querySelector('#origin-improve-start')?.disabled`, 'settings', 20000);
+  await ev(`const pick = [...document.querySelectorAll('#origin-improve-dialog select')]; pick[3].value = 'fast'; pick[3].dispatchEvent(new Event('change')); document.querySelector('#origin-improve-start').click();`);
+  await wait(`document.querySelector('#origin-improve-minimize')`, 'running', 20000);
+  await ev(`document.querySelector('#origin-improve-minimize').click(); document.querySelector('.origin-nav-item[data-section="vision"]').click();`);
+  await wait(`document.querySelector('[data-vision="problem"] textarea')`, 'Vision');
+  await ev(`document.querySelector('[data-vision="problem"] textarea').focus();`);
+  await browser.type('Shops ');
+  cli.release();
+  await wait(`/proposal/.test(document.querySelector('#origin-improve-mini')?.textContent || '')`, 'run finished', 30000);
+  // The run's end is drawn in the same step that shows its result in the card, so focus can be checked right away.
+  assert.equal(await ev(`return document.activeElement?.closest('[data-vision]')?.dataset.vision;`), 'problem', 'the field keeps focus when the run finishes');
+  await browser.type('are slow');
+  await wait(`document.querySelector('#origin-view').dataset.save === 'saved'`, 'saved', 20000);
+  assert.equal((await call(`/api/origin/projects/${originId}`)).blueprint.vision.problem, 'Shops are slow');
+});
+
+test('at 390 px the minimized run and the minimized Research button do not cover each other', { skip: !await findChrome(), timeout: 120000 }, async t => {
+  const cli = agents();
+  const { browser, ev, wait } = await researchPage(t, { width: 390, height: 844, runner: cli.runner, blueprint: bp => {
+    bp.items.push({ ...M.RECORD_DEFAULTS.items('Task 1'), id: 't1', origin: 'human', key: 'IMP-001', description: 'Do it', acceptanceCriteria: 'Works' }); bp.sequence = { items: 1 };
+  } });
+  t.after(() => cli.release());
+  await ev(`document.querySelector('.origin-nav-item[data-section="plan"]').click();`);
+  await wait(`document.querySelector('#origin-main input[type=checkbox]')`, 'tasks');
+  await ev(`document.querySelector('#origin-main input[type=checkbox]').click();`);
+  await wait(`document.querySelector('#origin-improve')`, 'selection');
+  await ev(`document.querySelector('#origin-improve').click();`);
+  await wait(`document.querySelector('#origin-improve-dialog')?.open && !document.querySelector('#origin-improve-start')?.disabled`, 'settings', 20000);
+  await ev(`document.querySelector('#origin-improve-start').click();`);
+  await wait(`document.querySelector('#origin-improve-minimize')`, 'running', 20000);
+  await ev(`document.querySelector('#origin-improve-minimize').click(); document.querySelector('#origin-research-open').click();`);
+  await wait(`document.querySelector('#origin-research-minimize')`, 'Research open');
+  await ev(`document.querySelector('#origin-research-minimize').click();`);
+  await wait(`document.querySelector('#origin-improve-mini') && !document.querySelector('#origin-research-mini').hidden`, 'both minimized');
+  for (const [width, height] of [[390, 844], [1440, 900]]) {
+    await browser.resize(width, height);
+    // The element under the middle of each control is that control: nothing covers it.
+    const top = await ev(`const hit = node => { const box = node.getBoundingClientRect(); return document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)?.closest('#origin-research-mini, #origin-improve-mini button') === node; };
+      return [hit(document.querySelector('#origin-research-mini')), ...[...document.querySelectorAll('#origin-improve-mini button')].map(hit)];`);
+    assert.deepEqual(top, top.map(() => true), `${width} px: each card can be pressed`);
+  }
+  await ev(`[...document.querySelectorAll('#origin-improve-mini button')].find(b => b.textContent === 'Cancel').click();`);
+  await wait(`/Cancelled/.test(document.querySelector('#origin-improve-mini')?.textContent || '')`, 'cancelled', 10000);
+});

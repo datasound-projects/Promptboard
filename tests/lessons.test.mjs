@@ -266,6 +266,9 @@ test('answers are validated: at most six lessons of known kinds and lengths, no 
   assert.equal(parsed[1].evidence.length, 200);
   assert.deepEqual(parseLessons('[]'), []);
   assert.deepEqual(parseLessons('Nothing new [none] here: []'), [], 'the last list in the text is read');
+  // Words after the list may hold brackets too, and so may the lessons' own text.
+  assert.equal(parseLessons('[{"kind":"command","text":"Run the tests with npm test.","evidence":"npm test exited 0."}]\n\nI left out generic advice [as asked].').length, 1);
+  assert.equal(parseLessons('Here: [{"kind":"gotcha","text":"A list like [1, 2] needs a ] check.","evidence":"\\"]\\""}] and [notes].')[0].text, 'A list like [1, 2] needs a ] check.');
   assert.throws(() => parseLessons('The work looks fine.'), { code: 'INVALID_OUTPUT' });
   assert.throws(() => parseLessons('{"kind":"command"}'), { code: 'INVALID_OUTPUT' });
   assert.deepEqual(parseLessons(JSON.stringify([{ kind: 'gotcha', text: 'Build in /Users/me/work/shop first; token=abc123 is in .env', evidence: '' }]))[0].text, 'Build in …/shop first; token=[redacted] is in .env');
@@ -404,7 +407,8 @@ test('a backup carries approved lessons and settings, never suggestions or jobs,
 
 test('failed test output and local paths reach the model masked, also where the kept end of the output starts inside a secret', { timeout: 60000 }, async t => {
   const w = await world(t);
-  const card = await w.board.createTask({ projectId: w.project.id, title: 'Payments', prompt: 'Run it with --cwd=/Users/alice/private/shop, then open file:///Users/alice/private/shop/index.html.' });
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Payments', prompt: 'Run it with --cwd=/Users/alice/private/shop, then open file:///Users/alice/private/shop/index.html. '
+    + 'Bad credentials for ghp_abcdefghijklmnopqrstuvwxyz0123456789, key sk-live-1234567890abcdef1234, run with --token xoxb-1234-5678-abcdefgh. Add a --password flag; see task-1234567890abcdefgh.' });
   const secret = 'sk-live-0123456789abcdefSECRET';
   // Only the last 600 characters are kept: they start inside the keyword, after "STRIPE_AP".
   const tail = `${'x'.repeat(2000)} STRIPE_API_KEY=${secret} ${'y'.repeat(600 - secret.length - 7)}`;
@@ -417,6 +421,9 @@ test('failed test output and local paths reach the model masked, also where the 
   assert.equal(prompt.includes(secret), false, 'the secret never reaches the model');
   assert.doesNotMatch(prompt, /alice/);
   assert.match(prompt, /--cwd=…\/shop, then open file:\/\/…\/index\.html\./);
+  // Bare tokens with a known prefix and a flag's value are masked; plain words after a flag and other words stay.
+  assert.doesNotMatch(prompt, /ghp_abc|sk-live-123|xoxb-1234/);
+  assert.match(prompt, /Add a --password flag; see task-1234567890abcdefgh\./);
 });
 
 test('the model also sees the owner’s newest rejected lessons, so it does not reword them, and they keep their room when the card’s facts are long', { timeout: 60000 }, async t => {
@@ -490,6 +497,26 @@ test('a CLI call that never ends cannot hold up a shutdown', { timeout: 60000 },
   settle({ text: '[]' }); // Nothing is left pending after the test.
 });
 
+test('a merge queued while the worker ends its last scan still runs: the wake-up is not lost', { timeout: 60000 }, async t => {
+  // Deterministic: board reads are held at fixed points, and the project files share one queue (reads, then writes, in order).
+  const dataDir = await temp(t, 'pb-lessons-wakeup-'), holds = [];
+  const card = { id: 't1', number: 1, title: 'Card 1', prompt: 'x', completion: { kind: 'merged', at: 1001, targetBranch: 'main', commits: 1 } };
+  const state = { projects: [{ id: 'p1', tasks: [card] }, { id: 'p2', tasks: [] }], runs: [] };
+  const hold = () => { let release; holds.push(new Promise(resolve => { release = resolve; })); return release; };
+  const lessons = new Lessons({ dataDir, board: { state: async () => { await holds.shift(); return state; } }, claim: async () => slot(), runner: async () => answer([]), schedule: () => {} });
+  t.after(() => lessons.close());
+  const settled = () => new Promise(resolve => setImmediate(resolve));
+  lessons.start(); while (lessons.working) await lessons.working;
+  const scan = hold(), change = hold();
+  lessons.kick(); await settled(); // The worker's scan waits for the project list.
+  const settings = lessons.setSettings('p2', { expectedRevision: 0 }); await settled(); // A change holds the file queue.
+  scan(); await settled(); // The scan's read of p1 waits behind that change.
+  const queued = lessons.queue('t1'); await settled(); // The merge's write to p1 waits behind that read.
+  change(); await settings; await queued; // p1 is read without the job; the job is written while the scan reads p2.
+  while (lessons.working) await lessons.working;
+  assert.equal((await lessons.view('p1')).jobs[0].status, 'done');
+});
+
 test('deciding a lesson never conflicts with the worker’s job updates; only new suggestions change the revision', { timeout: 60000 }, async t => {
   const answers = [answer(LESSONS.slice(0, 1)), { text: '[]' }];
   const w = await world(t, { runner: async () => answers.shift() });
@@ -550,6 +577,24 @@ test('the owner’s own CLI work gets the slot as soon as a lessons run has stop
   };
   assert.ok(await scenario(0) < 3000, 'a run that stops at once frees the slot at once');
   assert.ok(await scenario(5500) >= 5000, 'a slow stop is waited for, not answered with BUSY');
+});
+
+test('a request refused before any CLI work leaves the lessons run alone: an invalid or switched-off Coordinator question, an empty Generate or Split', { timeout: 60000 }, async t => {
+  let held = null;
+  const runner = async call => { if (!call.prompt.startsWith('# Promptboard project memory')) return { text: 'Not expected.' }; held = call; return untilStopped(call); };
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [], runner });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token, headers = { 'x-ste-token': token, 'Content-Type': 'application/json' };
+  const call = async (path, body, method = 'POST') => { const response = await fetch(`${app.url}${path}`, { method, headers, body: JSON.stringify(body) }); return { status: response.status, json: await response.json() }; };
+  const project = await app.board.createProject({ name: 'Shop' });
+  const card = await app.board.createTask({ projectId: project.id, title: 'Merged card', prompt: 'Done already.' });
+  await app.board.completeTask(card.id, { kind: 'merged', details: { targetBranch: 'trunk', commits: 1 } });
+  await until(() => held, 'the lessons run holds the slot');
+  const ask = `/api/coordinator/${project.id}/ask`, statuses = [];
+  for (const [path, body] of [[ask, { question: '', provider: 'claude' }], [ask, { question: 'Status?', provider: 'agy' }], ['/api/generate', { input: '', provider: 'claude' }], ['/api/split', { prompt: '', provider: 'claude' }]]) statuses.push((await call(path, body)).status);
+  assert.equal((await call(`/api/coordinator/${project.id}`, { enabled: false }, 'PATCH')).status, 200);
+  statuses.push((await call(ask, { question: 'Status?', provider: 'claude' })).status);
+  assert.deepEqual(statuses, [400, 400, 400, 400, 409]);
+  assert.deepEqual([held.signal.aborted, (await call(`/api/projects/${project.id}/lessons`, undefined, 'GET')).json.jobs[0].status], [false, 'running'], 'the lessons run was never stopped');
 });
 
 test('HTTP routes: views and changes need the session token and the current revision, unknown projects are refused, owner work takes the slot first, and deleting a project removes its memory', { timeout: 60000 }, async t => {

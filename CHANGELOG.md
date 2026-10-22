@@ -25,6 +25,56 @@
   - **Pop out** opens it in its own window.
   - A save never overwrites a file that changed on disk.
   See [Project explorer](docs/project-explorer.md).
+- **Bug hunt.** Eight separate checks went through the whole app: the server, board data and backups, agent runs, Git and merges, Origin and Compose, Base and project memory, and both pages in a browser. They proved 76 bugs, each with a reproduction. Every bug was fixed where it starts, with a test that failed before the fix. Reviewers who did not write the fixes checked them, and what they found was fixed too.
+- Fix (merges and pull requests): **Open pull request works again**; the GitHub CLI was run in the wrong folder.
+  - A merge no longer overwrites a file Git ignores in your checkout, such as a local `.env`.
+  - A pull request merged while an agent still ran completes the card once the run ends.
+  - A branch you are rebasing is never moved, and a renamed target branch says so.
+  - The Commit preview never reads through a symlink or opens a named pipe, and Start over works from To Do.
+- Fix (agent runs):
+  - An Enter on an empty prompt after a finished turn no longer leaves the run "running" for good, so Confirm, automatic completion and Autopilot carry on.
+  - Code Review starts again when the diff or test output contains a control character.
+  - Stop can be retried after a save failed, and a process an agent leaves behind ends with it.
+  - A long run's output log ends with one limit marker.
+- Fix (Autopilot and processes):
+  - Restart Autopilot continues the card in progress instead of starting a second card beside it.
+  - Processes left running by a test command or a preview end with it.
+  - Two Build image clicks start one build, and a card's completion is written once.
+- Fix (backups):
+  - A backup made after deleting a prerequisite card restores again, and a malformed backup can no longer make every later change fail.
+  - Settings that wait for confirmation are kept in a new backup, and can be accepted on another computer once the project is linked there.
+  - An import waits until column automations stop.
+  - Completions survive a backup, so an unmerged prerequisite still holds its dependents.
+- Fix (app and remote access):
+  - A restart right after Ctrl+C waits until the old app has stopped, instead of sharing its data folder.
+  - A second Ctrl+C or a closed terminal also stops the CLI in terminal mode.
+  - A phone pairing, revoke or setting that cannot be saved is undone and reported plainly.
+  - Tailscale Serve on another port is accepted.
+- Fix (security):
+  - MCP arguments with a password in a URL, a secret header or a secret flag's value are refused instead of saved.
+  - Windows, network and `cwd:` paths are shortened before they reach a model.
+  - Known token shapes are masked before project memory sees them.
+- Fix (Origin and Compose):
+  - Coming back to Origin after Compose Batch or a Kanban link loads the newer saved version, so Keep mine and Undo no longer erase those links.
+  - Research reads a plan in a code fence, and two windows can no longer make two projects with one name.
+  - Deleting a project sets its Compose Batch aside.
+  - A document removed from Compose stays for Research, and Windows line endings keep a Markdown file's sections.
+- Fix (project memory and Base):
+  - A merge that lands while the lessons worker finishes still gets its lessons.
+  - A refused or cached Coordinator question, or a refused Generate, no longer stops a lessons run.
+  - Use in Kanban repairs a selection whose copy was deleted.
+  - Repository import skips skills already in Base and names any file it refuses.
+- Fix (Kanban page):
+  - The reason a move was refused shows on the board, also on a phone or with the sidebar collapsed.
+  - The Agents, Columns and Autopilot dialogs never save over a change made in another window, and always save their own changes.
+  - The Autopilot dialog keeps working when a card is deleted elsewhere.
+  - A page takes the board of a restarted app that restored its last good copy.
+  - Focus returns to the right place after Escape, menus and dialogs, and an unsaved branch choice survives a refresh.
+- Fix (Origin page):
+  - Typing is never lost or moved when a save or an Improve run refreshes the page, and focus stays put after ⋯ menu actions and in Project Context.
+  - New blueprint projects read "Not started".
+  - Long links, names and menus fit a phone, and map labels fit their shapes.
+  - A project deleted in another window disappears from the list.
 - **Repair pass.** Every part of the app was checked against a written list of what can go wrong (20 areas). Each confirmed problem was fixed where it starts, with a test that failed before the fix. Merged as #134–#138.
 - Fix (data): saving right after a recovery could delete the only good backup. Damaged backups, saved blueprints, Project Context documents, batches, editor lists and remote-access settings are now kept aside instead of being overwritten. Boards between 20 and 47 MB can be imported again, and a migration that keeps failing no longer fills the disk.
 - Fix (security): agents no longer inherit Claude Code's own session variables, including its messaging token, when Promptboard is started from inside Claude Code. A switched-off MCP tool whose name contains a dot is now withheld from Claude. Credentials typed into MCP or recipe arguments are refused. Revoke all also voids a pairing code that was shown but not used, and saving any Twingate field no longer turns HTTPS off.

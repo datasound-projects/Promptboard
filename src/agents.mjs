@@ -14,12 +14,13 @@ import { SAFE_MODEL, validateEffort } from './providers.mjs';
 
 export const HOOK_SCRIPT = fileURLToPath(new URL('./agent-hook.mjs', import.meta.url));
 // POSIX argv strings are limited (Linux: 128 KiB per argument); a whole Windows command line to
-// 32,767 UTF-16 units, leaving room here for the executable and its prefix. Longer prompts are pasted.
+// 32,767 UTF-16 units, leaving room here for the executable and its prefix. Longer prompts are pasted, and so is one
+// with a NUL, which would end its argument early.
 export const ARGV_PROMPT_LIMIT = 100_000;
-const fitsArgv = (args, text) => platform() === 'win32'
+const fitsArgv = (args, text) => !text.includes('\0') && (platform() === 'win32'
   // Each argument may gain quotes, a space and escapes for quotes and backslashes.
   ? [...args, text].reduce((length, arg) => length + arg.length + 3 + (arg.match(/["\\]/g)?.length ?? 0), 0) <= 30_000
-  : Buffer.byteLength(text) <= ARGV_PROMPT_LIMIT;
+  : Buffer.byteLength(text) <= ARGV_PROMPT_LIMIT);
 
 // Only the Planning column plans. Writing stages start their own work at once, even when the task
 // text asks for a plan first (Compose's "Plan first" option adds that request).
@@ -205,7 +206,9 @@ export async function buildSession({ provider, stage, config, message, runDir, e
   const stageRules = !pipeline || config.stageEngine === true;
   const readOnly = stageRules && (stage === 'planning' || stage === 'code_review');
   const autonomous = config.interaction === 'autonomous';
-  if (pipeline && (typeof message !== 'string' || CONTROL.test(message))) throw new AgentError('Pipeline input contains terminal control characters. Edit the task, continuation, or selected Base text before starting.', 'INVALID_PIPELINE_INPUT');
+  // Custom columns send user-written text only. Legacy stages and typed columns also carry the diff and test output,
+  // which can hold controls (a form feed, ANSI colours): argv keeps them exact, a paste shows them as visible escapes.
+  if (pipeline && !stageRules && (typeof message !== 'string' || CONTROL.test(message))) throw new AgentError('Pipeline input contains terminal control characters. Edit the task, continuation, or selected Base text before starting.', 'INVALID_PIPELINE_INPUT');
   const plan = readOnly || config.permissionMode === 'plan';
   let inArgv;
   const env = { TERM: 'xterm-256color', PROMPTBOARD_RUN: '1' };

@@ -34,6 +34,18 @@ test('research plans enforce actionability, complexity, per-level limits and str
   for (const value of ['not JSON', '```json\n{}\n```', '{}']) assert.throws(() => validateResearchPlan(value));
 });
 
+test('a research plan or review in a ```json fence is read, as split, review and file answers are', async () => {
+  const fenced = value => '```json\n' + JSON.stringify(value) + '\n```';
+  assert.equal(validateResearchPlan(fenced(researchPlan())).assessment.research, 'standard');
+  const runner = async call => ({ text: call.prompt.startsWith('# Compose context preparation') ? fenced(researchPlan()) : fenced(researchReview(call.prompt)) });
+  const context = new ComposeContext({ mcp: docs() });
+  try {
+    const prepared = await context.prepare({ request: { input: questTask }, autonomous: true, sources: [{ type: 'expert', name: 'Architecture', text: questText }, { type: 'mcp', preset: 'context7' }] }, { runner });
+    assert.ok(prepared.research.lookups > 0, `research was skipped: ${JSON.stringify(prepared.warnings)}`);
+    assert.ok(prepared.evidence.length > 0);
+  } finally { context.close(); }
+});
+
 test('research summaries require exact evidence and forbid continuation after the budget', () => {
   const evidence = [{ sourceType: 'mcp', source: 'Docs', locator: '/library', query: 'Python ingestion', text: questText, questionIds: ['r1'] }];
   const prompt = buildResearchReviewPrompt(validateRequest({ input: questTask }), researchPlan(), evidence);
@@ -91,6 +103,17 @@ test('secret redaction removes the credential after an authorization scheme, not
     const safe = redactLocal(line);
     assert.doesNotMatch(safe, /SECRET|dXNlcjpTRUNSRVQ/, line); assert.match(safe, /\[redacted\]/, line);
   }
+});
+
+test('secret redaction masks bare tokens of known shapes and a flag’s token-like value, never ordinary words, numbers or names', () => {
+  for (const line of ['HttpError: Bad credentials for ghp_abcdefghijklmnopqrstuvwxyz0123456789', 'Using key sk-live-1234567890abcdef1234', 'my key is sk-' + 'ant-api03-abcdefghijklmnop1234',
+    'stripe sk_' + 'live_51H8abcdefghijklmnop', 'slack xoxb-123456789012-abcdefghij', '--token xoxb-1234-5678-abcdefgh', 'gh --token ghp_abcdEFGH1234567890abcd', 'curl --api-key 8f3a9b2c1d',
+    'mysql -u root --password hunter2', 'AKIAIOSFODNN7EXAMPLE', 'AI' + 'zaSyA1234567890abcdefghijklmnopqrstu', 'xo' + 'xe-1-My0xLTIxMjM0NTY3ODkwMTItMTIzNDU2Nzg5MDEyMy1hYmNkZWY',
+    'xo' + 'xe.xo' + 'xp-1-Mi0yLTEyMzQ1Njc4OTAxMi0xMjM0NTY3ODkw', 'xa' + 'pp-1-A012ABCDEFG-1234567890123-abcdef0123456789abcdef', 'mysql -u root --password 20241022', '--secret 98765432', 'rk_' + 'live_51H8abcdefghijklmnopqrstu', 'AS' + 'IAIOSFODNN7EXAMPLE']) assert.match(redactLocal(line), /\[redacted\]/, line);
+  for (const line of ['Every task: keep the column sk_customer_12345678 as the join key.', 'The column sk_product_id_2024_v2 is the surrogate key.', 'Set --max-token 4096 and --refresh-token 3600.',
+    'Add a --max-tokens 4096 option; --token-limit 2000 and --secret-name prod-db-2.', 'Use the --password-file ./secrets/pw2.txt flag.', 'Train with sk-learn 1.4 and sk-learning-models.',
+    'Handle the AIzaSy prefix check in validator2.', 'Pass --token "$GITHUB_TOKEN" (step 2) or `--api-key ${OPENAI_API_KEY}` for v2.', 'Add a --password flag; see task-1234567890abcdefgh.',
+    'Add --auth-token-env MY_TOKEN_2 support; Task-key: SK-1024 should stay.']) assert.equal(redactLocal(line), line, line);
 });
 
 test('local folders expose bounded relevant code, manifest and Skills data; exclude secrets and symlinks', async t => {

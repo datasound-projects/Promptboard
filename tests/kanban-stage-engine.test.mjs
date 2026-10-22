@@ -417,6 +417,48 @@ test('an autonomous agent stuck on an unrecognized startup menu is reported, and
   assert.equal((await w.outcome(card.id, 'succeeded')).runId, run.id, 'Answered in the terminal, the same run finishes the stage.');
 });
 
+test('an Enter on an empty prompt after a finished turn still lets the stage complete automatically', { skip, timeout: 120000 }, async t => {
+  for (const provider of ['claude', 'codex', 'gemini']) await t.test(provider, async t => {
+    const w = await world(t, { agents: { executing: provider } });
+    const card = await w.board.createTask({ projectId: w.project.id, title: 'Stray Enter', prompt: 'Change it. WRITE_FILE:feature.txt EMPTY_ENTER_IGNORED' });
+    const run = (await w.go(card.id, 'executing')).run;
+    await w.finished(run.id);
+    w.supervisor.input(run.id, '\r'); // The CLI ignores it: no hook, no turn.
+    await w.board.setExecutionPolicy(w.project.id, { policy: { completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });
+    assert.equal((await w.outcome(card.id, 'succeeded')).runId, run.id);
+  });
+});
+
+test('Codex: text typed into its question and the Enter that answers it leave no draft for a later Enter', { skip, timeout: 120000 }, async t => {
+  const w = await world(t, { agents: { executing: 'codex' } });
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Question', prompt: 'Change it. CODEX_QUESTION EMPTY_ENTER_IGNORED' });
+  const run = (await w.go(card.id, 'executing')).run;
+  await until(async () => (await w.board.run(run.id)).activity?.permissionPending, 'question');
+  w.supervisor.input(run.id, 'Yes, WRITE_FILE:feature.txt'); w.supervisor.input(run.id, '\r'); // The answer, in the question's own field.
+  await w.finished(run.id);
+  w.supervisor.input(run.id, '\r');
+  await w.board.setExecutionPolicy(w.project.id, { policy: { completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });
+  assert.equal((await w.outcome(card.id, 'succeeded')).runId, run.id);
+});
+
+test('a diff with a terminal control character reaches each typed Code Review CLI exactly', { skip, timeout: 120000 }, async t => {
+  for (const provider of ['claude', 'codex', 'gemini']) await t.test(provider, async t => {
+    const w = await world(t, { agents: { code_review: provider } }), received = join(w.state, 'received-prompt.txt'), old = process.env.FAKE_AGENT_PROMPT_FILE;
+    process.env.FAKE_AGENT_PROMPT_FILE = received;
+    t.after(() => { if (old === undefined) delete process.env.FAKE_AGENT_PROMPT_FILE; else process.env.FAKE_AGENT_PROMPT_FILE = old; });
+    const card = await w.board.createTask({ projectId: w.project.id, title: 'Page break', prompt: 'Edit page.c. WRITE_FILE:feature.txt' });
+    const executing = (await w.go(card.id, 'executing')).run;
+    await w.finished(executing.id);
+    // C, Python and Emacs Lisp sources can hold a form feed (a page break).
+    await writeFile(join(executing.workspacePath, 'page.c'), 'int a;\n\x0c\nint b;\n');
+    const review = (await w.go(card.id, 'code_review')).run;
+    await w.finished(review.id);
+    const prompt = await readFile(join(w.dataDir, review.artifactsDir, 'prompt.md'), 'utf8');
+    assert.ok(prompt.includes('+\x0c\n'));
+    await until(async () => await readFile(received, 'utf8').catch(() => '') === prompt, 'the CLI received the exact message');
+  });
+});
+
 test('an autonomous long prompt still waiting for its CLI to show readiness is reported as a startup stall too', { skip, timeout: 120000 }, async t => {
   const w = await world(t);
   await w.board.setExecutionPolicy(w.project.id, { policy: { interaction: 'autonomous', completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });

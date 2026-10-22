@@ -73,11 +73,22 @@ export async function lessonsPrompt(dataDir, projectId) {
   return data ? lessonsSection(data.lessons) : '';
 }
 
-/** The first JSON array in a model's answer: all of it, a fenced block, or the text from one of its first "[" to its last "]". */
+/** The text from the "[" at `at` to its matching "]" (brackets inside JSON strings do not count), or '' when it never closes. */
+function closing(raw, at) {
+  for (let i = at, depth = 0, quoted = false; i < raw.length; i++) {
+    const c = raw[i];
+    if (quoted) { if (c === '\\') i++; else if (c === '"') quoted = false; }
+    else if (c === '"') quoted = true;
+    else if (c === '[') depth++;
+    else if (c === ']' && --depth === 0) return raw.slice(at, i + 1);
+  }
+  return '';
+}
+/** The first JSON array in a model's answer: all of it, a fenced block, or the list that starts at one of its first "[". */
 function arrayIn(raw) {
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(raw)?.[1], end = raw.lastIndexOf(']') + 1, starts = [];
-  for (let at = raw.indexOf('['); at >= 0 && at < end && starts.length < 50; at = raw.indexOf('[', at + 1)) starts.push(at);
-  for (const candidate of [raw, fenced, ...starts.map(at => raw.slice(at, end))]) { try { const value = JSON.parse(candidate); if (Array.isArray(value)) return value; } catch {} }
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(raw)?.[1], starts = [];
+  for (let at = raw.indexOf('['); at >= 0 && starts.length < 50; at = raw.indexOf('[', at + 1)) starts.push(at);
+  for (const candidate of [raw, fenced, ...starts.map(at => closing(raw, at))]) { try { const value = JSON.parse(candidate); if (Array.isArray(value)) return value; } catch {} }
   return null;
 }
 /**
@@ -185,7 +196,7 @@ export class Lessons {
    */
   constructor({ dataDir, board, claim, runner, retryMs = 30000, schedule = (fn, ms) => setTimeout(fn, ms).unref() }) {
     this.dir = join(dataDir, 'lessons'); this.board = board; this.claim = claim; this.runner = runner; this.retryMs = retryMs; this.schedule = schedule;
-    this.started = false; this.closed = false; this.working = null; this.current = null; this.retry = false;
+    this.started = false; this.closed = false; this.working = null; this.current = null; this.retry = false; this.again = false;
   }
   // ponytail: one queue for every project's file; per-project queues if they ever contend.
   #serial = serial();
@@ -372,8 +383,11 @@ export class Lessons {
     })().catch(() => {}).finally(() => { this.working = null; this.kick(); });
   }
   kick() {
-    if (!this.started || this.closed || this.working) return;
-    this.working = this.#drain().catch(() => {}).finally(() => { this.working = null; });
+    if (!this.started || this.closed) return;
+    // The running worker's last scan may already have passed a job queued now: it scans once more when it ends.
+    if (this.working) { this.again = true; return; }
+    this.again = false;
+    this.working = this.#drain().catch(() => {}).finally(() => { this.working = null; if (this.again) this.kick(); });
   }
   #later() {
     if (this.retry || this.closed) return;

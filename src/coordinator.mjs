@@ -33,8 +33,10 @@ const LIVE = ['queued', 'running', 'waiting_for_input'];
 const ID = /^[A-Za-z0-9_-]{1,100}$/, POSITIONAL = /^(?:move|restart|done):[A-Za-z0-9_-]+:\d{1,3}$/;
 const sha = text => createHash('sha256').update(text).digest('hex');
 // Local folders in event details, run reasons and agent excerpts ("fast-forward in /Users/me/app", "--cwd=/Users/me/app",
-// "file:///Users/me/app") keep only their last name.
-const LOCAL_PATH = /(^|[\s(“"'`=]|file:\/\/)(?:(?:\/[^\s/"'`()”]+){2,}\/?|[A-Za-z]:\\[^\s"'`()”]*)/g;
+// "cwd:/Users/me/app", "file:///Users/me/app", C:\Users\me\app, C:/Users/me/app, \\server\share\app) keep only their last
+// name. A Windows folder (never holding ":") may hold spaces when more of the path follows ("C:\Users\Ann Lee\app"). "://" never
+// starts a path.
+const LOCAL_PATH = /(^|[\s(“"'`=:[]|file:\/\/)(?:(?:\/[^\s/"'`()”]+){2,}\/?|(?:[A-Za-z]:[\\/]|\\\\)[\\/]*(?:[^\s"'`()”\\/:]+(?: [^\s"'`()”\\/:]+)*[\\/]+)*[^\s"'`()”\\/:]*)/g;
 export const noPaths = text => String(text || '').replace(LOCAL_PATH, (match, lead) => `${lead}…/${match.slice(lead.length).split(/[\\/]/).filter(Boolean).pop() || ''}`);
 const clip = (text, max) => { const value = String(text ?? '').replace(/\s+/g, ' ').trim(); return value.length > max ? `${value.slice(0, max - 1)}…` : value; };
 // A reason quoted inside a sentence that ends with its own period.
@@ -137,7 +139,8 @@ export class Coordinator {
   }
 
   /** A read-only answer from relevant evidence. The only place the Coordinator uses a model. */
-  async ask(projectId, input, { runner, signal } = {}) {
+  /** `claim()`, when given, takes the shared CLI job slot only when the answer needs the CLI (a valid question, not cached) and returns it ({ job }); its job's signal stops the run. */
+  async ask(projectId, input, { runner, signal, claim } = {}) {
     const question = typeof input?.question === 'string' ? input.question.trim() : '';
     if (!question || question.length > LIMITS.question) throw new CoordinatorError(`Ask a question of 1 to ${LIMITS.question} characters.`, 'INVALID_INPUT');
     const scope = scopeOf(input.scope);
@@ -155,6 +158,7 @@ export class Coordinator {
       let answer, cachedAnswer = Boolean(cached);
       if (cached) answer = cached.answer;
       else {
+        if (claim) ({ signal } = (await claim()).job.controller);
         const cwd = await makeTempDir('pb-coordinator-');
         try { answer = (await runner({ provider: input.provider, model: input.model || '', effort: input.effort || '', prompt: promptFor(question, scope, evidence.text), cwd, signal, timeoutMs: 180000 })).text.trim().slice(0, LIMITS.answer); }
         finally { await removeTempDir(cwd).catch(() => {}); }
@@ -310,13 +314,20 @@ export async function coordinatorRoute({ coordinator, runner, track, claim, req,
   if (!action && req.method === 'GET') return send(res, 200, await coordinator.view(projectId));
   if (!action && req.method === 'PATCH') { const body = await jsonBody(req); return send(res, 200, await coordinator.setEnabled(projectId, body?.enabled)); }
   if (action === 'ask' && req.method === 'POST') {
-    // A question runs one CLI call, so it shares the one-job slot with Compose, sign-in and file proposals.
-    const body = await jsonBody(req), claimed = await claim('coordinator', body?.provider), { job } = claimed, abort = () => { if (!res.writableEnded) job.controller.abort(); };
-    job.stage = 'coordinator';
-    // The client may have left while the body was read or the slot was claimed; that close already fired.
-    res.once('close', abort); if (res.destroyed) job.controller.abort();
-    try { return send(res, 200, await track(coordinator.ask(projectId, body || {}, { runner: call => track(runner(call)), signal: job.controller.signal }))); }
-    finally { res.off('close', abort); claimed.release(); }
+    // A question runs one CLI call, so it shares the one-job slot with Compose, sign-in and file proposals. The slot is
+    // taken only when the CLI runs: a refused question or a cached answer never stops the background lessons run.
+    const body = await jsonBody(req);
+    let claimed;
+    const abort = () => { if (!res.writableEnded) claimed?.job.controller.abort(); };
+    res.once('close', abort);
+    const take = async () => {
+      claimed = await claim('coordinator', body?.provider); claimed.job.stage = 'coordinator';
+      // The client may have left while the body was read or the slot was claimed; that close already fired.
+      if (res.destroyed) claimed.job.controller.abort();
+      return claimed;
+    };
+    try { return send(res, 200, await track(coordinator.ask(projectId, body || {}, { runner: call => track(runner(call)), claim: take }))); }
+    finally { res.off('close', abort); claimed?.release(); }
   }
   return send(res, 404, { error: 'This Coordinator route does not exist.' });
 }

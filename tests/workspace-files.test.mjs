@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -114,6 +114,19 @@ test('saving into a removed project folder reports it as missing, not as a serve
   project.repository.path = root;
   await rm(root, { recursive: true, force: true });
   await assert.rejects(saveWorkspaceFile(board, 'p_fixture', { path: 'readme.md', version: 'a'.repeat(64), scopeVersion: 'b'.repeat(64), text: 'x' }), { code: 'FILE_NOT_FOUND', status: 404 });
+});
+
+test('two saves of one file spelled in another case are serialized on a case-insensitive disk: the stale one is refused', async t => {
+  const { root, board } = await fixture(t);
+  if (!await stat(join(root, 'README.MD')).then(() => true, () => false)) { t.skip('this file system is case-sensitive'); return; }
+  for (let round = 0; round < 5; round++) {
+    await writeFile(join(root, 'readme.md'), '# Example\n');
+    const opened = await inspectWorkspace(board, 'p_fixture', { path: 'readme.md', file: true });
+    const save = (path, text) => saveWorkspaceFile(board, 'p_fixture', { path, version: opened.version, scopeVersion: opened.scopeVersion, text }).then(() => 'saved', error => error.code);
+    const outcomes = await Promise.all([save('readme.md', 'mine\n'), save('README.MD', 'theirs\n')]);
+    assert.deepEqual([...outcomes].sort(), ['FILE_CONFLICT', 'saved'], `round ${round}: both saves came from the same version`);
+    assert.equal(await readFile(join(root, 'readme.md'), 'utf8'), outcomes[0] === 'saved' ? 'mine\n' : 'theirs\n');
+  }
 });
 
 test('root replacement by a symlink cannot expose another folder', { skip: process.platform === 'win32' }, async t => {

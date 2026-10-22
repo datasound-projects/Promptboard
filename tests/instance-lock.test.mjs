@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { lockDataDir } from '../src/instance-lock.mjs';
 import { startServer } from '../src/server.mjs';
 
@@ -35,6 +36,29 @@ test('a lock left by an app that stopped is replaced, even when the PID was reus
   // macOS can rename the computer between runs: the host name alone never blocks a start.
   await writeFile(path, JSON.stringify({ pid: 2 ** 30, host: 'renamed-mac', startedAt: Date.now() - 60000, port: 1 }));
   await (await lockDataDir(dataDir)).release();
+  // An app that is stopping blocks a start only while its process lives, and only for a short time.
+  await writeFile(path, JSON.stringify({ pid: process.ppid, host: hostname(), startedAt: Date.now() - 60000, port: 1, stoppingAt: Date.now() }));
+  await assert.rejects(lockDataDir(dataDir), { code: 'DATA_DIR_IN_USE', message: /still stopping/ });
+  await writeFile(path, JSON.stringify({ pid: process.ppid, host: hostname(), startedAt: Date.now() - 60000, port: 1, stoppingAt: Date.now() - 60000 }));
+  await (await lockDataDir(dataDir)).release();
+  await writeFile(path, JSON.stringify({ pid: 2 ** 30, host: hostname(), startedAt: Date.now() - 60000, port: 1, stoppingAt: Date.now() }));
+  await (await lockDataDir(dataDir)).release();
+});
+
+test('a restart while the app is still stopping is refused, and starts once that app has stopped', { timeout: 30000 }, async t => {
+  const dataDir = await temp(t);
+  // Another app (its own process) trying to take the folder.
+  const claim = async () => (await promisify(execFile)(process.execPath, ['--input-type=module', '-e', `const { lockDataDir } = await import(${JSON.stringify(new URL('../src/instance-lock.mjs', import.meta.url).href)});
+try { await (await lockDataDir(${JSON.stringify(dataDir)})).release(); console.log('held'); } catch (error) { console.log(error.code, error.message); }`])).stdout.trim();
+  // Agents that take a while to stop keep the shutdown busy after the port has stopped answering.
+  let stopped; const agents = new Promise(resolve => { stopped = resolve; });
+  const app = await startServer({ port: 0, dataDir, executor: { shutdown: () => agents }, detector: async () => [] });
+  t.after(() => { stopped(); return app.close(); });
+  const closing = app.close({ graceMs: 60000 });
+  while (await fetch(`${app.url}/api/session`).then(() => true, () => false)) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.match(await claim(), /^DATA_DIR_IN_USE .*still stopping/);
+  stopped(); await closing;
+  assert.equal(await claim(), 'held');
 });
 
 test('apps that start at the same moment over a stale lock: exactly one gets the folder, the others are refused clearly', { timeout: 60000 }, async t => {

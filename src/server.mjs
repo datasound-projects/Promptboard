@@ -40,7 +40,7 @@ import { OriginError, OriginStore, originRoute } from './origin.mjs';
 import { ContextStore, contextRoute } from './origin-context.mjs';
 import { ResearchError, ResearchStore, researchRoute } from './origin-research.mjs';
 import { streamResearch } from './research-cli.mjs';
-import { PromptStore, createBoardProject, nameTaken, projectsRoute } from './projects.mjs';
+import { PromptStore, createBoardProject, nameTaken, oneName, projectsRoute } from './projects.mjs';
 import { Coordinator, CoordinatorError, coordinatorRoute } from './coordinator.mjs';
 import { BatchError, ComposeBatches, batchRoute } from './compose-batch.mjs';
 import { Schedules, scheduleRoute } from './schedules.mjs';
@@ -159,9 +159,10 @@ async function boardRoute(board, req, res, pathname, searchParams, origin, promp
     if (Buffer.byteLength(JSON.stringify(backup)) > BOARD_BODY_LIMIT - 1024 * 1024) return send(res, 413, { error: `This backup would be larger than the ${BOARD_BODY_LIMIT / 1024 / 1024} MB a restore accepts. Export without Base document content, or shorten very long task prompts.`, code: 'BACKUP_TOO_LARGE' });
     return send(res, 200, backup);
   }
-  // Imported boards keep one name per project: a name an Origin project uses gets a “ (2)” suffix.
-  if (method === 'POST' && pathname === '/api/board/migrate') return view({ migrated: await board.migrateBrowserBoard((await body(BOARD_BODY_LIMIT)).board, { originProjects: await origin.list() }) });
-  if (method === 'POST' && pathname === '/api/board/import') { const data = await body(BOARD_BODY_LIMIT); return view({ imported: await board.importBackup(data.backup, { replace: data.replace === true, originProjects: await origin.list() }) }); }
+  // Imported boards keep one name per project: a name an Origin project uses gets a “ (2)” suffix. The names are
+  // read and the boards made in the one-name queue, so a project created meanwhile is never given the same name.
+  if (method === 'POST' && pathname === '/api/board/migrate') { const data = await body(BOARD_BODY_LIMIT); return view({ migrated: await oneName(async () => board.migrateBrowserBoard(data.board, { originProjects: await origin.list() })) }); }
+  if (method === 'POST' && pathname === '/api/board/import') { const data = await body(BOARD_BODY_LIMIT); return view({ imported: await oneName(async () => board.importBackup(data.backup, { replace: data.replace === true, originProjects: await origin.list() })) }); }
   if (method === 'POST' && pathname === '/api/projects') {
     const { name, folder, workflowMode = 'pipeline' } = await body();
     // New app projects use column pipelines; an explicit legacy request preserves integrations. A project
@@ -193,8 +194,10 @@ async function boardRoute(board, req, res, pathname, searchParams, origin, promp
     if (method === 'PATCH' && !action) {
       // One name per shared project: a board is not renamed to an Origin project's name either.
       const value = await body();
-      if (typeof value.name === 'string' && await nameTaken({ origin, board }, value.name.trim(), id)) throw new BoardError('A project with this name already exists.', 'NAME_TAKEN', 409);
-      return view({ project: await board.renameProject(id, value) });
+      return view({ project: await oneName(async () => {
+        if (typeof value.name === 'string' && await nameTaken({ origin, board }, value.name.trim(), id)) throw new BoardError('A project with this name already exists.', 'NAME_TAKEN', 409);
+        return board.renameProject(id, value);
+      }) });
     }
     if (method === 'PATCH' && action === 'labels') return view({ project: await board.setLabels(id, await body()) });
     if (method === 'DELETE' && !action) return view({ deleted: await board.deleteProject(id, { expectedRevision: expected() }) ?? true });
@@ -531,7 +534,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     }
     if (/^\/api\/origin(?:\/|$)/.test(pathname)) {
       const route = /^\/api\/origin\/projects\/[^/]+\/document(?:\/|$)/.test(pathname) ? contextRoute : originRoute;
-      try { return await route({ origin, contexts, research, board, prompts, req, res, pathname, jsonBody, send }); }
+      try { return await route({ origin, contexts, research, batches, board, prompts, req, res, pathname, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The blueprint request failed. Board, Compose and Base data are unchanged.', { status: 500, code: 'ORIGIN_FAILED' }); }
     }
     if (req.method === 'GET' && pathname === '/api/models') {
@@ -673,13 +676,14 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       const abort = () => { if (!res.writableEnded) claimed?.job.controller.abort(); };
       res.once('close', abort);
       try {
-        claimed = await claimCompose(req, res);
-        const { job } = claimed;
-        job.controller.signal.throwIfAborted();
+        // Validated before the slot is taken: a refused request never stops the background lessons run.
         const body = await jsonBody(req, 2_097_152);
         let value;
         try { value = validateRequest({ input: body?.prompt, provider: body?.provider, model: body?.model, effort: body?.effort, language: body?.language }, { maxInputChars: COMPOSE_PROMPT_CHARS }); validateEffort(value.provider, value.effort); }
         catch (error) { throw Object.assign(error, { status: 400 }); }
+        claimed = await claimCompose(req, res);
+        const { job } = claimed;
+        job.controller.signal.throwIfAborted();
         Object.assign(job, { provider: value.provider, stage: 'split' });
         const cwd = await makeTempDir('ste-split-');
         const started = Date.now();
@@ -704,13 +708,14 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       const abort = () => { if (!res.writableEnded) claimed?.job.controller.abort(); };
       res.once('close', abort);
       try {
-        claimed = await claimCompose(req, res);
-        const { job } = claimed;
-        job.controller.signal.throwIfAborted();
+        // Validated before the slot is taken: a refused request never stops the background lessons run.
         const body = await jsonBody(req);
         let value;
         try { value = validateRequest(body); }
         catch (error) { throw Object.assign(error, { status: 400 }); }
+        claimed = await claimCompose(req, res);
+        const { job } = claimed;
+        job.controller.signal.throwIfAborted();
         job.provider = value.provider;
         const result = await track(generate(value, { runner: call => track(runner(call)), signal: job.controller.signal, catalogReader: provider => getCatalog(provider, { maxAgeMs: Infinity }),
           onStage: stage => { job.stage = stage; } }));
@@ -780,6 +785,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   // Idempotent and bounded: stop accepting, cancel owned work, close sockets, then
   // SIGKILL any owned CLI process group that is still alive.
   const close = ({ graceMs = 4000 } = {}) => closed ??= (async () => {
+    await lock.markStopping(); // First: once the port stops answering, a restart must not take the data folder yet.
     closing = true;
     await remoteAccess?.shutdown();
     notifications.close();

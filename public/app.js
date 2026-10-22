@@ -968,7 +968,8 @@ function renderContextSources() {
 }
 function addContextSource(config, label, text = '') {
   const existing = config.type === 'document' && contextState.sources.find(row => row.config.type === 'document' && row.config.id === config.id);
-  if (existing) { existing.enabled = true; renderContextSources(); contextReset(); return; }
+  // The upload took one more reference to the same cached document; its one row gives it back, so Remove frees it.
+  if (existing) { void api(`/api/compose/sources/document/${encodeURIComponent(config.id)}`, { method: 'DELETE' }).catch(() => {}); existing.enabled = true; renderContextSources(); contextReset(); return; }
   if (contextState.sources.length >= 8) { contextError('Use at most eight sources.'); return; }
   contextState.sources.push({ config, label, enabled: true, text });
   contextError(); renderContextSources(); contextReset();
@@ -1537,6 +1538,7 @@ function setBoardWarning(message) {
 
 /** One board request. On success the server returns the whole board, which replaces ours. */
 async function boardCall(method, path, body, timeoutMs = 60000) {
+  const feedback = $('#project-detail').firstChild; // The board feedback shown when this request started.
   let result;
   try { result = await api(path, { method, body, timeoutMs }); }
   catch { setBoardWarning('The app did not answer. Reload the board to check whether the change was saved.'); throw new Error('The app did not answer. Reload the board to check the result before trying again.'); }
@@ -1549,12 +1551,40 @@ async function boardCall(method, path, body, timeoutMs = 60000) {
     throw error;
   }
   setBoardWarning('');
+  // A change that went through replaces the feedback about an earlier one, but not feedback a later action showed meanwhile.
+  if (feedback && $('#project-detail').firstChild === feedback) showProjectDetail();
   renderBoard();
   return data;
 }
 
-/** Every state write raises the board revision. A slow older answer never replaces a newer board. */
-function acceptBoard(next) { if (!board || !Number.isInteger(next?.revision) || next.revision >= board.revision) board = next; }
+/** Every state write raises the board revision. A slow older answer never replaces a newer board; a restarted app's
+ * board (a new instance, perhaps restored from an older copy) always does. */
+function acceptBoard(next) { if (!board || !Number.isInteger(next?.revision) || next.revision >= board.revision || next.instance !== board.instance) board = next; }
+
+/** What a settings dialog edits (`fields(project)`), as the dialog shows it. */
+const dialogFields = (project, fields) => ({ projectId: project.id, fields, value: JSON.stringify(fields(project)) });
+/** The dialog's project, unless its fields were changed elsewhere since the dialog showed them. */
+function shownProject(shown) {
+  const project = board?.projects.find(item => item.id === shown.projectId);
+  if (!project || JSON.stringify(shown.fields(project)) !== shown.value) throw Object.assign(new Error('These settings changed since you loaded them. Close this dialog and open it again to see the new settings.'), { code: 'REVISION_CONFLICT' });
+  return project;
+}
+/**
+ * One request from a settings dialog. A change made elsewhere to the dialog's fields is never replaced, but other
+ * revision changes (Autopilot re-recording the target branch, a deleted card) never block a save: `send` gets the
+ * current revision. A conflict on the way is checked once more on the newer board. What was saved becomes the dialog's.
+ */
+async function saveDialogFields(shown, send) {
+  for (let retried = false; ; retried = true) {
+    const { revision } = shownProject(shown);
+    try {
+      const data = await send(revision);
+      // The project as this request wrote it: a later write that the answer's board already includes is not the dialog's.
+      shown.value = JSON.stringify(shown.fields(data.project || (data.board || board).projects.find(item => item.id === shown.projectId)));
+      return data;
+    } catch (error) { if (error.code !== 'REVISION_CONFLICT' || retried) throw error; } // boardCall loaded the newer board.
+  }
+}
 
 async function loadBoard({ ifChanged = false } = {}) {
   if (!token) return;
@@ -2551,7 +2581,7 @@ function openCard(id = null, quick = false) {
     for (const row of rows) { const item = document.createElement('li'); item.textContent = row; $('#card-source-list').append(item); }
   }
   $('#card-error').hidden = true;
-  if (!$('#card-dialog').open) $('#card-dialog').showModal();
+  if (!$('#card-dialog').open) { dialogOpeners['card-dialog'] = document.activeElement; $('#card-dialog').showModal(); }
   $(quick ? '#card-prompt' : '#card-title').focus();
 }
 
@@ -2615,10 +2645,17 @@ function projectNameError(name, exceptId = null) {
   return '';
 }
 
+/** Board feedback (a refused move, a failed action, a confirmation) shows above the board, whatever the sidebar does. */
 function showProjectDetail(...nodes) {
   $('#project-detail').replaceChildren(...nodes);
   $('#project-detail').hidden = nodes.length === 0;
-  if (nodes.length) setProjectCollapsed(false, false);
+  // On a phone, the open project drawer would cover it.
+  if (nodes.length && isMobile() && currentPage() === 'kanban' && $('#sidebar').classList.contains('open')) {
+    const inside = $('#sidebar').contains(document.activeElement);
+    setSidebar(false);
+    if (inside) $('#menu-toggle').focus();
+  }
+  fitBoardHeight();
 }
 
 // The sidebar project list is the one place to pick, create, rename and delete projects.
@@ -3330,7 +3367,7 @@ async function openTaskDetails(taskId) {
     controls.querySelector('.kanban-details')?.remove(); // This dialog is the details.
     if (controls.childElementCount) delivery.append(section('Conversation', controls));
   } else renderDelivery(card, delivery, section, pre);
-  if (!$('#task-dialog').open) $('#task-dialog').showModal();
+  if (!$('#task-dialog').open) { dialogOpeners['task-dialog'] = document.activeElement; $('#task-dialog').showModal(); }
 }
 
 /** Pipeline task details: the stage engine's outcome and history, and the explicit recovery and reset actions. */
@@ -3384,10 +3421,13 @@ function workflowPreview(stage, settings) {
   return manual ? `Moving a card here only moves it. Start ${columnTitle(stage)} from the card.` : `Moving a card here starts it: ${what}.`;
 }
 
+let workflowShown = null; // The Agents dialog's settings as it shows them.
 function openWorkflowDialog(focusStage = null) {
   if (currentProject()?.workflowMode === 'pipeline') { openColumns(); if (focusStage) { columnsDraft.selected = focusStage; renderColumns(); } return; }
   const project = currentProject();
   if (!project) return;
+  // Everything a save writes: setWorkflow also writes the custom agent columns' settings into the column layout.
+  workflowShown = dialogFields(project, item => [item.workflow, item.agentDefaults, item.testCommands, (item.columnLayout || []).filter(entry => entry.custom).map(entry => [entry.id, entry.agent])]);
   $('#workflow-dialog-project').textContent = `${project.name} · WORKFLOW`;
   const stages = [];
   const customAgents = (project.columnLayout || []).filter(entry => entry.custom && entry.agent?.enabled);
@@ -3489,9 +3529,9 @@ async function saveWorkflow(event) {
   const workflow = Object.fromEntries([...$('#workflow-stages').querySelectorAll('.workflow-stage[data-stage]')].map(box => [box.dataset.stage, readWorkflowStage(box)]));
   const lines = ($('#test-commands')?.value || '').split('\n').map(line => line.trim()).filter(Boolean);
   try {
-    await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/workflow`, { workflow, agentDefaults: readAgentFields($('#workflow-stages .workflow-defaults')) || {}, expectedRevision: project.revision });
+    await saveDialogFields(workflowShown, revision => boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/workflow`, { workflow, agentDefaults: readAgentFields($('#workflow-stages .workflow-defaults')) || {}, expectedRevision: revision }));
     const changed = JSON.stringify(lines) !== JSON.stringify((project.testCommands || []).map(item => item.argv.map(arg => /[\s"']/.test(arg) ? JSON.stringify(arg) : arg).join(' ')));
-    if (changed) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/tests`, { commands: lines.map(command => ({ command })), expectedRevision: currentProject().revision });
+    if (changed) await saveDialogFields(workflowShown, revision => boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/tests`, { commands: lines.map(command => ({ command })), expectedRevision: revision }));
   } catch (error) { $('#workflow-error').textContent = error.message; $('#workflow-error').hidden = false; return; }
   $('#workflow-dialog').close();
   announce(`Workflow settings saved for “${project.name}”. They apply to future runs.`);
@@ -3740,7 +3780,15 @@ function pollTests(taskId) {
 // which board is shown; runs belong to the server and continue in every project.
 // Each entry has a ⋯ menu: rename (inline) and delete (inline confirm). Repository and workflow live in Project settings.
 let workspaceMenu = null; // { id, mode: 'menu' | 'rename' | 'delete' | 'editors' | 'editor-add', draft, error, taskId }
-function setWorkspaceMenu(value) { workspaceMenu = value; renderWorkspace(currentProject()); }
+function setWorkspaceMenu(value) {
+  const id = value?.id || workspaceMenu?.id;
+  workspaceMenu = value; renderWorkspace(currentProject());
+  // The row was rebuilt. Focus lost with it goes into the menu (Keep, in a delete confirmation) or back to its ⋯ button.
+  const row = document.activeElement === document.body && id && [...$('#workspace-list').children].find(item => item.dataset.projectId === id);
+  if (!row) return;
+  const controls = [...row.querySelectorAll('.workspace-menu :is(button, input, select)')];
+  (value ? (value.mode === 'delete' ? controls.at(-1) : controls[0]) : row.querySelector('.workspace-menu-toggle'))?.focus();
+}
 async function renameFromSidebar(project, name) {
   const error = projectNameError(name.trim(), project.id);
   if (error) { setWorkspaceMenu({ ...workspaceMenu, error }); return; }
@@ -3749,7 +3797,7 @@ async function renameFromSidebar(project, name) {
   setWorkspaceMenu(null);
   announce(`Renamed “${project.name}” to “${name.trim()}”.`);
 }
-function workspaceMenuFor(project, card) {
+function workspaceMenuFor(project) {
   const box = document.createElement('div');
   box.className = 'workspace-menu';
   box.id = `workspace-menu-${project.id}`;
@@ -3760,7 +3808,6 @@ function workspaceMenuFor(project, card) {
     const input = document.createElement('input');
     input.type = 'text'; input.maxLength = 80; input.value = workspaceMenu.draft ?? project.name; input.setAttribute('aria-label', `New name for ${project.name}`);
     input.addEventListener('input', () => { workspaceMenu.draft = input.value; });
-    input.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); setWorkspaceMenu(null); card.focus(); } });
     form.addEventListener('submit', event => { event.preventDefault(); renameFromSidebar(project, input.value); });
     const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save'; save.className = 'danger';
     form.append(input, detailActions(save, detailButton('Cancel', () => setWorkspaceMenu(null))));
@@ -3853,7 +3900,11 @@ function renderWorkspace(current) {
     toggle.setAttribute('aria-controls', `workspace-menu-${project.id}`);
     item.append(button, toggle);
     if (project.repository && workspaceFiles) item.append(workspaceFiles.mount(project));
-    if (open) { item.classList.add('menu-open'); item.append(workspaceMenuFor(project, button)); }
+    if (open) {
+      item.classList.add('menu-open'); item.append(workspaceMenuFor(project));
+      // Escape closes the menu, from its ⋯ button or from inside it.
+      item.addEventListener('keydown', event => { if (event.key === 'Escape' && event.target.closest('.workspace-menu-toggle, .workspace-menu')) { event.stopPropagation(); setWorkspaceMenu(null); } });
+    }
     return item;
   }), 'data-project-id');
 }
@@ -3882,11 +3933,15 @@ function renderRepository(project) {
   $('#branch-field').hidden = !repository;
   const known = repositories.get(project.id);
   const branches = known?.branches || (project.targetBranch ? [{ name: project.targetBranch.name }] : []);
-  $('#target-branch').replaceChildren(option('', branches.length ? 'Choose a local branch…' : 'Reading branches…'), ...branches.map(branch => option(branch.name, branch.name)));
-  $('#target-branch').value = project.targetBranch?.name || '';
+  const select = $('#target-branch'), saved = project.targetBranch?.name || '';
+  // A branch chosen but not saved yet survives a background render while it is still listed.
+  const chosen = select.dataset.projectId === project.id && select.value !== select.dataset.saved && branches.some(branch => branch.name === select.value) ? select.value : saved;
+  select.replaceChildren(option('', branches.length ? 'Choose a local branch…' : 'Reading branches…'), ...branches.map(branch => option(branch.name, branch.name)));
+  select.value = chosen;
+  Object.assign(select.dataset, { projectId: project.id, saved });
   $('#branch-save').disabled = !repository;
   // Save appears only once another branch is chosen; the note only while no code folder is connected.
-  $('#branch-save').hidden = $('#target-branch').value === (project.targetBranch?.name || '');
+  $('#branch-save').hidden = select.value === saved;
   $('.settings-panel-note').hidden = Boolean(repository);
   $('#branch-state').textContent = project.targetBranch
     ? `Target branch: ${project.targetBranch.name} at ${project.targetBranch.commit.slice(0, 12)}. Task worktrees start from this recorded commit.`
@@ -4012,12 +4067,21 @@ async function importBoard() {
   if (!['kanban-backup', 'promptboard-backup'].includes(data?.kind)) { failed('The file is not a Promptboard or Kanban backup.'); return; }
   const counts = boardCounts(Array.isArray(data.projects) ? data.projects : [], data.kind === 'kanban-backup' ? 'cards' : 'tasks');
   const replace = async confirmed => {
-    try { await boardCall('POST', '/api/board/import', { backup: data, replace: confirmed }, 120000); }
+    let imported;
+    try { ({ imported } = await boardCall('POST', '/api/board/import', { backup: data, replace: confirmed }, 120000)); }
     catch (error) { failed(error.message); return; }
     setSelectedProject(board.projects.find(project => project.id === data.selectedProjectId)?.id || board.projects[0]?.id || '');
     renderBoard();
-    const message = `Backup imported: ${boardCounts(board.projects)}. No agent runs were started.${board.projects.some(project => project.pendingImport) ? ' Imported repository paths and workflow settings wait for your confirmation.' : ''}`;
-    showProjectDetail(paragraph(message));
+    const pending = board.projects.find(project => project.pendingImport);
+    const message = `Backup imported: ${boardCounts(board.projects)}. No agent runs were started.${pending ? ' Imported repository paths and workflow settings wait for your confirmation.' : ''}${imported?.workflowLeftOut?.length ? ` Some workflow settings do not work in this version and were left out (${imported.workflowLeftOut.join(', ')}).` : ''}`;
+    // That confirmation is in Project settings, in the sidebar (a closed drawer on a phone).
+    const review = pending && detailButton('Review in Project settings', () => {
+      if (currentProject()?.id !== pending.id) { setSelectedProject(pending.id); renderBoard(); } // selectProject would clear this message.
+      if (isMobile()) setSidebar(true); else if (sidebarCollapsed()) setSidebarCollapsed(false);
+      setProjectCollapsed(false, false);
+      $('#import-confirm').scrollIntoView({ block: 'center' }); $('#import-confirm').focus();
+    });
+    showProjectDetail(paragraph(message), ...(review ? [detailActions(review)] : []));
     announce(message);
   };
   if (!board.projects.length) { await replace(false); return; }
@@ -4365,6 +4429,16 @@ $('#labels-dialog').addEventListener('close', () => {
   const dialog = $('#labels-dialog'), active = document.activeElement;
   if (!dialog.open && (active === document.body || dialog.contains(active)) && labelManager?.opener?.isConnected) labelManager.opener.focus();
 });
+// A background render replaces every card, so the native focus return can find its opener gone: focus the same control on the new card.
+const dialogOpeners = {};
+for (const id of ['card-dialog', 'task-dialog']) $(`#${id}`).addEventListener('close', () => {
+  const dialog = $(`#${id}`), active = document.activeElement, opener = dialogOpeners[id];
+  if (dialog.open || !opener || opener.isConnected || !(active === document.body || dialog.contains(active))) return;
+  const item = cardElement(opener.closest('.kanban-card')?.dataset.id);
+  const same = item ? [...item.querySelectorAll(opener.tagName)].find(control => control.className === opener.className && control.getAttribute('aria-label') === opener.getAttribute('aria-label')) : document.getElementById(opener.id);
+  same?.focus({ preventScroll: true });
+  if (item && document.activeElement !== same) item.querySelector('.kanban-open')?.focus({ preventScroll: true });
+});
 $('#card-cancel').addEventListener('click', () => $('#card-dialog').close());
 $('#card-dialog-close').addEventListener('click', () => $('#card-dialog').close());
 $('#done-dialog-close').addEventListener('click', () => $('#done-dialog').close());
@@ -4472,7 +4546,8 @@ document.addEventListener('keydown', (event) => {
     event.preventDefault();
     newPrompt();
   }
-  if (event.key === 'Escape' && $('#sidebar').classList.contains('open')) { setSidebar(false); $('#menu-toggle').focus(); }
+  // An Escape that closes a dialog opened from the drawer leaves the drawer open.
+  if (event.key === 'Escape' && $('#sidebar').classList.contains('open') && !document.querySelector('dialog[open]')) { setSidebar(false); $('#menu-toggle').focus(); }
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && isEditing && $('#prompt-form').contains(event.target) && !running && !$('#generate-button').disabled) {
     event.preventDefault();
     $('#prompt-form').requestSubmit();
@@ -4770,6 +4845,7 @@ function openAutopilot({ first = [] } = {}) {
   const queued = (saved?.queue || []).filter(id => todo.some(task => task.id === id) && !lead.includes(id));
   const order = [...lead, ...queued, ...todo.map(task => task.id).filter(id => !queued.includes(id) && !lead.includes(id))];
   autopilotDraft = {
+    shown: dialogFields(project, item => ['route', 'finish', 'maxRework', 'queue', 'routes'].map(key => item.autopilot?.[key])),
     route: saved?.route?.some(stage => stages.includes(stage)) ? stages.filter(stage => saved.route.includes(stage)) : [...stages], finish: saved?.finish === 'pull_request' ? 'pull_request' : 'merge', maxRework: saved?.maxRework ?? 2,
     // A saved empty queue (for example right after the Full Autopilot preset) starts nothing, so To Do is offered again.
     order, included: new Set(lead.length ? lead : saved?.queue?.length ? queued : order), routes: { ...(saved?.routes || {}) },
@@ -4805,8 +4881,12 @@ function renderAutopilotDialog() {
   const project = currentProject();
   const draft = autopilotDraft;
   if (!project || !draft) return;
+  // Another window can delete a queued card or a route column while the dialog is open.
+  const stages = autopilotStages(project), route = draft.route.filter(id => stages.includes(id));
+  draft.route = route.length ? route : [...stages];
+  draft.order = draft.order.filter(id => project.tasks.some(task => task.id === id));
   const running = project.autopilot?.status === 'running', pipeline = pipelineBoard(project);
-  $('#autopilot-route').replaceWith(Object.assign(routeChips(draft.route, route => { draft.route = route; renderAutopilotDialog(); }, { disabled: running, stages: autopilotStages(project) }), { id: 'autopilot-route' }));
+  $('#autopilot-route').replaceWith(Object.assign(routeChips(draft.route, route => { draft.route = route; renderAutopilotDialog(); }, { disabled: running, stages }), { id: 'autopilot-route' }));
   $('#autopilot-dialog .select-grid').hidden = pipeline;
   $('#autopilot-route-legend').textContent = pipeline ? 'Steps' : 'Default route';
   $('#autopilot-about').hidden = pipeline; $('#autopilot-about-pipeline').hidden = !pipeline;
@@ -4828,7 +4908,12 @@ function renderAutopilotDialog() {
     if (missing.length) {
       const add = detailButton('Add default instructions', async () => {
         add.disabled = true;
-        try { await addAutopilotInstructions(project, draft.route); renderAutopilotDialog(); announce('Default instructions added to the columns. You can change them in Columns.'); }
+        try {
+          // The board as it is now, not as it was drawn: a revision change since then must not refuse the click.
+          const current = currentProject(), stages = autopilotStages(current);
+          await addAutopilotInstructions(current, draft.route.filter(id => stages.includes(id)));
+          renderAutopilotDialog(); announce('Default instructions added to the columns. You can change them in Columns.');
+        }
         catch (error) { $('#autopilot-error').textContent = error.message; $('#autopilot-error').hidden = false; add.disabled = false; }
       }, 'secondary-button');
       add.id = 'autopilot-add-instructions'; add.disabled = running;
@@ -4908,8 +4993,8 @@ async function saveAutopilot(start) {
   const queue = draft.order.filter(id => draft.included.has(id));
   const routes = Object.fromEntries(Object.entries(draft.routes).filter(([id]) => queue.includes(id)));
   try {
-    await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, pipelineBoard(project) ? { route: draft.route, queue, expectedRevision: project.revision }
-      : { route: draft.route, finish: draft.route.includes('merge') ? draft.finish : 'merge', maxRework: draft.maxRework, queue, routes, expectedRevision: project.revision });
+    await saveDialogFields(draft.shown, revision => boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, pipelineBoard(project) ? { route: draft.route, queue, expectedRevision: revision }
+      : { route: draft.route, finish: draft.route.includes('merge') ? draft.finish : 'merge', maxRework: draft.maxRework, queue, routes, expectedRevision: revision }));
     if (start) await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, { action: 'start', confirm: true });
   } catch (error) { showError(error.message); return false; }
   $('#autopilot-dialog').close();
@@ -5033,7 +5118,7 @@ function profileStrategyEditor(entry, profile) {
 // go anywhere between To Do and Done and are attached to the built-in stage on their left.
 const COLUMN_COLOR_NAMES = { gray: 'Gray', red: 'Red', orange: 'Orange', amber: 'Amber', green: 'Green', teal: 'Teal', blue: 'Blue', violet: 'Violet', pink: 'Pink' };
 const BUILTIN_DEFAULT_COLORS = { todo: 'gray', planning: 'violet', executing: 'blue', code_review: 'amber', testing: 'teal', merge: 'orange', done: 'green' };
-const columnsDraft = { list: [], selected: null, project: null, revision: null, pipeline: false, profiles: [], profileId: null, headerDrafts: new Map(),
+const columnsDraft = { list: [], selected: null, project: null, shown: null, pipeline: false, profiles: [], profileId: null, headerDrafts: new Map(),
   execution: {}, applyAll: false, original: '', tests: '', presetConfirm: false, tab: 'columns', open: new Set() };
 // Column types decide what a pipeline column does; the display name never does.
 const COLUMN_KIND_OPTIONS = [['custom', 'Custom: one conversation continues'], ['planning', 'Planning'], ['execution', 'Executing'], ['review', 'Code Review'], ['testing', 'Testing'], ['merge', 'Merge']];
@@ -5168,8 +5253,9 @@ function openColumns({ tab = 'columns' } = {}) {
   if (!project) return;
   const layout = project.columnLayout?.length ? project.columnLayout : (board?.columns || []).map(column => ({ id: column.id }));
   columnsDraft.project = project.id;
-  columnsDraft.revision = project.revision;
   columnsDraft.pipeline = project.workflowMode === 'pipeline';
+  // Everything a save can write, also for a legacy board that "Switch to a column pipeline…" turns into a pipeline.
+  columnsDraft.shown = dialogFields(project, item => [item.workflowMode, item.columnLayout, item.pipeline, item.execution, item.testCommands]);
   columnsDraft.profiles = JSON.parse(JSON.stringify(project.pipeline?.profiles || []));
   columnsDraft.profileId = null;
   columnsDraft.list = JSON.parse(JSON.stringify(columnsDraft.pipeline ? project.pipeline.columns : layout));
@@ -5524,18 +5610,17 @@ async function saveColumns(event) {
   save.disabled = true; form.setAttribute('aria-busy', 'true');
   const columns = columnsDraft.list.map(entry => entry.custom ? entry : { id: entry.id, ...(entry.title && entry.title !== builtinTitle(entry.id) ? { title: entry.title } : {}), ...(entry.color && entry.color !== BUILTIN_DEFAULT_COLORS[entry.id] ? { color: entry.color } : {}), ...(entry.hidden ? { hidden: true } : {}) });
   try {
-    if (!columnsDraft.pipeline) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/columns`, { columns, expectedRevision: project.revision });
+    const patch = (action, body) => saveDialogFields(columnsDraft.shown, revision => boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/${action}`, { ...body, expectedRevision: revision }));
+    if (!columnsDraft.pipeline) await patch('columns', { columns });
     else {
-      // Only what changed is saved: structure (needs paused agents), then permissions, then test commands.
-      const fresh = () => board?.projects.find(item => item.id === project.id);
-      // An unchanged structure is skipped only while the board is as it was when the dialog opened; a draft that
-      // became stale is still sent, so the server refuses it instead of the person losing sight of the change.
-      if (project.workflowMode !== 'pipeline' || JSON.stringify({ columns: columnsDraft.list, profiles: columnsDraft.profiles }) !== columnsDraft.original || project.revision !== columnsDraft.revision)
-        await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/pipeline`, { pipeline: { version: 1, columns: columnsDraft.list, profiles: columnsDraft.profiles }, expectedRevision: columnsDraft.revision, confirm: true });
-      if (columnsDraft.applyAll || JSON.stringify(columnsDraft.execution) !== JSON.stringify(fresh().execution || {}))
-        await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/execution`, { policy: columnsDraft.execution, applyToAllColumns: columnsDraft.applyAll, expectedRevision: fresh().revision });
+      // Only what changed is saved: structure (needs paused agents), then permissions, then test commands. Settings
+      // changed elsewhere are refused even when nothing here changed, so the person never loses sight of them.
+      shownProject(columnsDraft.shown);
+      const fresh = () => board?.projects.find(item => item.id === project.id), structure = JSON.stringify({ columns: columnsDraft.list, profiles: columnsDraft.profiles });
+      if (structure !== columnsDraft.original) { await patch('pipeline', { pipeline: { version: 1, columns: columnsDraft.list, profiles: columnsDraft.profiles }, confirm: true }); columnsDraft.original = structure; }
+      if (columnsDraft.applyAll || JSON.stringify(columnsDraft.execution) !== JSON.stringify(fresh().execution || {})) await patch('execution', { policy: columnsDraft.execution, applyToAllColumns: columnsDraft.applyAll });
       const lines = columnsDraft.tests.split('\n').map(line => line.trim()).filter(Boolean);
-      if (lines.join('\n') !== testCommandsText(fresh())) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/tests`, { commands: lines.map(command => ({ command })), expectedRevision: fresh().revision });
+      if (lines.join('\n') !== testCommandsText(fresh())) await patch('tests', { commands: lines.map(command => ({ command })) });
     }
   } catch (error) { $('#columns-error').textContent = error.message; $('#columns-error').hidden = false; return; }
   finally { save.disabled = false; form.setAttribute('aria-busy', 'false'); }

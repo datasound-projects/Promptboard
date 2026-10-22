@@ -220,12 +220,19 @@ export class Sandbox {
   /** Build Promptboard's image with the versions installed here. Progress is kept for the Settings page; Cancel stops it. */
   async startBuild() {
     if (this.job?.status === 'running') throw fail('SANDBOX_BUILD_RUNNING');
-    await this.#running();
-    const { name, versions } = await this.defaultImage();
-    if (!versions.claude && !versions.codex) throw fail('SANDBOX_NO_CLI');
-    await mkdir(this.dir, { recursive: true, mode: 0o700 });
-    const job = this.job = { status: 'running', image: name, startedAt: Date.now(), lines: [] };
-    const child = job.child = spawnOwned(await commandOnPath('docker'), ['build', '-t', name, '--label', 'promptboard.sandbox=1', '--build-arg', `CLAUDE_CODE_VERSION=${versions.claude}`,
+    // Claimed before the first await, so two requests never start two builds; a failed check gives the claim back.
+    const previous = this.job, job = this.job = { status: 'running', image: null, startedAt: Date.now(), lines: [] };
+    const checked = async () => {
+      await this.#running();
+      const image = await this.defaultImage();
+      if (!image.versions.claude && !image.versions.codex) throw fail('SANDBOX_NO_CLI');
+      await mkdir(this.dir, { recursive: true, mode: 0o700 });
+      return { ...image, docker: await commandOnPath('docker') };
+    };
+    const { name, versions, docker } = await checked().catch(error => { if (this.job === job) this.job = previous; throw error; });
+    if (job.status !== 'running') return this.buildStatus(); // Cancelled during the checks.
+    job.image = name;
+    const child = job.child = spawnOwned(docker, ['build', '-t', name, '--label', 'promptboard.sandbox=1', '--build-arg', `CLAUDE_CODE_VERSION=${versions.claude}`,
       '--build-arg', `CODEX_VERSION=${versions.codex}`, '-f', DOCKERFILE, dirname(DOCKERFILE)], { cwd: dirname(DOCKERFILE) });
     let partial = '';
     const take = chunk => {
@@ -249,8 +256,9 @@ export class Sandbox {
 
   cancelBuild() {
     const job = this.job;
-    if (job?.status !== 'running' || !job.child) return this.buildStatus();
+    if (job?.status !== 'running') return this.buildStatus();
     job.cancelled = true;
+    if (!job.child) { Object.assign(job, { status: 'cancelled', endedAt: Date.now() }); return this.buildStatus(); } // Still checking Docker: it never starts.
     const child = job.child;
     stopProcess(child);
     setTimeout(() => { if (job.child === child) stopProcess(child, 'SIGKILL'); }, 3000).unref();

@@ -312,6 +312,27 @@ test('Origin restores a damaged project file and refuses stale saves without tou
   assert.equal((await blueprintFile(app, created.id)).blueprint.idea, 'Saved elsewhere');
   await ev(`[...document.querySelectorAll('#origin-save button')].find(b => b.textContent === 'Reload saved version').click();`);
   await wait(`document.querySelector('#origin-view').dataset.save === 'saved' && document.querySelector('#origin-error').hidden`, 'reloaded saved version');
+  // An Undo offered here would put back the blueprint from before its removal, over what another page saves meanwhile.
+  await section('security');
+  await ev(`const m = document.querySelector('[data-nav="menu:topic:security:secrets"]').closest('details'); m.open = true; [...m.querySelectorAll('.origin-menu-item')].find(b => b.textContent === 'Remove topic').click();`);
+  await wait(`!document.querySelector('#origin-undo').hidden`, 'Undo offered');
+  await saved(); await section('vision');
+  // Compose Batch and Kanban links save the blueprint too: back on Origin with nothing unsaved, the page takes the
+  // newer saved version, so the next edit is saved instead of being refused as "changed in another window".
+  await ev(`location.hash = '#/kanban';`);
+  await wait(`document.documentElement.dataset.page === 'kanban'`, 'Kanban shown');
+  const put = async summary => {
+    const latest = await (await fetch(`${app.url}/api/origin/projects/${created.id}`, { headers: { 'X-STE-Token': token } })).json();
+    assert.equal((await fetch(`${app.url}/api/origin/projects/${created.id}`, { method: 'PUT', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ expectedRevision: latest.revision, blueprint: { ...latest.blueprint, vision: { ...latest.blueprint.vision, summary } } }) })).status, 200);
+  };
+  await put('Saved by Compose'); await put('Damaged on disk');
+  await writeFile(join(app.board.store.dir, 'origin', blueprintFileName(created.id)), '{"schema":"promptboard.origin", broken'); // Its backup is the save before.
+  await ev(`location.hash = '#/origin';`);
+  await wait(`document.querySelector('#origin-main textarea')?.value === 'Saved by Compose' && /last good copy was restored/.test(document.querySelector('#origin-notice').textContent)`, 'the newer saved version is shown');
+  assert.equal(await ev(`return document.querySelector('#origin-undo').hidden;`), true, 'no Undo of an older version');
+  await ev(`const t = document.querySelector('#origin-main textarea'); t.value = 'Edited after Compose'; t.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await saved();
+  assert.equal((await blueprintFile(app, created.id)).blueprint.vision.summary, 'Edited after Compose');
   assert.equal((await app.board.view()).projects[0].tasks[0].prompt, 'Still here.');
   assert.ok((await readFile(statePath)).equals(stateBefore));
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
@@ -891,4 +912,151 @@ test('Origin flags only sent tasks whose context changed, compares, and updates 
   assert.equal((await app.board.view()).runs.length, 0);
   await saved();
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
+});
+
+/** A Kanban-linked project whose task is on Kanban, so every save on its Tasks page also reads the cards' context status. */
+async function sentTaskPage(t, { items = [{ id: 't1', key: 'IMP-001', title: 'Build checkout', description: 'Hello world', acceptanceCriteria: 'Works' }],
+  blocks = [{ id: 'nb', origin: 'human', sectionId: 'plan', type: 'notes', title: 'Plan notes', text: '' }] } = {}) {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const kanban = await app.board.createProject({ name: 'Shop', workflowMode: 'pipeline' });
+  const store = new OriginStore(app.board.store.dir);
+  let record = await store.create({ name: 'Shop design' });
+  record = await store.link(record.id, { expectedRevision: record.revision, kanbanProjectId: kanban.id });
+  record = await store.write(record.id, { expectedRevision: record.revision, blueprint: { idea: 'Shop', sequence: { items: items.length }, items, blocks } });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const sent = await fetch(`${app.url}/api/origin/projects/${record.id}/handoff`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: J({ expectedRevision: record.revision, itemIds: items.map(item => item.id) }) });
+  assert.equal(sent.status, 200);
+  const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
+  const tools = pageTools(browser);
+  await browser.goto(`${app.url}/#/origin`);
+  await tools.wait(`document.querySelector('.origin-map')`, 'map');
+  await tools.section('plan');
+  await tools.wait(`document.querySelector('.origin-block[data-type="notes"] textarea')`, 'Tasks page');
+  // A save ends with that status read and the redraw it causes (the sidebar is always redrawn): wait for both before typing on.
+  await tools.ev(`window.__navDrawn = []; new MutationObserver(() => __navDrawn.push(performance.now())).observe(document.querySelector('#origin-nav'), { childList: true });`);
+  const statusReads = () => tools.ev(`return performance.getEntriesByType('resource').filter(entry => entry.name.endsWith('/context-status')).length;`);
+  const refreshed = before => tools.wait(`(() => { const reads = performance.getEntriesByType('resource').filter(entry => entry.name.endsWith('/context-status')); return reads.length > ${before} && __navDrawn.some(time => time >= reads.at(-1).responseEnd); })()`, 'context status read and drawn');
+  return { browser, store, record, ...tools, statusReads, refreshed };
+}
+
+test('Origin keeps the field you type in on the Tasks page when a save refreshes the sent cards’ status', { skip: !await findChrome(), timeout: 90000 }, async t => {
+  const { browser, store, record, ev, saved, statusReads, refreshed } = await sentTaskPage(t);
+  await ev(`document.querySelector('.origin-block[data-type="notes"] textarea').focus();`);
+  await browser.type('Hello ');
+  const before = await statusReads();
+  await saved(); await refreshed(before);
+  assert.equal(await ev(`return document.activeElement?.closest('.origin-block')?.dataset.block;`), 'nb', 'the notes field keeps focus after the autosave');
+  await browser.type('world');
+  await saved();
+  assert.equal((await store.read(record.id)).blueprint.blocks.find(block => block.id === 'nb').text, 'Hello world', 'no keystroke is lost');
+});
+
+test('Origin draws what a save changed on the Tasks page once you leave the field, without taking focus from where it went', { skip: !await findChrome(), timeout: 120000 }, async t => {
+  // Each sent task carries one notes block as context, so writing in it marks that card "Context changed".
+  const { browser, store, record, ev, wait, saved, statusReads, refreshed } = await sentTaskPage(t, {
+    items: [{ id: 't1', key: 'IMP-001', title: 'Build checkout', acceptanceCriteria: 'Works', contextIds: [{ collection: 'blocks', id: 'nb' }] }, { id: 't2', key: 'IMP-002', title: 'Ship orders', acceptanceCriteria: 'Works', contextIds: [{ collection: 'blocks', id: 'nb2' }] }],
+    blocks: [{ id: 'nb', origin: 'human', sectionId: 'plan', type: 'notes', title: 'Checkout notes', text: '' }, { id: 'nb2', origin: 'human', sectionId: 'plan', type: 'notes', title: 'Shipping notes', text: '' }] });
+  const flagged = () => ev(`return [...document.querySelectorAll('#origin-main .origin-row')].filter(row => row.textContent.includes('Context changed')).map(row => row.dataset.id).join(',');`);
+  const write = async (block, text) => {
+    await ev(`document.querySelector('.origin-block[data-block="${block}"] textarea').focus();`);
+    await browser.type(text);
+    const before = await statusReads();
+    await saved(); await refreshed(before);
+    assert.equal(await ev(`return document.activeElement?.closest('.origin-block')?.dataset.block;`), block, 'the field keeps focus while the status arrives');
+  };
+  await write('nb', 'Card wallets');
+  // Focus moves out of the page (here to the project selector): the page catches up and the selector keeps focus.
+  await ev(`document.querySelector('#origin-project').focus();`);
+  await wait(`[...document.querySelectorAll('#origin-main .origin-row')].some(row => row.dataset.id === 't1' && row.textContent.includes('Context changed'))`, 'IMP-001 flagged');
+  assert.equal(await ev(`return document.activeElement?.id;`), 'origin-project', 'focus stays where it went');
+  await write('nb2', 'Two couriers');
+  // A click on an empty part of the page: drawn once the click is over.
+  const spot = await ev(`const box = document.querySelector('#origin-main').getBoundingClientRect(); return [box.left + 6, box.top + 6];`);
+  await browser.click(...spot);
+  await wait(`[...document.querySelectorAll('#origin-main .origin-row')].filter(row => row.textContent.includes('Context changed')).length === 2`, 'IMP-002 flagged');
+  assert.equal(await flagged(), 't1,t2');
+  const blocks = (await store.read(record.id)).blueprint.blocks;
+  assert.deepEqual(blocks.map(block => block.text), ['Card wallets', 'Two couriers'], 'every keystroke was kept');
+});
+
+test('Origin keeps what a click on a page control did while a refresh waits, also where a click does not focus the control (Safari)', { skip: !await findChrome(), timeout: 120000 }, async t => {
+  const { browser, ev, wait, saved, statusReads, refreshed } = await sentTaskPage(t, {
+    items: [{ id: 't1', key: 'IMP-001', title: 'Build checkout', acceptanceCriteria: 'Works', contextIds: [{ collection: 'blocks', id: 'nb' }] }] });
+  // Safari (iPhone, Mac) does not focus a clicked button or summary: focus leaves the field for the page body.
+  await ev(`document.addEventListener('mousedown', event => { if (event.target.closest('summary, button')) { event.preventDefault(); document.activeElement?.blur(); } }, true);`);
+  await ev(`document.querySelector('.origin-block[data-block="nb"] textarea').focus();`);
+  await browser.type('Card wallets');
+  const before = await statusReads();
+  await saved(); await refreshed(before);
+  const middle = selector => ev(`const box = document.querySelector(${J(selector)}).getBoundingClientRect(); return [box.left + box.width / 2, box.top + box.height / 2];`);
+  await browser.click(...await middle('[data-nav="menu:block:nb"]'));
+  // Any redraw the click starts runs on the next timer turn; this check runs after it.
+  assert.deepEqual(await ev(`await new Promise(resolve => setTimeout(resolve)); return [document.querySelector('[data-nav="menu:block:nb"]').closest('details').open, document.activeElement === document.body];`), [true, true],
+    'the ⋯ menu the click opened stays open');
+  // A click on an empty part of the page still draws what was held back.
+  await browser.click(...await ev(`const box = document.querySelector('#origin-main').getBoundingClientRect(); return [box.left + 6, box.top + 6];`));
+  await wait(`[...document.querySelectorAll('#origin-main .origin-row')].some(row => row.dataset.id === 't1' && row.textContent.includes('Context changed'))`, 'IMP-001 flagged');
+});
+
+test('Origin keeps the caret where you type in the task editor when a save redraws it', { skip: !await findChrome(), timeout: 90000 }, async t => {
+  const { browser, store, record, ev, saved, open, statusReads, refreshed } = await sentTaskPage(t);
+  await open('Build checkout');
+  await ev(`const area = document.querySelector('#origin-drawer textarea[data-focus-key="description"]'); area.focus(); area.setSelectionRange(5, 5);`);
+  await browser.type(' big');
+  const before = await statusReads();
+  await saved(); await refreshed(before);
+  assert.deepEqual(await ev(`const a = document.activeElement; return [a?.dataset.focusKey, a?.selectionStart, a?.selectionEnd];`), ['description', 9, 9], 'the redrawn field has the caret where it was');
+  await browser.type('!');
+  await saved();
+  assert.equal((await store.read(record.id)).blueprint.items[0].description, 'Hello big! world');
+});
+
+test('Origin’s project menu opens next to its button and on screen from 320 to 1440 px, for a short and a long project name', { skip: !await findChrome(), timeout: 120000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const store = new OriginStore(app.board.store.dir);
+  const ids = [];
+  for (const name of ['A', 'Customer onboarding portal']) { const record = await store.create({ name }); await store.write(record.id, { expectedRevision: record.revision, blueprint: { idea: name } }); ids.push(record.id); }
+  const browser = await launch({ width: 390, height: 844 }); assert.ok(browser); t.after(() => browser.close());
+  const { ev, wait } = pageTools(browser);
+  await browser.goto(`${app.url}/#/origin`);
+  // Under its button, covering it from left to right, never past the window's edge; at the button's left edge whenever there is room.
+  const placed = async (width, what) => {
+    const box = await ev(`const list = document.querySelector('#origin-project-menu .origin-menu-list').getBoundingClientRect(), button = document.querySelector('#origin-project-menu summary').getBoundingClientRect();
+      return { list: [Math.round(list.left), Math.round(list.right)], button: [Math.round(button.left), Math.round(button.right)], gap: Math.round(list.top - button.bottom), page: document.documentElement.scrollWidth };`);
+    const room = box.button[0] + (box.list[1] - box.list[0]) <= width - 16;
+    assert.ok(box.list[0] >= 0 && box.list[1] <= width && box.page <= width && box.list[0] <= box.button[0] && box.list[1] >= box.button[1] && box.gap >= 0 && box.gap <= 12 && (!room || box.list[0] === box.button[0]),
+      `${width} px, ${what}: the menu is next to its button and on screen: ${J(box)}`);
+  };
+  for (const id of ids) {
+    await ev(`const s = document.querySelector('#origin-project'); s.value = ${J(id)}; s.dispatchEvent(new Event('change'));`);
+    await wait(`document.querySelector('#origin-project').value === ${J(id)} && document.querySelector('.origin-map')`, 'project open');
+    for (const width of [320, 390, 600, 700, 1440]) {
+      await browser.resize(width, 844);
+      await ev(`document.querySelector('#origin-project-menu summary').click();`);
+      await placed(width, 'opened');
+      await ev(`document.querySelector('#origin-project-menu').open = false;`);
+    }
+  }
+  // Left open while the window narrows (a phone turned) and widens again, it follows its button.
+  await ev(`document.querySelector('#origin-project-menu summary').click();`);
+  for (const width of [320, 700, 1440]) { await browser.resize(width, 844); await placed(width, 'open while the window changed'); }
+});
+
+test('Origin’s next steps wrap long section names and unbroken words at 390 px instead of scrolling sideways', { skip: !await findChrome(), timeout: 90000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const store = new OriginStore(app.board.store.dir);
+  const record = await store.create({ name: 'Clinic portal' });
+  await store.write(record.id, { expectedRevision: record.revision, blueprint: { idea: 'A clinic portal', labels: { phases: {}, sections: { requirements: 'Functional and non-functional requirements with acceptance' } },
+    requirements: [{ id: 'r1', key: 'REQ-001', title: `People sign in ${'x'.repeat(90)}` }], sequence: { requirements: 1 } } });
+  const browser = await launch({ width: 390, height: 844 }); assert.ok(browser); t.after(() => browser.close());
+  await browser.resize(390, 844);
+  const { ev, wait, section } = pageTools(browser);
+  await browser.goto(`${app.url}/#/origin`);
+  await wait(`document.querySelectorAll('.origin-step').length >= 2`, 'Overview with next steps');
+  // No sideways scroll, measured against the page's own width: a classic scrollbar (Linux, Windows) takes some of the 390 px.
+  const wide = () => ev(`const page = document.documentElement; return { sideways: page.scrollWidth > page.clientWidth, past: [...document.querySelectorAll('.origin-step, .origin-step-where, .origin-next, .origin-next-text')].filter(node => node.getBoundingClientRect().right > page.clientWidth || node.scrollWidth > node.clientWidth + 1 && !node.matches('.origin-step-where')).map(node => node.className) };`);
+  assert.deepEqual(await wide(), { sideways: false, past: [] }, 'Overview: Next steps stay inside the page');
+  await section('requirements');
+  await wait(`document.querySelector('.origin-next-text')`, 'Next bar');
+  assert.deepEqual(await wide(), { sideways: false, past: [] }, 'Requirements: the Next bar stays inside the page');
 });

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
 import { OriginError, OriginStore, originRoute } from '../src/origin.mjs';
-import { PromptStore, ensureProject, findProject, projectsRoute } from '../src/projects.mjs';
+import { PromptStore, createBoardFor, ensureProject, findProject, projectsRoute } from '../src/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
 async function client(t) {
@@ -178,6 +178,37 @@ test('one name and one ID belong to one project, also when two windows ask at on
   assert.equal((await findProject(services, 'shared-x')).name, 'Owner');
 });
 
+test('a board made for an Origin project is linked although the blueprint was saved meanwhile, never over a link made meanwhile', async t => {
+  const { origin } = await local(t);
+  // The board service takes a while (folder, git init, first commit); another save lands in that time.
+  const slow = meanwhile => ({ state: async () => ({ projects: [] }), createProjectWithRepository: async ({ id }) => { await meanwhile(); return { project: { id } }; } });
+  const record = await origin.create({ name: 'Race' });
+  const made = await createBoardFor({ origin, board: slow(() => origin.write(record.id, { expectedRevision: record.revision, blueprint: { ...record.blueprint, idea: 'typed meanwhile' } })) }, record);
+  assert.deepEqual([made.record.kanbanProjectId, made.record.blueprint.idea], [record.id, 'typed meanwhile']);
+  // Another window linked another board in that time: its link stays.
+  const other = await origin.create({ name: 'Race two' });
+  await assert.rejects(createBoardFor({ origin, board: slow(() => origin.link(other.id, { expectedRevision: other.revision, kanbanProjectId: 'chosen' })) }, other), { code: 'ORIGIN_REVISION_CONFLICT' });
+  assert.equal((await origin.read(other.id)).kanbanProjectId, 'chosen');
+});
+
+test('one name, one project, also when two windows create or rename on different pages at the same moment', async t => {
+  const { app, call } = await client(t);
+  const using = async name => (await call('/api/shared-projects')).data.projects.filter(project => [project.name, project.kanban?.name].some(used => used?.toLowerCase() === name)).length;
+  const a = (await call('/api/origin/projects', 'POST', { name: 'First' })).data.project, b = (await call('/api/origin/projects', 'POST', { name: 'Second' })).data.project;
+  const renames = await Promise.all([call(`/api/origin/projects/${a.id}`, 'PATCH', { expectedRevision: a.revision, name: 'Same Name' }), call(`/api/origin/projects/${b.id}`, 'PATCH', { expectedRevision: b.revision, name: 'same name' })]);
+  assert.deepEqual(renames.map(result => result.status).sort(), [200, 409], 'both renames to one name succeeded');
+  const board = await app.board.createProject({ name: 'Board' }), c = (await call('/api/origin/projects', 'POST', { name: 'Third' })).data.project;
+  await Promise.all([call(`/api/projects/${board.id}`, 'PATCH', { name: 'Renamed', expectedRevision: board.revision }), call(`/api/origin/projects/${c.id}`, 'PATCH', { expectedRevision: c.revision, name: 'renamed' })]);
+  const kanban = name => call('/api/projects', 'POST', { name, folder: 'new', workflowMode: 'pipeline' });
+  await Promise.all([kanban('Twin'), call('/api/shared-projects', 'POST', { name: 'twin' })]);
+  await Promise.all([kanban('Pair'), call('/api/origin/projects', 'POST', { name: 'pair' })]);
+  for (const name of ['same name', 'renamed', 'twin', 'pair']) assert.equal(await using(name), 1, `projects named ${name}`);
+  // Origin's own store checks a new name in its write queue, on rename as on create.
+  const { origin } = await local(t), one = await origin.create({ name: 'One' }), two = await origin.create({ name: 'Two' });
+  await assert.rejects(Promise.all([origin.update(one.id, { expectedRevision: one.revision, name: 'Both' }), origin.update(two.id, { expectedRevision: two.revision, name: 'BOTH' })]), { code: 'NAME_TAKEN' });
+  assert.equal((await origin.update(one.id, { expectedRevision: (await origin.read(one.id)).revision, name: 'one' })).name, 'one', 'a project may change the case of its own name');
+});
+
 test('saved prompts stay with a kept board when the Origin side of an older link is deleted', async t => {
   const { board, origin, prompts, services, route } = await local(t);
   const kept = await board.createProject({ name: 'Legacy board' }), plan = await origin.create({ name: 'Legacy plan' });
@@ -281,6 +312,16 @@ test('board import and browser migration keep the one-name rule across Origin', 
   assert.equal((await call('/api/board/import', 'POST', { backup })).status, 200);
   assert.equal((await call('/api/board/migrate', 'POST', { board: { version: 1, projects: [{ id: 'browser', name: 'SHOP', cards: [] }] } })).status, 200);
   assert.deepEqual((await app.board.state()).projects.map(project => project.name), ['shop (2)', 'SHOP (3)']);
+});
+
+test('a board import or browser migration at the same moment as an Origin or Compose create still gives one project per name', async t => {
+  const { call } = await client(t);
+  const using = async name => (await call('/api/shared-projects')).data.projects.filter(project => [project.name, project.kanban?.name].some(used => used?.toLowerCase() === name)).length;
+  for (let i = 0; i < 3; i++) {
+    await Promise.all([call('/api/board/import', 'POST', { backup: { version: 1, kind: 'kanban-backup', projects: [{ id: `imported-${i}`, name: `Shop ${i}`, cards: [] }] } }), call('/api/origin/projects', 'POST', { name: `shop ${i}` })]);
+    await Promise.all([call('/api/board/migrate', 'POST', { board: { version: 1, projects: [{ id: `browser-${i}`, name: `Blog ${i}`, cards: [] }] } }), call('/api/shared-projects', 'POST', { name: `blog ${i}` })]);
+    for (const name of [`shop ${i}`, `blog ${i}`]) assert.equal(await using(name), 1, `projects named ${name}`);
+  }
 });
 
 test('a saved prompt keeps the Compose options and terminology it was made with', async t => {

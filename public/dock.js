@@ -442,7 +442,11 @@ function stopSelected() {
   box.hidden = false;
   applyDockHeight();
   confirm.focus();
-  const dismiss = () => { box.hidden = true; dock.stopFor = null; $('#dock-stop').disabled = false; applyDockHeight(); };
+  const dismiss = () => {
+    const held = box.contains(document.activeElement); // Hiding the prompt would drop its focus to the page.
+    box.hidden = true; dock.stopFor = null; $('#dock-stop').disabled = false; applyDockHeight();
+    if (held) $('#dock-stop').focus();
+  };
   keep.addEventListener('click', dismiss);
   confirm.addEventListener('click', async () => {
     if (confirm.disabled) return;

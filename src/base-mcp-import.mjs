@@ -11,10 +11,20 @@ import { join } from 'node:path';
 
 const ENV = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const REFERENCE = /^\$\{([A-Za-z_][A-Za-z0-9_]{0,127})(?::-[^}]*)?\}$|^\$([A-Za-z_][A-Za-z0-9_]{0,127})$/;
-// Credential shapes in arguments: known token prefixes, or key=value with a secret-sounding key. A pasted configuration
-// was never reviewed, so its import also refuses any long bare token (not an absolute path); a typed argument may be a hash.
-export const CREDENTIAL_ARG = /(?:^|[=:])(?:sk-|ghp_|gho_|github_pat_|xox[abp]-|AKIA|AIza)[A-Za-z0-9_-]{8,}|(?:token|secret|password|api[-_]?key|authorization)=\S+/i;
+// A value that looks like a credential, not a word ("read", "none", "mydb") or a file ("server.js"): it has a digit, or
+// eight characters without a dot.
+const TOKEN = String.raw`(?=[^\s&#]*\d|[^\s&#.]{8})`;
+// Credential shapes in arguments: known token prefixes, key=value with a secret-sounding key, ?key= in a URL, a password
+// in a URL (postgresql://user:pw@host) or a secret header ("Authorization: Bearer …"); a $VAR or ${VAR} reference is no
+// secret. A pasted configuration was never reviewed, so its import also refuses any long bare token (not an absolute
+// path); a typed argument may be a hash.
+export const CREDENTIAL_ARG = new RegExp(String.raw`(?:^|[=:])(?:sk-|ghp_|gho_|github_pat_|xox[abp]-|AKIA|AIza)[A-Za-z0-9_-]{8,}|(?:token|secret|password|api[-_]?key|authorization)=(?!\$)\S|[?&]key=(?!\$)${TOKEN}|:\/\/[^\s/@:]*:(?!\$)[^\s/@]+@|(?:^|=)[\w-]*(?:token|secret|password|api[-_]?key|authorization)\s*:\s*(?!(?:(?:bearer|basic|token)\s+)?\$)(?:(?:bearer|basic|token)\s+)?${TOKEN}`, 'i');
 const SECRET_ARG = new RegExp(`${CREDENTIAL_ARG.source}|^(?!/)[A-Za-z0-9+/_-]{40,}={0,2}$`, 'i');
+// A secret-sounding flag takes its value from the next argument (--api-key <value>) when that value looks like a token
+// (so a switch such as --no-password before "mydb" is no secret); a reference, a path or another flag is none either.
+const SECRET_FLAG = /^--?[\w-]*(?:token|secret|password|passwd|api[-_]?key|access[-_]?key|authorization)$/i, NOT_SECRET = /^(?:\$|-|[./~]|[A-Za-z]:[\\/])/, TOKEN_VALUE = /\d|^[^.]{8,}$/;
+/** The arguments that look like credentials. */
+export const credentialArgs = (args, shape = CREDENTIAL_ARG) => args.filter((arg, index) => shape.test(arg) || (SECRET_FLAG.test(args[index - 1] || '') && !NOT_SECRET.test(arg) && TOKEN_VALUE.test(arg)));
 const envName = (...parts) => parts.join('_').toUpperCase().replace(/[^A-Z0-9_]+/g, '_').replace(/^(\d)/, '_$1').slice(0, 120);
 
 /** Where Claude Desktop keeps its configuration on this computer (documented for macOS and Windows). */
@@ -50,13 +60,13 @@ export function parseMcpConfig(text, { environment = process.env, existing = [] 
     if (['stdio', 'local'].includes(type) || entry.command) {
       if (typeof entry.command !== 'string' || !entry.command.trim()) issues.push('No command to start the server.');
       const args = Array.isArray(entry.args) ? entry.args.map(String) : [];
-      if (args.some(arg => SECRET_ARG.test(arg))) issues.push('An argument looks like a credential. Move it into an environment variable in the original configuration, then import again.');
+      if (credentialArgs(args, SECRET_ARG).length) issues.push('An argument looks like a credential. Move it into an environment variable in the original configuration, then import again.');
       const env = Object.entries(entry.env && typeof entry.env === 'object' ? entry.env : {}).slice(0, 40).map(([key, value]) => reference(server.name, key, value, environment));
       Object.assign(server, { transport: 'stdio', command: String(entry.command || ''), args, env });
     } else if (url) {
       let endpoint = null;
       try { const parsed = new URL(String(url)); if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error(); endpoint = parsed.href; } catch { issues.push('The URL is not an HTTP(S) address without credentials.'); }
-      if (endpoint && [...new URL(endpoint).searchParams.keys()].some(key => /token|secret|password|api.?key|authorization/i.test(key))) issues.push('The URL carries a credential. Use a header with an environment variable instead.');
+      if (endpoint && [...new URL(endpoint).searchParams.keys()].some(key => /token|secret|password|api.?key|authorization|^key$/i.test(key))) issues.push('The URL carries a credential. Use a header with an environment variable instead.');
       const headers = Object.entries(entry.headers && typeof entry.headers === 'object' ? entry.headers : {}).slice(0, 40).map(([key, value]) => reference(server.name, key, value, environment, true));
       Object.assign(server, { transport: 'streamable-http', endpoint, headers });
     } else issues.push('Neither a command nor a URL.');

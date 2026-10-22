@@ -106,11 +106,21 @@ test('chat is read-only, scoped, cached and isolated per project', async t => {
   assert.equal(calls[1].prompt.includes('Origin'), false);
 });
 
+test('only an answer that runs the CLI takes the shared job slot: a refused question or a cached answer never does', async t => {
+  const { project, runner, coordinator } = await world(t);
+  let claims = 0;
+  const claim = async () => { claims++; return { job: { controller: new AbortController() } }; };
+  await assert.rejects(coordinator.ask(project.id, { question: '', provider: 'codex' }, { runner, claim }), { code: 'INVALID_INPUT' });
+  assert.equal((await coordinator.ask(project.id, { question: 'Status?', provider: 'codex' }, { runner, claim })).cached, false);
+  assert.equal((await coordinator.ask(project.id, { question: 'status?', provider: 'codex' }, { runner, claim })).cached, true);
+  assert.equal(claims, 1);
+});
+
 test('a question whose client left while the job slot was claimed is cancelled, not left running', async () => {
   // The close event fired before the route could listen for it; only res.destroyed records it.
   const res = Object.assign(new EventEmitter(), { destroyed: true, writableEnded: false }), job = { controller: new AbortController() };
   let aborted = null, released = false;
-  await coordinatorRoute({ coordinator: { ask: async (_, __, { signal }) => { aborted = signal.aborted; return {}; } }, runner: async () => ({}), track: work => work,
+  await coordinatorRoute({ coordinator: { ask: async (_, __, { claim }) => { aborted = (await claim()).job.controller.signal.aborted; return {}; } }, runner: async () => ({}), track: work => work,
     claim: async () => ({ job, release: () => { released = true; } }), req: { method: 'POST' }, res, pathname: '/api/coordinator/p1/ask',
     jsonBody: async () => ({ question: 'Where is checkout?', provider: 'codex' }), send: () => {} });
   assert.equal(aborted, true);
@@ -268,4 +278,13 @@ test('local folder paths in event details never reach the model; their last name
   assert.equal(noPaths('run with --cwd=/Users/alice/secret/app and open file:///Users/alice/secret/app/index.html'), 'run with --cwd=…/app and open file://…/index.html');
   assert.equal(noPaths('C:\\Users\\bob\\shop, ROOT=D:\\work\\shop'), '…/shop, ROOT=…/shop');
   assert.equal(noPaths('https://github.com/acme/shop/pull/7 changed src/cart/total.js'), 'https://github.com/acme/shop/pull/7 changed src/cart/total.js');
+  // Windows paths with forward slashes, doubled separators or a space in a folder name, UNC shares, and paths after ":" or "[".
+  const cases = {
+    "fatal: detected dubious ownership in repository at 'C:/Users/alice/shop'": "fatal: detected dubious ownership in repository at '…/shop'",
+    'open \\\\fileserver\\alice\\shop\\README.md': 'open …/README.md',
+    'C:\\Users\\Alice Smith\\shop\\README.md and C:\\\\Users\\\\bob\\\\app': '…/README.md and …/app',
+    'cwd:/Users/alice/shop [/Users/alice/shop/a.js]': 'cwd:…/shop […/a.js]',
+    'see https://example.com/docs/a/b, http://localhost:3000/api/v1, file:///C:/Users/alice/x.txt and ./scripts/build.sh or src/cart/total.js': 'see https://example.com/docs/a/b, http://localhost:3000/api/v1, file://…/x.txt and ./scripts/build.sh or src/cart/total.js',
+  };
+  for (const [input, expected] of Object.entries(cases)) assert.equal(noPaths(input), expected, input);
 });
