@@ -5246,7 +5246,8 @@ function openColumns({ tab = 'columns' } = {}) {
   const layout = project.columnLayout?.length ? project.columnLayout : (board?.columns || []).map(column => ({ id: column.id }));
   columnsDraft.project = project.id;
   columnsDraft.pipeline = project.workflowMode === 'pipeline';
-  columnsDraft.shown = dialogFields(project, columnsDraft.pipeline ? item => [item.workflowMode, item.pipeline, item.execution, item.testCommands] : item => [item.workflowMode, item.columnLayout]);
+  // Everything a save can write, also for a legacy board that "Switch to a column pipeline…" turns into a pipeline.
+  columnsDraft.shown = dialogFields(project, item => [item.workflowMode, item.columnLayout, item.pipeline, item.execution, item.testCommands]);
   columnsDraft.profiles = JSON.parse(JSON.stringify(project.pipeline?.profiles || []));
   columnsDraft.profileId = null;
   columnsDraft.list = JSON.parse(JSON.stringify(columnsDraft.pipeline ? project.pipeline.columns : layout));

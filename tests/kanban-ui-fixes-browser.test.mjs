@@ -196,6 +196,20 @@ test('the Agents dialog refuses to save over a custom column agent changed elsew
   assert.deepEqual(exceptions(browser), []);
 });
 
+test('a legacy Column Manager switched to a pipeline refuses to save over test commands saved elsewhere', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await linked(app, 'Switch');
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`!document.querySelector('#columns-open').disabled`, 'board');
+  await browser.eval(`document.querySelector('#columns-open').click();`); await browser.until(`document.querySelector('#columns-dialog').open`, 'Columns dialog');
+  await app.board.delivery.setTestCommands(project.id, { commands: [{ command: 'node --version' }], expectedRevision: (await app.board.state()).projects[0].revision });
+  await polled(app, browser);
+  await browser.eval(`document.querySelector('#columns-use-pipeline').click(); document.querySelector('#columns-form').requestSubmit();`);
+  await browser.until(`!document.querySelector('#columns-error').hidden`, 'save refused');
+  assert.match(await shownError(browser, 'columns-error'), /changed since you loaded/);
+  const kept = (await app.board.state()).projects[0];
+  assert.deepEqual([kept.workflowMode, kept.testCommands.map(item => item.argv.join(' '))], [project.workflowMode, ['node --version']]);
+});
+
 // Visible: painted inside the viewport, with no hidden ancestor (a closed drawer is visibility: hidden).
 const shown = text => `return [...document.querySelectorAll('body *')].filter(node => !node.children.length && node.textContent.includes(${JSON.stringify(text)})).some(node => {
   for (let item = node; item; item = item.parentElement) { const style = getComputedStyle(item); if (style.visibility === 'hidden' || style.display === 'none') return false; }
