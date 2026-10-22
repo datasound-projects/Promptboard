@@ -27,9 +27,11 @@ export function redactLocal(text) {
     // digits, so "--password flag", "--max-token 4096", "$VAR" and paths stay. A flag starts after no word character and
     // its name is bounded, so a long run of dashes is scanned once.
     .replace(/((?<![\w-])--?[\w-]{0,40}?(?:api[_-]?key|secret|password|token|access[_-]?key)\s+)(?![-$./~])(?=[^\s,;"'\n]{0,200}?\d)(?=[^\s,;"'\n]{0,200}?[A-Za-z])[^\s,;"'\n]{6,}/gi, '$1[redacted]')
+    // A password or secret may be digits only (--password 20241022); a token flag's number is a count (--max-token 4096).
+    .replace(/((?<![\w-])--?[\w-]{0,40}?(?:password|passwd|secret)\s+)\d{4,}(?![^\s,;"'\n])/gi, '$1[redacted]')
     // Bare tokens in the shapes their services issue (OpenAI/Anthropic, Stripe, GitHub, Slack, AWS, Google), so a name
     // such as sk_customer_12345678 stays.
-    .replace(/(?<![A-Za-z0-9])(?:sk-(?=[A-Za-z0-9_-]{0,200}\d)[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[a-z]-\d{3,}-[A-Za-z0-9-]{6,}|AKIA[0-9A-Z]{16,}|AIza[0-9A-Za-z_-]{30,})/g, '[redacted]')
+    .replace(/(?<![A-Za-z0-9])(?:sk-(?=[A-Za-z0-9_-]{0,200}\d)[A-Za-z0-9_-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[a-z](?:\.xox[a-z])?-\d+-[A-Za-z0-9-]{6,}|xapp-\d+-[A-Za-z0-9-]{6,}|A(?:KI|SI)A[0-9A-Z]{16,}|AIza[0-9A-Za-z_-]{30,})/g, '[redacted]')
     // Credentials in any URL scheme (postgres://user:pw@, redis://:pw@).
     // The scheme starts a word and is short, and the user name ends at its first ":", so long text is scanned once (no quadratic backtracking).
     .replace(/(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@:]*:[^\s/@]+@/gi, '$1[redacted]@');
