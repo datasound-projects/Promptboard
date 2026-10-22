@@ -95,6 +95,8 @@ window.PromptboardOrigin = (() => {
     menuList.append(button('Rename…', () => { menu.open = false; openRename(); }, 'origin-menu-item'), button('Connect to Kanban…', () => { menu.open = false; openConnect(); }, 'origin-menu-item'),
       button('Save structure as blueprint…', () => { menu.open = false; openSaveBlueprint(); }, 'origin-menu-item'), button('Reset structure…', () => { menu.open = false; openReset(); }, 'origin-menu-item'), button('Delete from Origin…', () => { menu.open = false; openDelete(); }, 'origin-menu-item danger'));
     menu.append(menuSummary, menuList);
+    // It opens under its button; a long project name on a narrow screen moves it left only as far as the window's edge needs.
+    menu.addEventListener('toggle', () => { menuList.style.left = ''; const past = menu.open ? menuList.getBoundingClientRect().right - (document.documentElement.clientWidth - 16) : 0; if (past > 0) menuList.style.left = `${-past}px`; });
     const linkChip = button('', () => { const linked = project(); if (linked?.kanban?.exists) app.openKanban(linked.kanbanProjectId); else openConnect(); }, 'origin-link-pill');
     linkChip.id = 'origin-kanban-link';
     projectBox.append(projectSelect, menu, linkChip, newProject);
@@ -172,8 +174,13 @@ window.PromptboardOrigin = (() => {
       if (renderFrame) return;
       renderFrame = requestAnimationFrame(() => { renderFrame = 0; if (main.contains(document.activeElement)) renderDerived(); else renderMain(); });
     }
-    // News from elsewhere (a card's status, a finished run) redraws the page, but never the field you are typing in.
-    function refreshMain() { if (main.contains(document.activeElement) && document.activeElement.matches('input, textarea, select')) renderDerived(); else renderMain(); }
+    // News from elsewhere (a card's status, a finished run) redraws the page, but never the field you are typing in:
+    // then the page is drawn once focus has left it, after the click that moved focus (if any) is over.
+    let mainStale = false;
+    function refreshMain() { if (main.contains(document.activeElement) && document.activeElement.matches('input, textarea, select')) { mainStale = true; renderDerived(); } else renderMain(); }
+    const catchUp = () => { if (mainStale && visible && !main.contains(document.activeElement)) renderMain(); };
+    main.addEventListener('focusout', event => { if (mainStale && event.relatedTarget) setTimeout(catchUp); });
+    document.addEventListener('click', () => { if (mainStale) setTimeout(catchUp); });
     async function save({ force = false } = {}) {
       clearTimeout(saveTimer); saveTimer = null;
       if (saveState === 'conflict' && !force) return false; // Not saved: only Reload or Keep mine resolves it.
@@ -656,6 +663,7 @@ window.PromptboardOrigin = (() => {
 
     function renderMain() {
       if (renderFrame) { cancelAnimationFrame(renderFrame); renderFrame = 0; }
+      mainStale = false;
       if (record?.exists && !order().includes(section)) section = 'overview';
       main.className = `origin-main phase-${toneOf(section)}${['overview', 'architecture'].includes(section) ? ' origin-wide' : ''}`;
       view.dataset.section = section;
