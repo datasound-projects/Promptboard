@@ -182,7 +182,8 @@ window.PromptboardOrigin = (() => {
     function refreshMain() { if (main.contains(document.activeElement) && document.activeElement.matches('input, textarea, select')) { mainStale = true; renderDerived(); } else renderMain(); }
     const catchUp = () => { if (mainStale && visible && !main.contains(document.activeElement)) renderMain(); };
     main.addEventListener('focusout', event => { if (mainStale && event.relatedTarget) setTimeout(catchUp); });
-    document.addEventListener('click', () => { if (mainStale) setTimeout(catchUp); });
+    // A click on a control in the page (a ⋯ menu, a checkbox, a link) is not leaving it, and the redraw would undo it: Safari focuses no clicked button.
+    document.addEventListener('click', event => { if (mainStale && !main.contains(event.target.closest?.('a[href], button, input, select, textarea, label, summary, details, [tabindex]'))) setTimeout(catchUp); });
     async function save({ force = false } = {}) {
       clearTimeout(saveTimer); saveTimer = null;
       if (saveState === 'conflict' && !force) return false; // Not saved: only Reload or Keep mine resolves it.
