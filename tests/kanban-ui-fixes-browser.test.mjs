@@ -305,6 +305,25 @@ test('after an import that waits for confirmation, the board message leads to "C
   assert.deepEqual(exceptions(browser), []);
 });
 
+test('"Review in Project settings" keeps the import message when it switches to the project that waits', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const one = await app.board.createProject({ name: 'One' });
+  await app.board.createTask({ projectId: one.id, title: 'Card', prompt: 'c' });
+  const two = await app.board.createProject({ name: 'Two' });
+  const backup = await app.board.exportBackup();
+  backup.selectedProjectId = two.id; // The import shows Two; One (listed first) waits for confirmation of its imported settings.
+  for (const id of [one.id, two.id]) await app.board.deleteProject(id, { expectedRevision: (await app.board.state()).projects.find(project => project.id === id).revision });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`board?.projects.length === 0`, 'empty board');
+  await browser.eval(`const files = new DataTransfer(); files.items.add(new File([${JSON.stringify(JSON.stringify(backup))}], 'backup.json', { type: 'application/json' }));
+    const input = document.querySelector('#import-file'); input.files = files.files; input.dispatchEvent(new Event('change'));`);
+  await browser.until(`/wait for your confirmation/.test(document.querySelector('#project-detail').textContent)`, 'import waits for confirmation', 20000);
+  assert.deepEqual(await browser.eval(`return [currentProject().name, Boolean(board.projects.find(project => project.name === 'One').pendingImport)];`), ['Two', true]);
+  const message = await browser.eval(`return document.querySelector('#project-detail p').textContent;`);
+  await browser.eval(`[...document.querySelectorAll('#project-detail button')].find(button => button.textContent === 'Review in Project settings').click();`);
+  assert.equal(await browser.layout(`return currentProject().name === 'One' && document.activeElement.id === 'import-confirm';`), true);
+  assert.equal(await browser.eval(`return !document.querySelector('#project-detail').hidden && document.querySelector('#project-detail p').textContent;`), message);
+});
+
 test('an open page takes the board of a restarted app whose board was restored from its last good copy', { skip: !chrome, timeout: 90000 }, async t => {
   const dataDir = await mkdtemp(join(tmpdir(), 'pb-kanban-ui-'));
   const options = { executor: null, dataDir, detector: async () => [], catalogReader: async provider => ({ provider, source: 'test fixture', models: [] }) };

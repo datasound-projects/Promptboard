@@ -4073,7 +4073,7 @@ async function importBoard() {
     const message = `Backup imported: ${boardCounts(board.projects)}. No agent runs were started.${pending ? ' Imported repository paths and workflow settings wait for your confirmation.' : ''}`;
     // That confirmation is in Project settings, in the sidebar (a closed drawer on a phone).
     const review = pending && detailButton('Review in Project settings', () => {
-      if (currentProject()?.id !== pending.id) selectProject(pending.id);
+      if (currentProject()?.id !== pending.id) { setSelectedProject(pending.id); renderBoard(); } // selectProject would clear this message.
       if (isMobile()) setSidebar(true); else if (sidebarCollapsed()) setSidebarCollapsed(false);
       setProjectCollapsed(false, false);
       $('#import-confirm').scrollIntoView({ block: 'center' }); $('#import-confirm').focus();
