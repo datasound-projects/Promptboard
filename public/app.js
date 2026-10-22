@@ -1579,7 +1579,8 @@ async function saveDialogFields(shown, send) {
     const { revision } = shownProject(shown);
     try {
       const data = await send(revision);
-      shown.value = JSON.stringify(shown.fields((data.board || board).projects.find(item => item.id === shown.projectId)));
+      // The project as this request wrote it: a later write that the answer's board already includes is not the dialog's.
+      shown.value = JSON.stringify(shown.fields(data.project || (data.board || board).projects.find(item => item.id === shown.projectId)));
       return data;
     } catch (error) { if (error.code !== 'REVISION_CONFLICT' || retried) throw error; } // boardCall loaded the newer board.
   }
@@ -3425,7 +3426,8 @@ function openWorkflowDialog(focusStage = null) {
   if (currentProject()?.workflowMode === 'pipeline') { openColumns(); if (focusStage) { columnsDraft.selected = focusStage; renderColumns(); } return; }
   const project = currentProject();
   if (!project) return;
-  workflowShown = dialogFields(project, item => [item.workflow, item.agentDefaults, item.testCommands]);
+  // Everything a save writes: setWorkflow also writes the custom agent columns' settings into the column layout.
+  workflowShown = dialogFields(project, item => [item.workflow, item.agentDefaults, item.testCommands, (item.columnLayout || []).filter(entry => entry.custom).map(entry => [entry.id, entry.agent])]);
   $('#workflow-dialog-project').textContent = `${project.name} · WORKFLOW`;
   const stages = [];
   const customAgents = (project.columnLayout || []).filter(entry => entry.custom && entry.agent?.enabled);
@@ -4074,7 +4076,7 @@ async function importBoard() {
     const message = `Backup imported: ${boardCounts(board.projects)}. No agent runs were started.${pending ? ' Imported repository paths and workflow settings wait for your confirmation.' : ''}${imported?.workflowLeftOut?.length ? ` Some workflow settings do not work in this version and were left out (${imported.workflowLeftOut.join(', ')}).` : ''}`;
     // That confirmation is in Project settings, in the sidebar (a closed drawer on a phone).
     const review = pending && detailButton('Review in Project settings', () => {
-      if (currentProject()?.id !== pending.id) selectProject(pending.id);
+      if (currentProject()?.id !== pending.id) { setSelectedProject(pending.id); renderBoard(); } // selectProject would clear this message.
       if (isMobile()) setSidebar(true); else if (sidebarCollapsed()) setSidebarCollapsed(false);
       setProjectCollapsed(false, false);
       $('#import-confirm').scrollIntoView({ block: 'center' }); $('#import-confirm').focus();
@@ -4906,7 +4908,12 @@ function renderAutopilotDialog() {
     if (missing.length) {
       const add = detailButton('Add default instructions', async () => {
         add.disabled = true;
-        try { await addAutopilotInstructions(project, draft.route); renderAutopilotDialog(); announce('Default instructions added to the columns. You can change them in Columns.'); }
+        try {
+          // The board as it is now, not as it was drawn: a revision change since then must not refuse the click.
+          const current = currentProject(), stages = autopilotStages(current);
+          await addAutopilotInstructions(current, draft.route.filter(id => stages.includes(id)));
+          renderAutopilotDialog(); announce('Default instructions added to the columns. You can change them in Columns.');
+        }
         catch (error) { $('#autopilot-error').textContent = error.message; $('#autopilot-error').hidden = false; add.disabled = false; }
       }, 'secondary-button');
       add.id = 'autopilot-add-instructions'; add.disabled = running;
@@ -5247,7 +5254,8 @@ function openColumns({ tab = 'columns' } = {}) {
   const layout = project.columnLayout?.length ? project.columnLayout : (board?.columns || []).map(column => ({ id: column.id }));
   columnsDraft.project = project.id;
   columnsDraft.pipeline = project.workflowMode === 'pipeline';
-  columnsDraft.shown = dialogFields(project, columnsDraft.pipeline ? item => [item.workflowMode, item.pipeline, item.execution, item.testCommands] : item => [item.workflowMode, item.columnLayout]);
+  // Everything a save can write, also for a legacy board that "Switch to a column pipeline…" turns into a pipeline.
+  columnsDraft.shown = dialogFields(project, item => [item.workflowMode, item.columnLayout, item.pipeline, item.execution, item.testCommands]);
   columnsDraft.profiles = JSON.parse(JSON.stringify(project.pipeline?.profiles || []));
   columnsDraft.profileId = null;
   columnsDraft.list = JSON.parse(JSON.stringify(columnsDraft.pipeline ? project.pipeline.columns : layout));

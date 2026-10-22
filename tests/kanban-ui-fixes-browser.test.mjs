@@ -178,6 +178,76 @@ test('the pipeline Column Manager saves after a revision change the app makes it
   assert.deepEqual(exceptions(browser), []);
 });
 
+test('the Agents dialog refuses to save over a custom column agent changed elsewhere', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await linked(app, 'Custom agents');
+  const layout = instructions => [{ id: 'todo' }, { id: 'planning' }, { id: 'executing' }, { id: 'c_docs000001', custom: true, title: 'Docs', agent: { enabled: true, policy: 'manual', instructions } }, { id: 'code_review' }, { id: 'testing' }, { id: 'merge' }, { id: 'done' }];
+  await app.board.setColumns(project.id, { columns: layout('Write the docs'), expectedRevision: (await app.board.state()).projects[0].revision });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`!document.querySelector('#agents-open').disabled`, 'board');
+  const docs = () => app.board.state().then(state => state.projects[0].columnLayout.find(entry => entry.id === 'c_docs000001').agent.instructions);
+  // Another window gives the Docs column's agent new instructions.
+  await browser.eval(`document.querySelector('#agents-open').click();`); await browser.until(`document.querySelector('#workflow-dialog').open`, 'Agents dialog');
+  await app.board.setColumns(project.id, { columns: layout('Changed in another window'), expectedRevision: (await app.board.state()).projects[0].revision });
+  await polled(app, browser);
+  await browser.eval(`document.querySelector('#workflow-form').requestSubmit();`);
+  await browser.until(`!document.querySelector('#workflow-error').hidden`, 'save refused');
+  assert.match(await shownError(browser, 'workflow-error'), /changed since you loaded/);
+  assert.equal(await docs(), 'Changed in another window');
+  assert.deepEqual(exceptions(browser), []);
+});
+
+test('a settings dialog never takes a change saved elsewhere during its own save as its own', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await linked(app, 'Saved meanwhile');
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`!document.querySelector('#agents-open').disabled`, 'board');
+  // Another window saves Planning right after this window's workflow save is written, before the answer is built.
+  await browser.eval(`document.querySelector('#agents-open').click();`); await browser.until(`document.querySelector('#workflow-dialog').open`, 'Agents dialog');
+  const setWorkflow = app.board.setWorkflow.bind(app.board);
+  app.board.setWorkflow = async (...input) => {
+    const written = await setWorkflow(...input); app.board.setWorkflow = setWorkflow;
+    const current = (await app.board.state()).projects[0];
+    await setWorkflow(project.id, { workflow: { ...current.workflow, planning: { policy: 'manual', instructions: 'Other window' } }, expectedRevision: current.revision });
+    return written;
+  };
+  await browser.eval(`document.querySelector('#test-commands').value = 'nodee --test'; document.querySelector('#workflow-form').requestSubmit();`);
+  await browser.until(`!document.querySelector('#workflow-error').hidden`, 'first save answered');
+  await browser.eval(`document.querySelector('#test-commands').value = 'node --test'; document.querySelector('#workflow-form').requestSubmit();`);
+  await browser.until(`/changed since you loaded/.test(document.querySelector('#workflow-error').textContent)`, 'the change made during the save is kept');
+  assert.equal((await app.board.state()).projects[0].workflow.planning.policy, 'manual');
+  assert.deepEqual(exceptions(browser), []);
+});
+
+test('a legacy Column Manager switched to a pipeline refuses to save over test commands saved elsewhere', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await linked(app, 'Switch');
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`!document.querySelector('#columns-open').disabled`, 'board');
+  await browser.eval(`document.querySelector('#columns-open').click();`); await browser.until(`document.querySelector('#columns-dialog').open`, 'Columns dialog');
+  await app.board.delivery.setTestCommands(project.id, { commands: [{ command: 'node --version' }], expectedRevision: (await app.board.state()).projects[0].revision });
+  await polled(app, browser);
+  await browser.eval(`document.querySelector('#columns-use-pipeline').click(); document.querySelector('#columns-form').requestSubmit();`);
+  await browser.until(`!document.querySelector('#columns-error').hidden`, 'save refused');
+  assert.match(await shownError(browser, 'columns-error'), /changed since you loaded/);
+  const kept = (await app.board.state()).projects[0];
+  assert.deepEqual([kept.workflowMode, kept.testCommands.map(item => item.argv.join(' '))], [project.workflowMode, ['node --version']]);
+});
+
+test('"Add default instructions" in the Autopilot dialog works after a revision change the app makes itself', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await linked(app, 'Autopilot instructions', { workflowMode: 'pipeline' });
+  const current = (await app.board.state()).projects[0], pipeline = structuredClone(current.pipeline);
+  pipeline.columns.splice(pipeline.columns.findIndex(column => column.id === 'done'), 0, { id: 'c_polish', name: 'Polish', role: 'active', kind: 'custom', color: 'blue', description: '', strategy: { autoSpawn: true }, automations: { onEnter: [], onExit: [] } });
+  await app.board.setPipeline(project.id, { pipeline, expectedRevision: current.revision, confirm: true });
+  await app.board.createTask({ projectId: project.id, title: 'One' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('.kanban-card')`, 'card');
+  await browser.eval(`document.querySelector('#autopilot-open').click();`); await browser.until(`document.querySelector('#autopilot-add-instructions')`, 'Add default instructions');
+  await bumpRevision(app, browser, project.id);
+  await browser.eval(`document.querySelector('#autopilot-add-instructions').click();`);
+  await browser.until(`!document.querySelector('#autopilot-add-instructions') || !document.querySelector('#autopilot-error').hidden`, 'instructions added');
+  assert.equal(await shownError(browser, 'autopilot-error'), '');
+  assert.equal((await app.board.state()).projects[0].pipeline.columns.find(column => column.id === 'c_polish').automations.onEnter.length, 1);
+  assert.deepEqual(exceptions(browser), []);
+});
+
 // Visible: painted inside the viewport, with no hidden ancestor (a closed drawer is visibility: hidden).
 const shown = text => `return [...document.querySelectorAll('body *')].filter(node => !node.children.length && node.textContent.includes(${JSON.stringify(text)})).some(node => {
   for (let item = node; item; item = item.parentElement) { const style = getComputedStyle(item); if (style.visibility === 'hidden' || style.display === 'none') return false; }
@@ -254,6 +324,25 @@ test('after an import that waits for confirmation, the board message leads to "C
     assert.equal(await browser.layout(confirmShown), true, `${width}: Check and apply is shown and focused`);
   }
   assert.deepEqual(exceptions(browser), []);
+});
+
+test('"Review in Project settings" keeps the import message when it switches to the project that waits', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const one = await app.board.createProject({ name: 'One' });
+  await app.board.createTask({ projectId: one.id, title: 'Card', prompt: 'c' });
+  const two = await app.board.createProject({ name: 'Two' });
+  const backup = await app.board.exportBackup();
+  backup.selectedProjectId = two.id; // The import shows Two; One (listed first) waits for confirmation of its imported settings.
+  for (const id of [one.id, two.id]) await app.board.deleteProject(id, { expectedRevision: (await app.board.state()).projects.find(project => project.id === id).revision });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`board?.projects.length === 0`, 'empty board');
+  await browser.eval(`const files = new DataTransfer(); files.items.add(new File([${JSON.stringify(JSON.stringify(backup))}], 'backup.json', { type: 'application/json' }));
+    const input = document.querySelector('#import-file'); input.files = files.files; input.dispatchEvent(new Event('change'));`);
+  await browser.until(`/wait for your confirmation/.test(document.querySelector('#project-detail').textContent)`, 'import waits for confirmation', 20000);
+  assert.deepEqual(await browser.eval(`return [currentProject().name, Boolean(board.projects.find(project => project.name === 'One').pendingImport)];`), ['Two', true]);
+  const message = await browser.eval(`return document.querySelector('#project-detail p').textContent;`);
+  await browser.eval(`[...document.querySelectorAll('#project-detail button')].find(button => button.textContent === 'Review in Project settings').click();`);
+  assert.equal(await browser.layout(`return currentProject().name === 'One' && document.activeElement.id === 'import-confirm';`), true);
+  assert.equal(await browser.eval(`return !document.querySelector('#project-detail').hidden && document.querySelector('#project-detail p').textContent;`), message);
 });
 
 test('an open page takes the board of a restarted app whose board was restored from its last good copy', { skip: !chrome, timeout: 90000 }, async t => {
