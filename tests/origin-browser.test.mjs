@@ -1053,9 +1053,10 @@ test('Origin’s next steps wrap long section names and unbroken words at 390 px
   const { ev, wait, section } = pageTools(browser);
   await browser.goto(`${app.url}/#/origin`);
   await wait(`document.querySelectorAll('.origin-step').length >= 2`, 'Overview with next steps');
-  const wide = () => ev(`return { page: document.documentElement.scrollWidth, past: [...document.querySelectorAll('.origin-step, .origin-step-where, .origin-next, .origin-next-text')].filter(node => node.getBoundingClientRect().right > innerWidth || node.scrollWidth > node.clientWidth + 1 && !node.matches('.origin-step-where')).map(node => node.className) };`);
-  assert.deepEqual(await wide(), { page: 390, past: [] }, 'Overview: Next steps stay inside the page');
+  // No sideways scroll, measured against the page's own width: a classic scrollbar (Linux, Windows) takes some of the 390 px.
+  const wide = () => ev(`const page = document.documentElement; return { sideways: page.scrollWidth > page.clientWidth, past: [...document.querySelectorAll('.origin-step, .origin-step-where, .origin-next, .origin-next-text')].filter(node => node.getBoundingClientRect().right > page.clientWidth || node.scrollWidth > node.clientWidth + 1 && !node.matches('.origin-step-where')).map(node => node.className) };`);
+  assert.deepEqual(await wide(), { sideways: false, past: [] }, 'Overview: Next steps stay inside the page');
   await section('requirements');
   await wait(`document.querySelector('.origin-next-text')`, 'Next bar');
-  assert.deepEqual(await wide(), { page: 390, past: [] }, 'Requirements: the Next bar stays inside the page');
+  assert.deepEqual(await wide(), { sideways: false, past: [] }, 'Requirements: the Next bar stays inside the page');
 });

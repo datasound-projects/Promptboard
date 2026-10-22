@@ -333,6 +333,7 @@ test('"Review in Project settings" keeps the import message when it switches to 
   const two = await app.board.createProject({ name: 'Two' });
   const backup = await app.board.exportBackup();
   backup.selectedProjectId = two.id; // The import shows Two; One (listed first) waits for confirmation of its imported settings.
+  backup.projects.find(project => project.name === 'One').agentDefaults = { provider: 'codex' }; // A setting to confirm: projects without one import directly.
   for (const id of [one.id, two.id]) await app.board.deleteProject(id, { expectedRevision: (await app.board.state()).projects.find(project => project.id === id).revision });
   await browser.goto(`${app.url}/#/kanban`); await browser.until(`board?.projects.length === 0`, 'empty board');
   await browser.eval(`const files = new DataTransfer(); files.items.add(new File([${JSON.stringify(JSON.stringify(backup))}], 'backup.json', { type: 'application/json' }));
@@ -451,6 +452,8 @@ test('an unsaved "Merges into" choice survives a background board refresh', { sk
   const { app, browser } = await open(t);
   const project = await linked(app, 'Branches');
   execFileSync('git', ['branch', 'develop'], { cwd: project.repository.root });
+  // The repository's first branch: main or master, as Git is configured on this computer.
+  const first = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: project.repository.root, encoding: 'utf8' }).trim();
   const card = await app.board.createTask({ projectId: project.id, title: 'Background', prompt: 'b' });
   await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${card.id}"]')`, 'card');
   await browser.eval(`if (document.querySelector('#project-settings').hidden) document.querySelector('#project-toggle').click();`);
@@ -463,8 +466,8 @@ test('an unsaved "Merges into" choice survives a background board refresh', { sk
   await browser.eval(`document.querySelector('#branch-save').click();`);
   await browser.until(`(${target}) === ${JSON.stringify(JSON.stringify({ value: 'develop', save: false }))}`, 'saved');
   // With no choice pending, the list follows a target branch saved elsewhere.
-  await app.board.setTargetBranch(project.id, { branch: 'main', expectedRevision: (await app.board.state()).projects[0].revision });
-  await browser.until(`(${target}) === ${JSON.stringify(JSON.stringify({ value: 'main', save: false }))}`, 'target saved elsewhere');
+  await app.board.setTargetBranch(project.id, { branch: first, expectedRevision: (await app.board.state()).projects[0].revision });
+  await browser.until(`(${target}) === ${JSON.stringify(JSON.stringify({ value: first, save: false }))}`, 'target saved elsewhere');
 });
 
 test('a dialog close button never covers its eyebrow text at 390 px', { skip: !chrome, timeout: 90000 }, async t => {
