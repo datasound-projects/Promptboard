@@ -160,3 +160,24 @@ test('P2-4: an interrupted run offers Cancel run, and it cancels', async t => {
   assert.equal($('#network-run-cancel').hidden, true);
   assert.equal((await call(ctx, `/api/network/pipeline-runs/${runId}`)).json.run.status, 'cancelled');
 });
+
+test('P2-6: a job’s and an agent’s events older than the newest 50,000 journal lines are found', async t => {
+  const first = await setup(t, { hash: '#/' }); // No worker: the job stays queued.
+  const [agent] = await register(first, ['Scout']);
+  const { jobId } = (await call(first, '/api/network/jobs', 'POST', { agentId: agent.id, input: { text: 'Old job' } })).json;
+  await until(async () => (await call(first, `/api/network/events?jobId=${jobId}`)).json.events.length >= 1, 'job event written');
+  const last = (await call(first, '/api/network/events?limit=1')).json.last;
+  await first.app.close();
+  // 50,000 later events of other work, in the journal's own line format.
+  const dir = join(first.dataDir, 'network', 'events'), segment = (await readdir(dir)).sort().at(-1), lines = [];
+  for (let seq = last + 1; seq <= last + 50_000; seq++) lines.push(JSON.stringify({ seq, id: `evt_${seq.toString(16).padStart(20, '0')}`, at: Date.now(), type: 'job.status', jobId: 'job_ffffffffffffffffffff', agentId: 'agt_ffffffffffffffffffff', status: 'queued' }));
+  await appendFile(join(dir, segment), `${lines.join('\n')}\n`);
+
+  const ctx = await setup(t, { dataDir: first.dataDir, hash: `#/network/activity/${jobId}` }); const { $ } = ctx;
+  await until(() => $('#network-activity-job-heading') && $('#network-activity-job-events').children.length > 0, 'the job’s events found');
+  assert.ok(![...$('#network-activity-job-events').parentElement.querySelectorAll('p')].some(node => /No events of this job/.test(node.textContent)));
+  ctx.win.location.hash = `#/network/agents/${agent.id}`;
+  await until(() => text(ctx, '#network-detail-heading') === 'Scout', 'profile');
+  $('#network-profile-tab-activity').click();
+  await until(() => $('#network-agent-activity-feed')?.children.length > 0, 'the agent’s events found');
+});
