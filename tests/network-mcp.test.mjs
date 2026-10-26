@@ -215,6 +215,7 @@ test('Task 12 over MCP: a sub-job of an own job through the policy and the clien
   const thread = await until(async () => { const value = await host.json('messages_list', { jobId: asking.jobId }); return value.total && value; }, 'the question listed');
   assert.deepEqual([thread.unread, thread.nextOffset, thread.messages[0].kind, thread.messages[0].text, 'attemptId' in thread.messages[0]], [1, null, 'needs_input', 'Which region?', false]);
   assert.match(thread.messages[0].to.clientId, /^cli_/);
+  assert.deepEqual(await host.json('messages_mark_read', { jobId: asking.jobId, ids: [`msg_${'0'.repeat(20)}`] }), { marked: 0, unread: 1 }, 'only the listed messages');
   assert.deepEqual(await host.json('messages_mark_read', { jobId: asking.jobId }), { marked: 1, unread: 0 });
   assert.equal((await host.json('jobs_answer', { jobId: asking.jobId, text: 'Europe.' })).job.status, 'queued');
   await until(async () => (await host.json('jobs_get', { jobId: asking.jobId })).job.status === 'completed', 'answered and completed');
