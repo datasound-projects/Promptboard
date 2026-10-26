@@ -11,7 +11,9 @@ const hex = text => createHash('sha256').update(text).digest('hex');
 
 test('a client asks for sub-jobs of its own job through the policy and its scope, reads and posts messages, and answers its job’s question; the owner’s routes answer as documented', async t => {
   const worker = fakeWorker({ text: job => (job.handoff?.context ? 'Final.' : 'Draft.'), json: job => (!job.handoff?.context && job.request.input.text === 'Ask me.' ? { promptboard: { needs_input: { question: 'Which region?' } } } : null) });
-  const ctx = await fixture(t, { worker });
+  // This test polls the listener every few ms (until); under a loaded suite that passes the 60 requests a minute it does not
+  // test, so the ceiling is raised here as in network-mcp.test.mjs (network-machine.test.mjs tests the ceiling itself).
+  const ctx = await fixture(t, { worker, machineOptions: { limits: { requestsPerMinute: 10_000 } } });
   const lead = await ctx.register('lead'), scout = await ctx.register('scout'), gem = await ctx.register('gem');
   const N = id => `n_${hex(id).slice(0, 12)}`;
   const { json: { network } } = await ctx.owner('/api/network/networks', 'POST', { name: 'Team', nodes: [lead, scout, gem].map(agent => ({ id: N(agent.id), type: 'agent', agentId: agent.id, position: { x: 0, y: 0 } })),
