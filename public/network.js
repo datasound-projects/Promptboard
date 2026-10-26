@@ -5,8 +5,9 @@
 // Base stays the only editor of agent definitions: this page reads Base, registers a Base agent by its ID, edits only the
 // Network identity (display name, tags, capabilities, projects, on/off) and opens the real resource in Base. A profile
 // also holds the agent's memory (proposed, then approved by the owner, with history and a preview of exactly what a job
-// would receive) and the owner's reports. Nothing here starts a job, a run or a model call. All text is set as text
-// (PromptboardDom); reports are Markdown drawn by PromptboardMarkdown, which shows HTML as text and loads nothing.
+// would receive) and the owner's reports. Only the Tasks tab starts work: a job the owner confirms, run by the local worker
+// on this computer. All text is set as text (PromptboardDom); reports and job results are Markdown drawn by
+// PromptboardMarkdown, which shows HTML as text and loads nothing.
 window.PromptboardNetwork = (() => {
   const { el, button, plural, ago, clip } = window.PromptboardDom;
   // Agents works now; each other section says what it will do and offers no working-looking controls until then.
@@ -20,7 +21,7 @@ window.PromptboardNetwork = (() => {
   ];
   const PROFILE_TABS = [
     ['profile', 'Profile', ''],
-    ['tasks', 'Tasks', 'The jobs this agent takes will appear here once Network jobs arrive in a later update.'],
+    ['tasks', 'Tasks', ''],
     ['activity', 'Activity', 'This agent’s live status and events will appear here once Network activity arrives in a later update.'],
     ['memory', 'Memory', ''],
     ['posts', 'Posts', ''],
@@ -42,6 +43,11 @@ window.PromptboardNetwork = (() => {
   const CAPABILITIES = [['toolEvents', 'Tool-level activity'], ['waitingEvents', 'Waiting and permission events'], ['readOnly', 'Enforced read-only mode'], ['webSearch', 'Read-only web search'],
     ['sessionId', 'Native session ID'], ['usage', 'Usage reported'], ['dockerSandbox', 'Docker sandbox'], ['liveVerified', 'Checked with the real CLI']];
   const VALUES = { yes: ['Yes', 'ok'], partial: ['Partly', 'warn'], no: ['No', 'off'], unknown: ['Unknown', ''] };
+  // Network job statuses (src/network/jobs.mjs) and what each CLI lets Network see of a running job (architecture §8).
+  const JOB_STATES = { queued: ['Queued', 'warn'], waiting_for_approval: ['Waiting for approval', 'warn'], preparing: ['Preparing', 'warn'], running: ['Running', 'ok'],
+    waiting_for_input: ['Waiting for input', 'warn'], completed: ['Completed', 'ok'], failed: ['Failed', 'error'], cancelled: ['Cancelled', 'off'], interrupted: ['Interrupted', 'warn'], unknown: ['Outcome unknown', 'warn'] };
+  const JOB_OPEN = new Set(['queued', 'waiting_for_approval', 'preparing', 'running', 'waiting_for_input']);
+  const COVERAGE = { tools: 'Tool-level activity reported', 'partial-tools': 'Some tool activity reported (web search)', 'final-only': 'Only the final answer is reported' };
   const AGENT_ID = /^agt_[0-9a-f]{20}$/, NETWORK_ID = /^net_[0-9a-f]{20}$/;
 
   const note = (text, className = 'note') => el('p', className, text);
@@ -273,7 +279,7 @@ window.PromptboardNetwork = (() => {
       const panels = PROFILE_TABS.map(([id, label, soon]) => {
         const panel = el('section', 'network-profile-panel'); panel.id = panelId(id); panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', `network-profile-tab-${id}`);
         if (soon) panel.append(el('h3', '', label), note('Not available yet.', 'note unavailable'), note(soon));
-        else panel.append(...(id === 'memory' ? [memoryView(agent)] : id === 'posts' ? [postsView(agent)] : profileSections(agent)));
+        else panel.append(...(id === 'memory' ? [memoryView(agent)] : id === 'posts' ? [postsView(agent)] : id === 'tasks' ? [tasksView(agent)] : profileSections(agent)));
         return panel;
       });
       function showInner() { inner.select(profileTab); for (const panel of panels) panel.hidden = panel.id !== panelId(profileTab); openTab(); }
@@ -314,7 +320,7 @@ window.PromptboardNetwork = (() => {
       const tools = caps.jobTools === null || caps.jobTools === undefined ? 'Unknown until a provider is set in Base.' : caps.jobTools.length ? caps.jobTools.map(mode => ({ none: 'No tools', web: 'Web search' })[mode] || mode).join(', ') : 'None: this CLI is refused for Network jobs.';
       const reason = blocked(agent);
       sections.push(el('h3', '', 'Allowed operations'), facts([
-        ['New work', reason ? `Refused. ${reason}` : 'Allowed once Network jobs arrive in a later update.'],
+        ['New work', reason ? `Refused. ${reason}` : caps.jobTools?.length ? 'Allowed: run a job from Tasks. It runs on this computer with your signed-in CLI.' : 'Refused: Network jobs cannot run this agent’s CLI.'],
         ['Job tools', tools],
         ['Files', 'Read only. Network jobs never change files.'],
         ['Project data', projects.length ? `Only ${projects.join(', ')}` : 'None'],
@@ -386,6 +392,8 @@ window.PromptboardNetwork = (() => {
     function openTab() {
       if (profileTab === 'memory' && memory.agent) { if (!memory.data && !memory.loading) void loadMemory(); if (memory.previewKey !== memory.key) void loadPreview(); }
       if (profileTab === 'posts' && posts.agentId && !posts.data && !posts.loading) void loadPosts();
+      if (profileTab === 'tasks' && tasks.agent) { if (!tasks.loading) void loadJobs(); if (tasks.previewKey !== jobPreviewKey()) void loadJobPreview(); }
+      else stopPolling();
     }
     async function loadMemory({ append = false } = {}) {
       const version = ++memory.version;
@@ -537,6 +545,277 @@ window.PromptboardNetwork = (() => {
       previewText.textContent = preview?.text || ''; previewText.hidden = !preview?.text;
       previewSize.textContent = !preview ? (memory.previewError ? '' : 'Loading the preview…') : preview.text ? `${preview.chars.toLocaleString('en-US')} characters in all (memory ${preview.memory.chars.toLocaleString('en-US')} of ${preview.memory.limit.toLocaleString('en-US')}).` : 'Nothing would be added to the job’s prompt.';
       previewLessons.disabled = !memory.project; previewLessons.title = memory.project ? '' : 'Choose a project first.';
+    }
+
+    // ---- Tasks: this agent's Network jobs. "Run a job" asks for a confirmation that says what the job may use; the list reads
+    // the job routes again while the tab shows it (polling; the event stream comes with Network Activity).
+    // A job only reads: the local worker gives it an empty folder of its own, never a project or a repository.
+    const tasks = { agent: null, data: null, error: null, loading: false, version: 0, timer: null, requests: new Map(), results: new Map(), open: new Set(),
+      preview: null, previewError: '', previewKey: null, previewVersion: 0, timeoutMinutes: null, focus: null };
+    const tasksRoot = el('section', 'network-tasks'); tasksRoot.setAttribute('aria-label', 'Tasks');
+    const jobForm = el('form', 'network-form network-job-form'); jobForm.id = 'network-job-form'; jobForm.noValidate = true; jobForm.setAttribute('aria-label', 'Run a job');
+    const jobInput = Object.assign(el('textarea'), { rows: 5, maxLength: 262144, placeholder: 'For example: Summarise these release notes in three bullet points…' }); jobInput.id = 'network-job-input';
+    const jobChars = note('', 'note network-chars');
+    const jobTools = select([['none', 'No tools'], ['web', 'Web search (read only)']]); jobTools.id = 'network-job-tools';
+    const jobProject = select([['', 'No project']]); jobProject.id = 'network-job-project';
+    const jobNetwork = select([['', 'No network']]); jobNetwork.id = 'network-job-network';
+    const jobMemory = Object.assign(el('input'), { type: 'checkbox', checked: true }); jobMemory.id = 'network-job-memory';
+    const jobLessons = Object.assign(el('input'), { type: 'checkbox' }); jobLessons.id = 'network-job-lessons';
+    const jobTimeout = Object.assign(el('input'), { type: 'number', min: 1, max: 120, step: 1, value: '20', inputMode: 'numeric' }); jobTimeout.id = 'network-job-timeout';
+    const memoryRow = el('label', 'check-row'); memoryRow.append(jobMemory, 'Give it this agent’s approved memory');
+    const jobLessonsRow = el('label', 'check-row'); jobLessonsRow.append(jobLessons, 'Allow the project’s approved lessons');
+    const jobOptions = el('div', 'network-preview-controls network-job-options');
+    jobOptions.append(labelled('Tools', jobTools), labelled('Time limit (minutes)', jobTimeout), labelled('Project (optional)', jobProject), labelled('Network (optional)', jobNetwork), memoryRow, jobLessonsRow);
+    const jobReasons = el('ul', 'network-reasons'); jobReasons.id = 'network-job-reasons'; jobReasons.setAttribute('aria-label', 'What is included and why');
+    const jobPreviewText = el('pre', 'network-preview-text'); jobPreviewText.id = 'network-job-preview-text'; jobPreviewText.tabIndex = 0; jobPreviewText.setAttribute('aria-label', 'Exact memory text the job would receive');
+    const jobPreview = el('details', 'network-job-preview'); jobPreview.id = 'network-job-preview';
+    jobPreview.append(el('summary', '', 'What it receives besides your text'), jobReasons, jobPreviewText);
+    const jobBlocked = note('', 'network-stale network-job-blocked'); jobBlocked.id = 'network-job-blocked'; jobBlocked.hidden = true;
+    const jobFormError = el('div', 'inline-error'); jobFormError.id = 'network-job-form-error'; jobFormError.setAttribute('role', 'alert'); jobFormError.hidden = true;
+    const jobRun = el('button', 'secondary-button network-primary', 'Run job…'); jobRun.type = 'submit'; jobRun.id = 'network-job-run';
+    const jobFoot = el('div', 'network-job-foot'); jobFoot.append(note('It only reads: an empty folder of its own, never a project, a repository or other files.'), jobRun);
+    jobForm.append(jobBlocked, labelled('What should it do?', jobInput), jobChars, jobOptions, jobPreview, jobFormError, jobFoot);
+    const jobAlert = el('div', 'inline-error network-alert'); jobAlert.id = 'network-job-error'; jobAlert.setAttribute('role', 'alert'); jobAlert.hidden = true;
+    const jobWorker = note('', 'network-stale'); jobWorker.hidden = true;
+    const jobList = el('ul', 'network-records network-jobs'); jobList.id = 'network-job-list'; jobList.setAttribute('aria-label', 'Jobs of this agent');
+    const jobEmpty = el('div', 'network-empty'); jobEmpty.id = 'network-job-empty';
+    const jobMore = button('Show more jobs', () => loadJobs({ more: true }), 'secondary-button network-more'); jobMore.hidden = true;
+    tasksRoot.append(el('h3', '', 'Run a job'), note('Give this agent one piece of work. You confirm before it starts; it runs on this computer with your signed-in CLI.'), jobForm,
+      el('h3', '', 'Jobs'), jobWorker, jobAlert, jobList, jobEmpty, jobMore);
+    const counted = () => { jobChars.textContent = `${jobInput.value.length.toLocaleString('en-US')} characters`; };
+    jobInput.addEventListener('input', counted); counted();
+    let jobPreviewTimer = null;
+    for (const control of [jobProject, jobNetwork, jobMemory, jobLessons]) control.addEventListener('change', () => { renderJobForm(); clearTimeout(jobPreviewTimer); jobPreviewTimer = setTimeout(() => void loadJobPreview(), 150); });
+    jobForm.addEventListener('submit', event => { event.preventDefault(); confirmJob(); });
+
+    /** The Tasks panel of `agent`, one node kept across renders (the typed text, choices and open details survive a reload). */
+    function tasksView(agent) {
+      if (tasks.agent?.id !== agent.id) {
+        stopPolling();
+        Object.assign(tasks, { data: null, error: null, loading: false, requests: new Map(), results: new Map(), open: new Set(), preview: null, previewError: '', previewKey: null, focus: null });
+        tasks.version++; tasks.previewVersion++;
+        jobInput.value = ''; counted(); jobFormError.hidden = true; jobAlert.hidden = true; jobProject.value = ''; jobNetwork.value = ''; jobMemory.checked = true; jobLessons.checked = false; jobTools.value = 'none';
+      }
+      tasks.agent = agent;
+      jobChoices(agent); renderJobForm(); renderJobs();
+      return tasksRoot;
+    }
+    const jobBlockedReason = agent => blocked(agent) || (agent.providerCapabilities?.jobTools?.length ? '' : agent.providerCapabilities?.known ? `Network jobs cannot run ${PROVIDER_NAMES[agent.base.provider] || 'this CLI'}: it cannot be held to read-only work.` : 'No CLI is set for this agent in Base, so it cannot run jobs.');
+    function jobChoices(agent) {
+      const projects = context.projects(), keep = jobProject.value;
+      jobProject.replaceChildren(...select([['', 'No project'], ...projects.map(project => [project.id, agent.projectAllowlist.includes(project.id) ? project.name : `${project.name} (not on its project list)`])]).children);
+      jobProject.value = projects.some(project => project.id === keep) ? keep : '';
+      const fill = list => { const value = jobNetwork.value; jobNetwork.replaceChildren(...select([['', 'No network'], ...list]).children); jobNetwork.value = list.some(([id]) => id === value) ? value : ''; };
+      fill(agent.networks.map(id => [id, id]));
+      if (agent.networks.length) void networkNames(agent.id).then(list => { if (tasks.agent?.id === agent.id) fill(list.map(item => [item.id, item.name])); }, () => {});
+      const web = jobTools.querySelector('option[value="web"]'), webOk = agent.providerCapabilities?.jobTools?.includes('web');
+      web.disabled = !webOk; web.textContent = webOk ? 'Web search (read only)' : `Web search (not available for ${PROVIDER_NAMES[agent.base.provider] || 'this CLI'})`;
+      if (!webOk) jobTools.value = 'none';
+      if (tasks.timeoutMinutes === null) void request('/api/network/settings').then(data => { tasks.timeoutMinutes = Math.round(data.settings.defaultTimeoutMs / 60000); if (!jobTimeout.dataset.touched) jobTimeout.value = String(tasks.timeoutMinutes); }, () => {});
+    }
+    jobTimeout.addEventListener('input', () => { jobTimeout.dataset.touched = 'true'; });
+    /** What the job asks for, from the form: the same question the memory preview answers. */
+    function jobAsk() {
+      const projectId = jobProject.value || null, networkId = jobNetwork.value || null;
+      return { projectId, networkId, memory: !jobMemory.checked ? 'none' : networkId ? 'agent+network' : 'agent', projectLessons: Boolean(projectId) && jobLessons.checked };
+    }
+    const jobPreviewKey = () => tasks.agent && JSON.stringify([tasks.agent.id, tasks.agent.revision, tasks.agent.enabled, tasks.agent.base.stale, jobAsk()]);
+    function renderJobForm() {
+      const agent = tasks.agent, reason = agent ? jobBlockedReason(agent) : '';
+      jobBlocked.hidden = !reason; jobBlocked.textContent = reason ? `No new job can start. ${reason}` : '';
+      for (const control of [jobInput, jobTools, jobProject, jobNetwork, jobMemory, jobLessons, jobTimeout, jobRun]) {
+        control.disabled = Boolean(reason);
+        if (reason) control.setAttribute('aria-describedby', jobBlocked.id); else control.removeAttribute('aria-describedby');
+      }
+      if (!reason) { jobLessons.disabled = !jobProject.value; jobLessons.title = jobProject.value ? '' : 'Choose a project first.'; }
+      if (!jobProject.value) jobLessons.checked = false;
+      const preview = tasks.preview;
+      jobReasons.replaceChildren(...(preview ? reasons(preview) : []).map(([included, text]) => {
+        const item = el('li', included ? 'is-in' : 'is-out'); const mark = el('span', 'network-reason-mark', included ? '✓' : '–'); mark.setAttribute('aria-hidden', 'true');
+        item.append(mark, el('span', 'sr-only', included ? 'Included: ' : 'Not included: '), text); return item;
+      }));
+      if (!preview && tasks.previewError) jobReasons.replaceChildren(Object.assign(el('li', 'inline-error'), { textContent: `Could not build the preview. ${tasks.previewError}` }));
+      else if (!preview) jobReasons.replaceChildren(el('li', 'is-out', 'Loading…'));
+      jobPreviewText.textContent = preview?.text || ''; jobPreviewText.hidden = !preview?.text;
+    }
+    async function loadJobPreview() {
+      if (!tasks.agent) return;
+      const agentId = tasks.agent.id, key = jobPreviewKey(), version = ++tasks.previewVersion, ask = jobAsk();
+      const params = new URLSearchParams({ memory: ask.memory, projectLessons: String(ask.projectLessons) });
+      if (ask.projectId) params.set('projectId', ask.projectId); if (ask.networkId) params.set('networkId', ask.networkId);
+      try { const data = await request(`/api/network/agents/${agentId}/memory/preview?${params}`); if (version === tasks.previewVersion) Object.assign(tasks, { preview: data, previewError: '', previewKey: key }); }
+      catch (failure) { if (version === tasks.previewVersion) Object.assign(tasks, { preview: null, previewError: failure.message, previewKey: key }); }
+      if (version === tasks.previewVersion && tasks.agent?.id === agentId) renderJobForm();
+    }
+    /** The confirmation: everything the job may use, said before it starts. Nothing is sent until "Run job". */
+    function confirmJob() {
+      const agent = tasks.agent, text = jobInput.value.trim(), minutes = Number(jobTimeout.value);
+      jobFormError.hidden = true;
+      const problem = !text ? 'Write what the job should do.' : !Number.isInteger(minutes) || minutes < 1 || minutes > 120 ? 'Choose a time limit from 1 to 120 minutes.' : '';
+      if (problem) { jobFormError.replaceChildren(el('span', '', problem)); jobFormError.hidden = false; (text ? jobTimeout : jobInput).focus(); return; }
+      const ask = jobAsk(), project = context.projects().find(item => item.id === ask.projectId)?.name, network = jobNetwork.selectedOptions[0]?.textContent;
+      const body = { agentId: agent.id, input: { text: jobInput.value }, tools: jobTools.value, permissions: { memory: ask.memory, projectLessons: ask.projectLessons }, limits: { timeoutMs: minutes * 60000 },
+        ...(ask.projectId ? { projectId: ask.projectId } : {}), ...(ask.networkId ? { networkId: ask.networkId } : {}), idempotencyKey: `ui-${crypto.randomUUID()}` }; // Sent twice (a lost answer), it is one job.
+      const summary = facts([
+        ['Agent', nameOf(agent)],
+        ['CLI', [PROVIDER_NAMES[agent.base.provider] || agent.base.provider, agent.base.model || 'CLI default model', agent.base.effort].filter(Boolean).join(' · ')],
+        ['Tools', jobTools.value === 'web' ? 'Web search and reading web pages (read only)' : 'None'],
+        ['Files', 'Read only: an empty folder of its own. No project, repository or other files.'],
+        ['Memory', { none: 'None', agent: 'This agent’s approved memory', 'agent+network': `This agent’s and the network “${network}”’s approved memory` }[ask.memory]],
+        ['Project lessons', ask.projectLessons ? `Approved lessons of ${project}` : 'None'],
+        ['Time limit', plural(minutes, 'minute')],
+        ['Cost', 'Not limited. Usage is shown afterwards only if the CLI reports it.'],
+      ]);
+      const failure = el('div', 'inline-error'); failure.setAttribute('role', 'alert'); failure.hidden = true;
+      const run = button('Run job', async () => {
+        run.disabled = true; failure.hidden = true;
+        try {
+          const data = await request('/api/network/jobs', { method: 'POST', body });
+          closeDialog(); jobInput.value = ''; counted();
+          say(data.status === 'queued' ? 'Job queued. It starts when a job slot is free.' : 'Job accepted.');
+          tasks.focus = data.jobId; await loadJobs();
+        } catch (error) { failure.replaceChildren(el('span', '', error.message)); failure.hidden = false; }
+        finally { run.disabled = false; }
+      }, 'dialog-done'); run.id = 'network-job-confirm';
+      const footer = el('div', 'kanban-dialog-actions'); footer.append(button('Cancel', closeDialog, 'secondary-button'), run);
+      openDialog('Run this job?', [summary, note('Your CLI account’s usage applies. Results come back as text; nothing the agent writes changes a file, a card or Base.'), failure, footer]);
+      run.focus();
+    }
+
+    async function loadJobs({ more = false } = {}) {
+      if (!tasks.agent) return;
+      const agentId = tasks.agent.id, version = ++tasks.version;
+      clearTimeout(tasks.timer); tasks.loading = true; if (!tasks.data) renderJobs();
+      const limit = Math.min(200, Math.max(50, (tasks.data?.jobs.length || 0) + (more ? 50 : 0)));
+      try {
+        const data = await request(`/api/network/jobs?agentId=${agentId}&limit=${limit}`);
+        // Each job's accepted request never changes, so it is read once (for the job's text and choices).
+        await Promise.all(data.jobs.filter(job => !tasks.requests.has(job.id)).map(job => request(`/api/network/jobs/${job.id}`).then(detail => { tasks.requests.set(job.id, detail.request); }, () => {})));
+        await Promise.all(data.jobs.filter(job => job.result && tasks.open.has(job.id) && !tasks.results.has(job.id)).map(job => loadResult(job.id)));
+        if (version === tasks.version) Object.assign(tasks, { data, error: null });
+      } catch (failure) { if (version === tasks.version && !tasks.data) tasks.error = failure; else if (version === tasks.version) jobFailure(failure); }
+      if (version !== tasks.version) return;
+      tasks.loading = false; renderJobs();
+      // Read again while this tab shows it: every 2 seconds while a job is open, every 10 otherwise (jobs from elsewhere).
+      if (visible && profileTab === 'tasks' && route().agentId === agentId) tasks.timer = setTimeout(() => void loadJobs(), tasks.data?.jobs.some(job => JOB_OPEN.has(job.status)) ? 2000 : 10000);
+    }
+    function stopPolling() { clearTimeout(tasks.timer); tasks.timer = null; }
+    async function loadResult(id) {
+      try { tasks.results.set(id, await request(`/api/network/jobs/${id}/result`)); }
+      catch (failure) { tasks.results.set(id, { error: failure.message }); }
+    }
+    function renderJobs() {
+      const data = tasks.data, waiting = !data && !tasks.error, active = document.activeElement, keep = jobList.contains(active) ? active.id : '';
+      jobList.setAttribute('aria-busy', String(tasks.loading || waiting));
+      jobList.replaceChildren(...(data ? data.jobs.map(jobItem) : []));
+      jobWorker.hidden = !data || data.worker; jobWorker.textContent = 'No job worker runs in this app, so new jobs stay queued and nothing runs.';
+      jobEmpty.replaceChildren(); jobEmpty.hidden = Boolean(data?.jobs.length);
+      if (waiting) jobEmpty.append(note('Loading jobs…'));
+      else if (tasks.error) { const failure = el('p', 'inline-error', `Could not load the jobs. ${tasks.error.message}`); failure.setAttribute('role', 'alert'); jobEmpty.append(failure, button('Retry', () => { tasks.error = null; void loadJobs(); }, 'secondary-button')); }
+      else if (!data.jobs.length) jobEmpty.append(el('p', 'network-empty-title', 'No jobs yet.'), note('Jobs you run for this agent appear here with their status and result.'));
+      jobMore.hidden = !data || data.next === null;
+      if (tasks.focus && data && !tasks.loading) { const id = tasks.focus; tasks.focus = null; (document.querySelector(`#network-job-${id} .network-record-actions button`) || document.querySelector(`#network-job-${id} summary`) || jobRun).focus(); }
+      else if (keep) document.getElementById(keep)?.focus();
+    }
+    const firstLine = text => clip(String(text || '').split('\n').find(line => line.trim()) || '', 140);
+    function jobItem(job) {
+      const item = el('li', 'lesson network-record network-job'); item.id = `network-job-${job.id}`; item.dataset.id = job.id; item.dataset.status = job.status;
+      const request = tasks.requests.get(job.id), attempt = job.attempts.find(entry => entry.id === job.currentAttemptId) || job.attempts.at(-1) || null;
+      const [stateText, tone] = JOB_STATES[job.status] || [job.status, ''];
+      const head = el('div', 'lesson-head');
+      head.append(el('small', `base-status tone-${tone}`, stateText), el('span', 'note network-job-when', `${JOB_OPEN.has(job.status) ? 'submitted' : 'ended'} ${ago(JOB_OPEN.has(job.status) ? job.createdAt : job.updatedAt)}`));
+      if (request?.tools === 'web') head.append(el('span', 'lesson-kind', 'Web'));
+      if (job.outcome === 'uncertain') head.append(el('span', 'lesson-badge', 'May have run'));
+      const title = el('p', 'lesson-text network-job-title', request ? firstLine(request.input.text) : 'Job'); title.id = `network-job-${job.id}-title`;
+      item.append(head, title);
+      const lines = [];
+      if (job.waiting) lines.push(job.waiting.message + (job.waiting.position ? ` Position ${job.waiting.position}.` : ''));
+      if (job.live) lines.push(`Process: ${job.live.process}.${job.lastActivity ? ` Last: ${job.lastActivity.label}` : ''}`);
+      if (job.live && tasks.agent?.base.stale) lines.push('Its Base agent was revoked after the job started. It goes on with what was accepted; cancel it to stop it.');
+      if (attempt?.coverage || job.live?.coverage) lines.push(COVERAGE[attempt?.coverage || job.live.coverage]);
+      if (attempt?.usage?.reported) lines.push(`Reported by the CLI: ${[['inputTokens', 'input'], ['outputTokens', 'output'], ['cachedTokens', 'cached']].filter(([key]) => attempt.usage[key] !== undefined).map(([key, label]) => `${attempt.usage[key].toLocaleString('en-US')} ${label} tokens`).concat(attempt.usage.costUsd !== undefined ? [`$${attempt.usage.costUsd.toFixed(4)}`] : []).join(' · ')}.`);
+      else if (attempt && !JOB_OPEN.has(job.status) && attempt.launchingAt) lines.push('Usage: not reported by the CLI.');
+      for (const line of lines) item.append(note(line, 'note network-job-line'));
+      if (job.reason && !['completed'].includes(job.status) || (job.status === 'completed' && job.reason)) {
+        const why = note(`${job.reason}${job.errorCode ? ` (${job.errorCode})` : ''}`, `note network-job-reason${['failed', 'unknown', 'interrupted'].includes(job.status) ? ' is-problem' : ''}`); why.id = `network-job-${job.id}-reason`; item.append(why);
+      }
+      const actions = el('div', 'network-record-actions');
+      const act = (label, run, name) => {
+        const node = button(label, async () => { node.disabled = true; try { await run(); } finally { node.disabled = false; } }, 'text-button');
+        node.id = `network-job-${job.id}-${name}`; node.setAttribute('aria-describedby', title.id); actions.append(node);
+      };
+      if (job.status === 'waiting_for_approval') { act('Approve', () => jobAction(job, 'approve', { expectedRevision: job.revision, decision: 'approve' }, 'Approved. It starts when a job slot is free.'), 'approve'); act('Reject', () => jobAction(job, 'approve', { expectedRevision: job.revision, decision: 'reject' }, 'Rejected. Nothing ran.'), 'reject'); }
+      if (JOB_OPEN.has(job.status)) act('Cancel', () => jobAction(job, 'cancel', {}, job.status === 'queued' ? 'Cancelled. Nothing ran.' : 'Cancelled. Its process was stopped.'), 'cancel');
+      if (['interrupted', 'unknown'].includes(job.status)) { act('Retry…', () => retryJob(job), 'retry'); act('Close…', () => closeJob(job), 'close'); }
+      if (actions.childElementCount) item.append(actions);
+      const more = el('details', 'network-history network-job-details'); more.open = tasks.open.has(job.id);
+      more.addEventListener('toggle', () => {
+        if (!more.open) { tasks.open.delete(job.id); return; }
+        tasks.open.add(job.id);
+        if (job.result && !tasks.results.has(job.id)) void loadResult(job.id).then(() => { if (more.isConnected) more.replaceChildren(...jobDetails(job)); });
+      });
+      more.append(...jobDetails(job));
+      item.append(more);
+      return item;
+    }
+    function jobDetails(job) {
+      const request = tasks.requests.get(job.id), nodes = [el('summary', '', job.result ? 'Result and details' : 'Details')];
+      if (job.result) {
+        const result = tasks.results.get(job.id), body = el('div', 'md-view network-job-result'); body.id = `network-job-${job.id}-result`;
+        if (!result) body.append(note('Loading the result…'));
+        else if (result.error) body.append(el('p', 'inline-error', `Could not read the result. ${result.error}`));
+        else { body.append(window.PromptboardMarkdown.render(result.text)); if (result.json) body.append(el('p', 'note network-sources-label', 'Structured data (json)'), Object.assign(el('pre', 'network-preview-text'), { textContent: JSON.stringify(result.json, null, 2) })); }
+        nodes.push(body);
+      }
+      const attempt = job.attempts.at(-1);
+      if (attempt?.lateResult) nodes.push(note('A result arrived after the job had ended. It was kept in the data folder and not used.'));
+      if (request) {
+        nodes.push(el('p', 'note network-sources-label', 'What it was given'), Object.assign(el('pre', 'network-preview-text network-job-input'), { textContent: request.input.text }));
+        if (request.instructions) nodes.push(el('p', 'note network-sources-label', 'Instructions'), Object.assign(el('pre', 'network-preview-text'), { textContent: request.instructions }));
+      }
+      nodes.push(facts([
+        ['Job ID', el('code', '', job.id)],
+        ['Attempts', String(job.attempts.length)],
+        ...(attempt ? [['CLI', [PROVIDER_NAMES[attempt.provider] || attempt.provider, attempt.model].filter(Boolean).join(' · ')], ['Exit code', attempt.exitCode === null ? 'None' : String(attempt.exitCode)],
+          ['Session', attempt.nativeSessionId ? el('code', '', attempt.nativeSessionId) : 'Not reported']] : []),
+        ...(request ? [['Memory', { none: 'None', agent: 'Agent', 'agent+network': 'Agent and network' }[request.permissions.memory]], ['Time limit', plural(Math.round(request.limits.timeoutMs / 60000) || 1, 'minute')]] : []),
+      ]));
+      return nodes;
+    }
+    function jobFailure(failure) {
+      jobAlert.replaceChildren(el('span', '', failure.message));
+      if (['REVISION_CONFLICT', 'JOB_STATE', 'JOB_FINISHED', 'NOT_FOUND'].includes(failure.code)) jobAlert.append(button('Reload', async () => { jobAlert.hidden = true; await loadJobs(); say('Reloaded the jobs.'); }, 'secondary-button network-reload'));
+      jobAlert.hidden = false;
+    }
+    async function jobAction(job, action, body, done) {
+      jobAlert.hidden = true;
+      try { await request(`/api/network/jobs/${job.id}/${action}`, { method: 'POST', body }); say(done); tasks.focus = job.id; await loadJobs(); }
+      catch (failure) { jobFailure(failure); }
+    }
+    /** Ask, then act in the dialog; a refusal stays in the dialog. */
+    function askJob(title, nodes, label, action) {
+      const failure = el('div', 'inline-error'); failure.setAttribute('role', 'alert'); failure.hidden = true;
+      const confirm = button(label, async () => {
+        confirm.disabled = true; failure.hidden = true;
+        try { await action(); closeDialog(); }
+        catch (error) { failure.replaceChildren(el('span', '', error.message)); failure.hidden = false; }
+        finally { confirm.disabled = false; }
+      }, 'dialog-done'); confirm.id = 'network-job-dialog-confirm';
+      const footer = el('div', 'kanban-dialog-actions'); footer.append(button('Cancel', closeDialog, 'secondary-button'), confirm);
+      openDialog(title, [...nodes, failure, footer]);
+      return confirm;
+    }
+    function retryJob(job) {
+      const last = job.attempts.at(-1), uncertain = job.outcome === 'uncertain' || (last && last.sideEffects !== 'none');
+      const check = Object.assign(el('input'), { type: 'checkbox' }); check.id = 'network-job-uncertain';
+      const row = el('label', 'check-row'); row.append(check, 'It may have done its work already. Run it again anyway.');
+      const confirm = askJob('Run this job again?', [note(uncertain ? 'The last attempt may have finished its work, or read the web, before it stopped. Running it again does that again: effects outside Promptboard are not guaranteed to happen only once.' : 'Nothing ran last time. It runs again as a new attempt with the same accepted request.'), ...(uncertain ? [row] : [])],
+        'Run again', async () => { await request(`/api/network/jobs/${job.id}/retry`, { method: 'POST', body: { expectedRevision: job.revision, confirm: true, ...(uncertain ? { confirmUncertain: check.checked } : {}) } }); say('Queued again as a new attempt.'); tasks.focus = job.id; await loadJobs(); });
+      if (uncertain) { confirm.disabled = true; check.addEventListener('change', () => { confirm.disabled = !check.checked; }); check.focus(); } else confirm.focus();
+    }
+    function closeJob(job) {
+      askJob('Close this job?', [note('It is marked failed and is not run again. Its outcome stays as it is: whether it did its work is not known.')], 'Close job',
+        async () => { await request(`/api/network/jobs/${job.id}/close`, { method: 'POST', body: { expectedRevision: job.revision } }); say('Closed. It will not run again.'); tasks.focus = job.id; await loadJobs(); }).focus();
     }
 
     // ---- Posts: reports you write on the agent's profile. They are your notes, never events from a run.
@@ -763,13 +1042,13 @@ window.PromptboardNetwork = (() => {
     // ---- Page entry
     async function show() {
       const entering = !visible; visible = true;
-      if (entering) { memory.id = null; posts.agentId = null; } // Read again on every visit, as the directory is.
+      if (entering) { memory.id = null; posts.agentId = null; tasks.agent = null; tasks.timeoutMinutes = null; } // Read again on every visit, as the directory is.
       render();
       if (entering) { say(''); showError(''); await load(); }
     }
     function leave() {
       if (graphs && !graphs.guard(null)) return; // Unsaved graph changes: "keep editing" brings the editor's address back.
-      visible = false; graphs?.show(null);
+      visible = false; graphs?.show(null); stopPolling();
       if (dialog.open) { opener = null; closeDialog(); } // A dialog never stays over another page.
     }
     return { show, leave, refresh: load };

@@ -20,11 +20,11 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { access, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { primaryAgent } from '../base-resolver.mjs';
+import { primaryAgent, resolveBase } from '../base-resolver.mjs';
 import { serial } from '../durable.mjs';
 import { escapeId } from '../origin.mjs';
 import { MEMORY_MODES } from './memory.mjs';
-import { cleanText, conflict, fail, LINE_BREAK, newId, NetworkError, object, only, page, readDocument, requireRevision, sha256, writeDocument, writeImmutable } from './storage.mjs';
+import { cleanText, conflict, fail, LINE_BREAK, newId, NetworkError, object, oneLine, only, page, readDocument, requireRevision, sha256, writeDocument, writeImmutable } from './storage.mjs';
 
 const SCHEMA = { job: 'promptboard.network-job', request: 'promptboard.network-job-request', settings: 'promptboard.network-settings' };
 const KIB = 1024, MINUTE = 60_000, DAY = 86_400_000;
@@ -47,6 +47,15 @@ const EXTERNAL_ID = /^[A-Za-z0-9_-]{1,100}$/, CODE = /^[A-Z][A-Z0-9_]{1,59}$/, K
 const OWNER = Object.freeze({ kind: 'owner', id: null });
 const SOURCE = { owner: 'owner', machine: 'machine', pipeline: 'pipeline', job: 'delegation', schedule: 'schedule', a2a: 'a2a' };
 const NO_WORKER = 'No job worker is available in this version of Promptboard, so this job stays queued and nothing runs.';
+const ACTIVITY = ['turn', 'tool', 'web', 'mcp', 'text', 'status'], COUNTS = ['inputTokens', 'outputTokens', 'cachedTokens'];
+
+/**
+ * The Base resolution manifest of a job (architecture §7.2 step 2, R2): the registration's own layer only, resolved as a
+ * strict read-only stage, so Base MCP servers, command recipes and native subagents are not delivered (a required one is
+ * an error, an optional one is listed as omitted). `base` is Base's list(): { revision, resources, approvedRoots }.
+ */
+export const jobManifest = (base, { registrationId, baseResourceId, provider }) =>
+  resolveBase({ state: { base }, columnId: 'planning', provider, layers: [[`network:agent:${registrationId}`, null, baseResourceId]] });
 
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const nullable = check => value => value === null || check(value);
@@ -114,18 +123,25 @@ function submission(input) {
 
 /** What a worker reports at the end of an attempt. A malformed report is refused (400) and changes nothing. */
 function report(input) {
-  only(input, ['status', 'errorCode', 'reason', 'exitCode', 'result', 'sideEffects', 'coverage'], 'a worker report');
-  const { status, errorCode = null, reason = '', exitCode = null, result, sideEffects, coverage } = input;
+  only(input, ['status', 'errorCode', 'reason', 'exitCode', 'result', 'sideEffects', 'coverage', 'usage', 'nativeSessionId'], 'a worker report');
+  const { status, errorCode = null, reason = '', exitCode = null, result, sideEffects, coverage, usage, nativeSessionId = null } = input;
   if (!['completed', 'failed', 'unknown', 'waiting_for_input'].includes(status)) fail('A worker reports completed, failed, unknown or waiting_for_input.');
   if (errorCode !== null && (typeof errorCode !== 'string' || !CODE.test(errorCode))) fail('An error code is upper-case letters, digits and _.');
   if (typeof reason !== 'string' || (exitCode !== null && !Number.isSafeInteger(exitCode))) fail('Send the reason as text and the exit code as a whole number.');
   if (sideEffects !== undefined && !['none', 'read_only_web', 'external_unknown'].includes(sideEffects)) fail('sideEffects is none, read_only_web or external_unknown.');
   if (coverage !== undefined && !['tools', 'partial-tools', 'final-only'].includes(coverage)) fail('coverage is tools, partial-tools or final-only.');
+  // Usage holds only numbers the CLI reported (architecture §17 item 3); the native session ID is one line for reference.
+  if (usage !== undefined) {
+    only(usage, ['reported', ...COUNTS, 'costUsd'], 'usage');
+    if (typeof usage.reported !== 'boolean' || (!usage.reported && Object.keys(usage).length > 1) || COUNTS.some(key => usage[key] !== undefined && !(Number.isSafeInteger(usage[key]) && usage[key] >= 0))
+      || (usage.costUsd !== undefined && !(Number.isFinite(usage.costUsd) && usage.costUsd >= 0))) fail('Usage is { reported } with the counts and cost the CLI reported.');
+  }
+  if (nativeSessionId !== null && (typeof nativeSessionId !== 'string' || !KEY.test(nativeSessionId) || LINE_BREAK.test(nativeSessionId))) fail('A native session ID is one line of at most 200 characters.');
   if (result !== undefined) {
     only(result, ['text', 'json'], 'a job result');
     if (typeof result.text !== 'string' || (result.json !== undefined && !object(result.json) && !Array.isArray(result.json))) fail('A result is text with an optional json object.');
   }
-  return { status, errorCode, reason: clip(reason), exitCode, result, ...(sideEffects ? { sideEffects } : {}), ...(coverage ? { coverage } : {}) };
+  return { status, errorCode, reason: clip(reason), exitCode, result, ...(sideEffects ? { sideEffects } : {}), ...(coverage ? { coverage } : {}), ...(usage ? { usage } : {}), ...(nativeSessionId ? { nativeSessionId } : {}) };
 }
 
 export class NetworkJobs {
@@ -256,9 +272,9 @@ export class NetworkJobs {
   /** What the owner sees: no schema fields, no lease; whether this process runs it now; what a queued job waits for. */
   #view(job, positions = null) {
     const { schema, version, ...fields } = job, live = job.currentAttemptId ? this.#live.get(job.currentAttemptId) : null;
-    let process = null;
-    if (live) { try { process = this.worker?.getStatus(live.own)?.process ?? 'unknown'; } catch { process = 'unknown'; } }
-    return { ...fields, live: live ? { process } : null, waiting: this.#waiting(job, positions) };
+    let status = null;
+    if (live) { try { status = this.worker?.getStatus(live.own) ?? null; } catch {} }
+    return { ...fields, live: live ? { process: status?.process ?? 'unknown', ...(status?.coverage ? { coverage: status.coverage } : {}) } : null, lastActivity: live?.lastActivity ?? null, waiting: this.#waiting(job, positions) };
   }
   #waiting(job, positions) {
     if (job.status === 'waiting_for_approval') return { for: 'approval', message: 'Waiting for your approval. Nothing runs until you approve it.' };
@@ -286,13 +302,18 @@ export class NetworkJobs {
     }
     if (spec.networkId) await this.registry.network(spec.networkId).catch(error => { if (error.code === 'NOT_FOUND') fail('Choose a saved network. Nothing was submitted.', 'NETWORK_NOT_FOUND', 409); throw error; });
     if (spec.parentJobId && !this.#jobs.has(spec.parentJobId)) fail('The parent job does not exist. Nothing was submitted.', 'JOB_NOT_FOUND', 409);
-    const resources = new Map((await this.registry.base.list()).resources.map(resource => [resource.id, resource]));
+    const listed = await this.registry.base.list(), resources = new Map(listed.resources.map(resource => [resource.id, resource]));
     const resource = resources.get(view.baseResourceId), primary = resource?.kind === 'agentProfile' ? primaryAgent(resources, resource) : null;
     if (resource?.revision !== view.base.revision) fail('The Base agent changed while the job was submitted. Try again.', 'BASE_CHANGED', 409);
-    // The Base resolution manifest (resolveBase with the registration's own layer) is built by the worker runtime (Task 07)
-    // from exactly these revision references; `manifest` stays null until then.
+    // Pinned now with the revision references of everything it delivers; the worker supplies exactly these revisions.
+    const manifest = jobManifest(listed, { registrationId: view.id, baseResourceId: view.baseResourceId, provider: view.base.provider });
+    if (manifest.errors.length) {
+      const names = [...new Set(manifest.errors.map(error => oneLine(manifest.resources.find(entry => entry.resourceId === error.resourceId)?.name || error.resourceId).slice(0, 80)))];
+      fail(`This agent needs Base resources a Network job cannot be given: ${names.map(name => `“${name}”`).join(', ')}. Network jobs only read: Base MCP servers, command recipes and supporting agents are not supplied. Make them optional for this agent in Base, or run the work on a Kanban card. Nothing was submitted.`,
+        'BASE_REQUIRED_UNAVAILABLE', 409, { errors: manifest.errors.map(({ resourceId = null, code }) => ({ resourceId, code })) });
+    }
     return { registrationId: view.id, registrationRevision: view.revision, baseResourceId: view.baseResourceId, baseKind: resource.kind, baseRevisionRef: resource.revisionRef ?? null,
-      primaryAgent: primary ? { resourceId: primary.id, revisionRef: primary.revisionRef ?? null } : null, provider: view.base.provider, model: view.base.model, effort: view.base.effort, manifest: null };
+      primaryAgent: primary ? { resourceId: primary.id, revisionRef: primary.revisionRef ?? null } : null, provider: view.base.provider, model: view.base.model, effort: view.base.effort, manifest };
   }
 
   /**
@@ -338,6 +359,18 @@ export class NetworkJobs {
     const result = page(items, offset, limit, 'jobs'), positions = this.#positions();
     return { ...result, jobs: result.jobs.map(job => this.#view(job, positions)), worker: Boolean(this.worker), unavailable: [...this.#unavailable].map(([id, { code }]) => ({ id, code })) };
   }
+  /** A completed job's result: its text (and json), read back only when the bytes still hash to what job.json recorded. */
+  async result(id) {
+    await this.#ready();
+    const job = this.#job(id);
+    if (!job.result) fail('This job has no result.', 'NOT_FOUND', 404);
+    const read = ref => readFile(join(this.#folder(id), ...ref.split('/')), 'utf8').catch(() => fail('The result of this job cannot be read from the data folder.', 'NETWORK_CONTENT_UNAVAILABLE', 409));
+    const text = await read(job.result.textRef);
+    if (sha256(text) !== job.result.sha256) fail('The result of this job failed its integrity check. It was left unchanged.', 'NETWORK_CONTENT_INVALID', 409);
+    let json = null;
+    if (job.result.jsonRef) try { json = JSON.parse(await read(job.result.jsonRef)); } catch (error) { if (error instanceof NetworkError) throw error; }
+    return { jobId: id, attemptId: job.currentAttemptId, text, json, chars: job.result.chars };
+  }
   /** One job with its accepted request (null with `requestError` when that file fails its check) and its child jobs. */
   async read(id) {
     await this.#ready();
@@ -375,8 +408,8 @@ export class NetworkJobs {
         coverage: null, sideEffects: request.tools === 'web' ? 'read_only_web' : 'none', usage: { reported: false }, lateResult: null };
       await this.#save(this.#move({ ...job, attempts: [...job.attempts, attempt] }, 'preparing', { currentAttemptId: attempt.id, outcome: null, errorCode: null, reason: '' }, 'app'));
       const controller = new AbortController(), own = { jobId, attemptId: attempt.id, lease: randomBytes(32).toString('base64url'), signal: controller.signal };
-      Object.assign(own, { launching: () => this.launching(own), spawned: details => this.spawned(own, details), finish: outcome => this.finish(own, outcome) });
-      const live = { jobId, lease: own.lease, own, controller, request, timer: null, stopping: null, endedByEngine: false };
+      Object.assign(own, { launching: () => this.launching(own), spawned: details => this.spawned(own, details), activity: item => this.activity(own, item), finish: outcome => this.finish(own, outcome) });
+      const live = { jobId, lease: own.lease, own, controller, request, timer: null, stopping: null, endedByEngine: false, lastActivity: null };
       live.timer = later(() => this.#stop(live, 'failed', { errorCode: 'PREPARE_TIMEOUT', reason: `The job did not start within ${Math.round(this.prepareTimeoutMs / 1000)} seconds.` }).catch(() => {}), this.prepareTimeoutMs);
       this.#live.set(attempt.id, live);
       return own;
@@ -415,6 +448,22 @@ export class NetworkJobs {
     }
   }
   /**
+   * What an attempt this process owns is doing now (architecture §17 item 3): `{ kind, label }`, the label one line of at most
+   * 160 characters, cleaned like owner text. Kept in memory only, as the job view's `lastActivity` (job.json is not written),
+   * and passed to the event journal when there is one.
+   */
+  activity(own, item) {
+    const { live, job } = this.#owned(own);
+    only(item, ['kind', 'label'], 'an activity');
+    if (!ACTIVITY.includes(item.kind) || typeof item.label !== 'string') fail(`Activity is { kind: ${ACTIVITY.join(' | ')}, label }.`);
+    const label = oneLine(item.label).slice(0, 160);
+    live.lastActivity = { at: this.now(), kind: item.kind, label };
+    let coverage; try { coverage = this.worker?.getStatus(own)?.coverage; } catch {}
+    const event = { type: 'job.activity', jobId: job.id, attemptId: own.attemptId, agentId: job.agentId, projectId: job.projectId, networkId: job.networkId, status: job.status, ...(coverage ? { coverage } : {}), message: label };
+    Promise.resolve().then(() => this.events?.append(event)).catch(() => {}); // The journal never holds the attempt up.
+    return { applied: true };
+  }
+  /**
    * The worker's end of an attempt. Applied only while `own` holds the current attempt: then `completed` needs a running
    * attempt and result text (written to result.md first), `unknown` needs a launched one, and anything less becomes
    * unknown (it may have run) or failed (it did not). A report after the engine ended the attempt (cancel, timeout,
@@ -445,7 +494,8 @@ export class NetworkJobs {
         if (json) await writeImmutable(this.#attemptFile(own, 'result.json'), json, 'The job result');
         result = { textRef: `${folder}/result.md`, ...(json ? { jsonRef: `${folder}/result.json` } : {}), chars: end.result.text.length, sha256: sha256(end.result.text) };
       }
-      const changes = { exitCode: end.exitCode, ...(end.sideEffects ? { sideEffects: end.sideEffects } : {}), ...(end.coverage ? { coverage: end.coverage } : {}) };
+      const changes = { exitCode: end.exitCode, ...(end.sideEffects ? { sideEffects: end.sideEffects } : {}), ...(end.coverage ? { coverage: end.coverage } : {}), ...(end.usage ? { usage: end.usage } : {}),
+        ...(end.nativeSessionId ? { nativeSessionId: end.nativeSessionId } : {}) };
       const saved = await this.#save(this.#end(job, status, { errorCode, reason, attempt: changes, result }, 'worker'));
       clearTimeout(live.timer);
       return { applied: true, job: this.#view(saved) };

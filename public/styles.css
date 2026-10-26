@@ -2945,6 +2945,22 @@ button.origin-context-badge { cursor: pointer; }
 .network-quote { white-space: pre-wrap; overflow-wrap: anywhere; }
 .network-danger { border-color: var(--error); color: var(--error); }
 @media (max-width: 730px) { .network-memory-tools, .network-preview-controls { grid-template-columns: minmax(0, 1fr); } .network-memory-tools > button { justify-self: start; } }
+/* Network → an agent → Tasks: the "Run a job" form, then the agent's jobs with their status, coverage and result. */
+.network-job-form { padding: 12px 14px; border: 1px solid var(--divider); border-radius: 10px; background: var(--surface-2); }
+.network-job-form .field-label textarea { min-height: 0; resize: vertical; }
+.network-job-form .network-job-options { margin: 0; }
+.network-job-preview summary, .network-job-details summary { width: max-content; max-width: 100%; color: var(--muted); font-size: 12.5px; cursor: pointer; }
+.network-job-preview[open] summary { margin-bottom: 8px; }
+.network-job-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.network-job-foot .note { flex: 1 1 240px; font-size: 12.5px; }
+.network-job-title { font-weight: 600; }
+.network-tasks .network-job-line, .network-tasks .network-job-reason { margin: 0; font-size: 12.5px; overflow-wrap: anywhere; }
+.network-tasks .network-job-reason.is-problem { color: var(--text); }
+.network-job-details > :not(summary) { margin-top: 8px; }
+.network-job-result { font-size: 13.5px; overflow-wrap: anywhere; }
+.network-job-result > :first-child { margin-top: 0; }
+.network-job-input { max-height: 200px; }
+@media (pointer: coarse) { .network-job-preview summary, .network-job-details summary { padding: 10px 0; } }
 /* Network Library and Graph (network-graph.js). Cytoscape's own rule lives here because the CSP refuses the <style> it
    would insert; index.html holds the placeholder element that tells it so. */
 .__________cytoscape_container { position: relative; }

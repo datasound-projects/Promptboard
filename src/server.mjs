@@ -49,6 +49,7 @@ import { Lessons, LessonsError, lessonsRoute } from './lessons.mjs';
 import { Sandbox, sandboxRoute } from './sandbox.mjs';
 import { NetworkRegistry } from './network/registry.mjs';
 import { NetworkJobs } from './network/jobs.mjs';
+import { LocalJobWorker } from './network/worker-local.mjs';
 import { networkRoute } from './network/http.mjs';
 import { NetworkError } from './network/storage.mjs';
 
@@ -363,7 +364,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker = null } = {}) {
+export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   // One app per data folder; the board itself loads lazily, so starting never reads or writes board files.
   const lock = await lockDataDir(dataDir);
@@ -458,8 +459,9 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const coordinator = new Coordinator({ dataDir, board, origin });
   // Network registrations and networks live in <dataDir>/network/ (created on the first save); Base is only read.
   const network = new NetworkRegistry({ dataDir, base: board.base, projects: async () => (await board.state()).projects.map(project => project.id) });
-  // Network jobs run only through an injected worker (none yet: they stay queued); their own pool, never the CLI slot above.
-  const networkJobs = new NetworkJobs({ dataDir, registry: network, worker: networkWorker, authBusy: () => busy?.kind === 'auth' });
+  // Network jobs run through the local headless worker (tests inject a fake, or null to keep jobs queued); their own pool,
+  // never the CLI slot above.
+  const networkJobs = new NetworkJobs({ dataDir, registry: network, worker: networkWorker === undefined ? new LocalJobWorker({ dataDir, registry: network }) : networkWorker, authBusy: () => busy?.kind === 'auth' });
   // Project memory: a merged card queues one lessons job (Board.completeTask); the worker starts once the app listens.
   const lessons = new Lessons({ dataDir, board, claim, runner: call => track(runner(call)) });
   board.lessons = lessons;
