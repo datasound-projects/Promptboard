@@ -2909,6 +2909,9 @@ button.origin-context-badge { cursor: pointer; }
   .network-detail { padding: 16px; }
   .network-back { justify-self: start; }
 }
+/* Beside the docked sidebar the content is too narrow for list and profile side by side (the profile column fell to about 70 px
+   and pushed the page sideways): one after the other, as on a phone, but both shown. */
+@media (min-width: 731px) and (max-width: 900px) { .network-layout { grid-template-columns: minmax(0, 1fr); } .network-list-panel { position: static; max-height: none; } }
 @media (max-width: 480px) { .network-facts { grid-template-columns: minmax(0, 1fr); gap: 0; } .network-facts dd { margin-bottom: 8px; } }
 /* Network memory and posts (agent profile tabs) */
 .network-memory > h3:first-child, .network-posts-panel > h3:first-child { margin-top: 4px; }
