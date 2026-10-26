@@ -139,6 +139,49 @@ window.PromptboardNetworkPipeline = (() => {
     next();
     return () => { stopped = true; clearTimeout(timer); };
   }
+  /**
+   * host.followRun on Task 08's event stream (`stream(path, init)`: the app's token fetch, as Activity reads it). `changed()`
+   * runs when the stream is live, on each pipeline.run, pipeline.node or job.status event of the run, and every second while
+   * the stream is not live (connecting, refused, dropped) as pollRun would, until it answers false or the view stops it.
+   * Calls never overlap: one asked for meanwhile runs once after. The stream reconnects after 2 s (15 s when refused).
+   */
+  const streamRun = stream => (runId, changed) => {
+    const controller = new AbortController(), { signal } = controller;
+    let live = false, busy = false, again = false, timer = null;
+    const stop = () => { controller.abort(); clearTimeout(timer); };
+    const call = async () => {
+      if (busy) { again = true; return; }
+      busy = true;
+      do { again = false; let more = true; try { more = await changed(); } catch {} if (more === false) stop(); } while (again && !signal.aborted);
+      busy = false;
+    };
+    const poll = () => { timer = setTimeout(() => { if (signal.aborted) return; if (!live) void call(); poll(); }, POLL_MS); };
+    poll();
+    void (async () => {
+      while (!signal.aborted) {
+        let wait = 2000;
+        try {
+          const response = await stream('/api/network/events/stream', { cache: 'no-store', signal });
+          if (!response.ok || !response.body) { wait = 15000; void response.body?.cancel().catch(() => {}); }
+          else {
+            const reader = response.body.getReader(), decoder = new TextDecoder();
+            let buffer = '';
+            for (let part; !(part = await reader.read()).done;) {
+              buffer += decoder.decode(part.value, { stream: true });
+              for (let end; (end = buffer.indexOf('\n')) >= 0; buffer = buffer.slice(end + 1)) {
+                let item; try { item = JSON.parse(buffer.slice(0, end)); } catch { continue; }
+                if (item.live) { live = true; void call(); } // Once, for what changed before the stream was live.
+                else if (item.pipelineRunId === runId && ['pipeline.run', 'pipeline.node', 'job.status'].includes(item.type)) void call();
+              }
+            }
+          }
+        } catch {} // Aborted, refused or dropped: poll meanwhile, then reconnect.
+        live = false;
+        if (!signal.aborted) await new Promise(resolve => { const id = setTimeout(resolve, wait); signal.addEventListener('abort', () => { clearTimeout(id); resolve(); }, { once: true }); });
+      }
+    })();
+    return stop;
+  };
 
   function create(host) {
     const { request, say, go } = host;
@@ -1591,5 +1634,5 @@ window.PromptboardNetworkPipeline = (() => {
     }
     return { panel, show, guard, isDirty: () => Boolean(ed?.dirty) };
   }
-  return { create, helpers: { topo, layered, reaching, ruleOf, ruleDraft, diffOf, marksOf } };
+  return { create, streamRun, helpers: { topo, layered, reaching, ruleOf, ruleDraft, diffOf, marksOf } };
 })();

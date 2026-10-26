@@ -198,3 +198,52 @@ test('P2-10: the Create client form offers every registered agent, past the firs
   assert.equal(offered.length, COUNT);
   assert.ok(offered.some(box => box.closest('label')?.textContent.includes('Agent 204')), 'the last one too');
 });
+
+test('Task 10 seams: “Open job” opens the Activity job record; a run view follows the event stream without polling while it is live, and polls while it is not', async t => {
+  const ctx = await setup(t, { hash: '#/', networkWorker: fakeWorker() }); const { $, win } = ctx;
+  const seeded = await seed(ctx), pipeline = await approvalPipeline(ctx, seeded);
+  const runPath = runId => `/api/network/pipeline-runs/${runId}`;
+  const reads = (log, runId) => log.filter(([method, url]) => method === 'GET' && url.endsWith(runPath(runId))).length;
+  const streams = () => Object.values(ctx.app.networkEvents.streams()).reduce((sum, count) => sum + count, 0);
+
+  // Live: the view opens its stream; while the run waits for approval nothing is polled.
+  const first = (await call(ctx, `/api/network/pipelines/${pipeline.id}/runs`, 'POST', { version: 1, confirm: true })).json.runId;
+  await until(async () => (await call(ctx, runPath(first))).json.run.status === 'waiting_for_approval', 'run waits', 15000);
+  const log = requestLog(ctx);
+  win.location.hash = `#/network/runs/${first}`;
+  await until(() => text(ctx, '#network-run-status') === 'Waiting for your approval', 'run view');
+  await until(() => streams() === 1, 'the run view’s stream is open');
+  await sleep(300); const before = reads(log, first);
+  await sleep(2500);
+  assert.equal(reads(log, first), before, 'no polling while the stream is live');
+  // An approval made elsewhere reaches the view through the stream.
+  const approval = `n_${pad(2)}`;
+  assert.equal((await call(ctx, `${runPath(first)}/nodes/${approval}/approve`, 'POST', { decision: 'approve' })).status, 200);
+  await until(() => text(ctx, '#network-run-status') === 'Completed', 'completed, live', 10000);
+  assert.ok(reads(log, first) > before, 'read again on its events');
+  await until(() => streams() === 0, 'the stream closes once the run ended');
+
+  // Open job: the step's job record in Activity.
+  runRow(ctx, 'Research').click();
+  await until(() => $('#network-run-open-job'), 'step details');
+  const jobId = (await call(ctx, `/api/network/jobs?pipelineRunId=${first}`)).json.jobs[0].id;
+  $('#network-run-open-job').click();
+  await until(() => win.location.hash === `#/network/activity/${jobId}` && $('#network-activity-job-heading'), 'the Activity job record');
+  assert.ok($('#network-activity-run-events'), 'it names its run');
+  assert.equal($('#network-job-json'), null, 'no JSON dialog');
+
+  // Not live (the stream is refused): the view polls once a second and still follows the run.
+  const original = win.fetch;
+  win.fetch = (url, options) => (String(url).startsWith('/api/network/events/stream') ? Promise.resolve(new Response('{"error":"down"}', { status: 503 })) : original(url, options));
+  const second = (await call(ctx, `/api/network/pipelines/${pipeline.id}/runs`, 'POST', { version: 1, confirm: true })).json.runId;
+  await until(async () => (await call(ctx, runPath(second))).json.run.status === 'waiting_for_approval', 'second run waits', 15000);
+  win.location.hash = `#/network/runs/${second}`;
+  await until(() => text(ctx, '#network-run-status') === 'Waiting for your approval', 'second run view');
+  const start = reads(log, second);
+  await until(() => reads(log, second) >= start + 2, 'polled while the stream is down', 4000);
+  assert.equal((await call(ctx, `${runPath(second)}/nodes/${approval}/approve`, 'POST', { decision: 'approve' })).status, 200);
+  await until(() => text(ctx, '#network-run-status') === 'Completed', 'completed, polled', 10000);
+  const done = reads(log, second);
+  await sleep(1500);
+  assert.equal(reads(log, second), done, 'polling stops once the run ended');
+});

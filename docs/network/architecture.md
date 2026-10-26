@@ -1538,10 +1538,12 @@ Nothing here starts a run except the confirmed Run; saving, validating and publi
     refused there with its reason. A run started while the draft has unsaved changes does not leave the designer.
 11. **Run view and live states.** It shows only the run's `plan` and `run` (never the draft) and says so. While the run
     moves it reads `GET /pipeline-runs/:id` and `GET /jobs?pipelineRunId=` once a second and stops when it ends; that is
-    one function, `pollRun(runId, changed) → stop`, replaced by `host.followRun` when given. **Integration after Task 08:**
-    pass `followRun` from `app.js` through `network.js` to subscribe to the event stream (`pipeline.run`, `pipeline.node`
-    and `job.status` events with this `pipelineRunId`) and call `changed()` per event; and pass `openJob(jobId)` to open the
-    Activity job drill-down (without it, “Open job” shows the job record as JSON from `GET /jobs/:id`). Per step: status,
+    one function, `pollRun(runId, changed) → stop`, replaced by `host.followRun` when given. **Wired (Phase-2 review):**
+    `app.js` passes `followRun = PromptboardNetworkPipeline.streamRun(tokenFetch)` through `network.js`: it opens the event
+    stream and calls `changed()` once it is live and per `pipeline.run`, `pipeline.node` or `job.status` event with this
+    `pipelineRunId`, polls every second only while the stream is not live (connecting, refused, dropped; it reconnects after
+    2 s, 15 s when refused), and stops when `changed()` answers false. `openJob(jobId)` opens the Activity job record
+    (`#/network/activity/<jobId>`); without it, “Open job” shows the job record as JSON from `GET /jobs/:id`. Per step: status,
     reason and code, agent with provider and model (as registered now), tools, try `n` of `retries + 1` and every job ID,
     the job's status and waiting message, the worker's process, the frozen inputs, result references, a condition's
     decision with each rule's evidence, an approval's prompt with Approve/Reject (only while it waits and the run moves),

@@ -213,10 +213,11 @@ test('the MVP template becomes a draft; a refused save and a refused validate ar
   assert.match(text(ctx, '#network-run-step-facts'), /ProviderClaude Code/);
   assert.match(text(ctx, '#network-run-step-facts'), /InputsResearch A \(text\), Research B \(text\)/);
   assert.match(text(ctx, '#network-run-step-facts'), /Resultattempts\/att__[0-9a-f]{20}\/result\.md · \d+ characters · sha256 [0-9a-f]{12}/);
-  $('#network-run-open-job').click();
-  await until(() => $('#network-job-json'), 'job JSON');
-  const job = JSON.parse(text(ctx, '#network-job-json'));
+  $('#network-run-open-job').click(); // The app wires Activity's job record (architecture §21 item 11).
+  await until(() => /^#\/network\/activity\/job_[0-9a-f]{20}$/.test(win.location.hash) && $('#network-activity-job-heading'), 'the job record in Activity');
+  const job = (await call(ctx, `/api/network/jobs/${win.location.hash.split('/')[3]}`)).json;
   assert.deepEqual([job.job.pipelineRunId, job.job.nodeId, job.job.status, job.request.pipeline.runId], [runId, ids.Reviewer, 'completed', runId]);
+  assert.match(text(ctx, '#network-panel-activity'), new RegExp(`Pipeline step${ids.Reviewer}`));
   // One start and one approval were sent; saving, validating and publishing started nothing.
   assert.deepEqual(log.filter(([method, url]) => method === 'POST' && /\/runs$|\/approve$/.test(url)).map(([, url]) => url.replace(/[a-z]{3}_[0-9a-f]{20}/g, 'ID').replace(/n_[0-9a-f]{12}/, 'N')), ['/api/network/pipelines/ID/runs', '/api/network/pipeline-runs/ID/nodes/N/approve']);
   assert.equal((await call(ctx, '/api/network/pipeline-runs')).json.total, 1);
@@ -311,8 +312,8 @@ test('live states and cancel: running steps show as running, a finished one as c
   await until(() => worker.cancels.length >= 1, 'the worker was told to stop');
   assert.equal(runStatus(ctx, done), 'Completed', 'a finished step stays completed');
   assert.equal($('#network-run-cancel').hidden, true);
-  const jobs = (await call(ctx, `/api/network/jobs?pipelineRunId=${runId}`)).json.jobs;
-  assert.deepEqual(jobs.map(job => job.status).sort(), ['cancelled', 'completed']);
+  // The run is saved cancelled first and its jobs are stopped after; the live view can show the run before the job ends.
+  await until(async () => JSON.stringify((await call(ctx, `/api/network/jobs?pipelineRunId=${runId}`)).json.jobs.map(job => job.status).sort()) === '["cancelled","completed"]', 'the running job cancelled');
 
   // Unsaved changes: closing the tab and leaving ask; declining keeps the editor and its address.
   await visit(ctx, `#/network/pipelines/${pipeline.id}`, () => text(ctx, '#network-pipeline-heading') === 'Market report');
