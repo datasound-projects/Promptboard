@@ -17,7 +17,7 @@ window.PromptboardNetworkGraph = (() => {
   // Resource limits of the view, not of the product: the canvas draws at most this many nodes once sub-networks are
   // expanded; the side lists show a page at a time.
   const VIEW_CAP = 1000, LIST_PAGE = 200, UNDO_DEPTH = 50, NUDGE = 10;
-  const INERT = 'Saving or publishing a graph starts nothing. A relation records what you allow between two nodes: it grants no permission, sends no message and shares no data.';
+  const INERT = 'Saving or publishing a graph starts nothing. A relation records what you allow between two nodes: it grants no permission, sends no message and shares no data. Relations are permissions and intent, not execution order: what runs after what, and which results move, is drawn with a pipeline’s own arrows in Network → Pipelines.';
   const note = (text, className = 'note') => el('p', className, text);
   const labelled = (text, control, className = 'field-label') => { const label = el('label', className); label.append(text, control); return label; };
   const checkRow = (control, text) => { const label = el('label', 'check-row'); label.append(control, text); return label; };
@@ -28,6 +28,16 @@ window.PromptboardNetworkGraph = (() => {
   const clone = value => JSON.parse(JSON.stringify(value));
   const agentState = ref => (!ref || ref.missing ? 'missing' : ref.stale ? 'stale' : ref.enabled === false ? 'disabled' : 'ok');
   const debounce = (fn, ms) => { let timer = null; return () => { clearTimeout(timer); timer = setTimeout(fn, ms); }; };
+  const css = (name, fallback) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+  /** Keep keyboard focus on the same control (by ID or data attribute) when a part of the page is drawn again. */
+  function keepFocus(container, draw) {
+    const active = container.contains(document.activeElement) ? document.activeElement : null;
+    const id = active?.id, data = active && Object.entries(active.dataset)[0];
+    draw();
+    if (!active || active.isConnected) return;
+    const again = id ? document.getElementById(id) : data ? container.querySelector(`[data-${data[0].replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}="${data[1]}"]`) : null;
+    again?.focus();
+  }
 
   function create(host) {
     const { request, say, go } = host;
@@ -621,7 +631,6 @@ window.PromptboardNetworkGraph = (() => {
     }
 
     // ---- Canvas (Cytoscape). Built per network when the canvas is on screen; the lists work without it.
-    function css(name, fallback) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback; }
     function styleSheet() {
       const ink = css('--ink', '#16161a'), surface = css('--surface', '#fff'), raised = css('--surface-2', '#f1f1f4'), line = css('--line-strong', '#85858f'), muted = css('--muted', '#4f4f58');
       const warn = css('--og-warn', '#b45309'), error = css('--error', '#c2410c'), accent = css('--sash', '#7c3aed');
@@ -866,15 +875,6 @@ window.PromptboardNetworkGraph = (() => {
       if (ed.loading) lines.push(['Loading the network…', '']);
       gNotice.replaceChildren(...lines.map(([text, className]) => note(text, `note network-notice ${className}`.trim())));
     }
-    /** Keep keyboard focus on the same control (by ID or data attribute) when a part of the page is drawn again. */
-    function keepFocus(container, draw) {
-      const active = container.contains(document.activeElement) ? document.activeElement : null;
-      const id = active?.id, data = active && Object.entries(active.dataset)[0];
-      draw();
-      if (!active || active.isConnected) return;
-      const again = id ? document.getElementById(id) : data ? container.querySelector(`[data-${data[0].replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}="${data[1]}"]`) : null;
-      again?.focus();
-    }
     function renderLists() {
       if (!ed) return;
       keepFocus(lists, () => {
@@ -1038,5 +1038,6 @@ window.PromptboardNetworkGraph = (() => {
     }
     return { library: libPanel, graph: graphPanel, show, guard, isDirty: () => Boolean(ed?.dirty) };
   }
-  return { create };
+  // Shared with network-pipeline.js (the Pipelines designer and run view use the same canvas setup and list helpers).
+  return { create, kit: { note, labelled, checkRow, select, chip, randomHex, isPhone, clone, debounce, css, keepFocus } };
 })();

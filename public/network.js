@@ -1,7 +1,7 @@
 'use strict';
 
 // Network page (#/network): the agent directory and agent profiles, over the owner routes /api/network/*; the Graph and
-// Library sections live in network-graph.js and are shown from here.
+// Library sections live in network-graph.js and the Pipelines section (designer and run view) in network-pipeline.js.
 // Base stays the only editor of agent definitions: this page reads Base, registers a Base agent by its ID, edits only the
 // Network identity (display name, tags, capabilities, projects, on/off) and opens the real resource in Base. A profile
 // also holds the agent's memory (proposed, then approved by the owner, with history and a preview of exactly what a job
@@ -13,7 +13,7 @@ window.PromptboardNetwork = (() => {
   const SECTIONS = [
     ['agents', 'Agents', ''],
     ['graph', 'Graph', ''],
-    ['pipelines', 'Pipelines', 'Build execution pipelines from a published network: parallel steps, joins, approvals and a saved report.'],
+    ['pipelines', 'Pipelines', ''],
     ['activity', 'Activity', 'Live status and events of Network jobs, with what each CLI can report shown next to every status.'],
     ['library', 'Library', ''],
     ['federation', 'Federation', 'Work with trusted remote agents over A2A. It stays off until you turn it on.'],
@@ -42,7 +42,7 @@ window.PromptboardNetwork = (() => {
   const CAPABILITIES = [['toolEvents', 'Tool-level activity'], ['waitingEvents', 'Waiting and permission events'], ['readOnly', 'Enforced read-only mode'], ['webSearch', 'Read-only web search'],
     ['sessionId', 'Native session ID'], ['usage', 'Usage reported'], ['dockerSandbox', 'Docker sandbox'], ['liveVerified', 'Checked with the real CLI']];
   const VALUES = { yes: ['Yes', 'ok'], partial: ['Partly', 'warn'], no: ['No', 'off'], unknown: ['Unknown', ''] };
-  const AGENT_ID = /^agt_[0-9a-f]{20}$/, NETWORK_ID = /^net_[0-9a-f]{20}$/;
+  const AGENT_ID = /^agt_[0-9a-f]{20}$/, NETWORK_ID = /^net_[0-9a-f]{20}$/, PIPELINE_ID = /^pip_[0-9a-f]{20}$/, RUN_ID = /^run_[0-9a-f]{20}$/;
 
   const note = (text, className = 'note') => el('p', className, text);
   const labelled = (text, control, className = 'field-label') => { const label = el('label', className); label.append(text, control); return label; };
@@ -65,10 +65,13 @@ window.PromptboardNetwork = (() => {
   }
 
   // #/network (Agents), #/network/agents/<id>, #/network/<section>, #/network/library/<networkId>,
-  // #/network/graph/<networkId> and its published versions #/network/graph/<networkId>/v<n>. Anything else opens Agents.
+  // #/network/graph/<networkId> and its published versions #/network/graph/<networkId>/v<n>, #/network/pipelines/<pipelineId>
+  // (the designer) and #/network/runs/<runId> (a run, under Pipelines). Anything else opens Agents.
   function route() {
     const [section, id, extra] = location.hash.replace(/^#\/network\/?/, '').split('/');
     if (section === 'agents' && AGENT_ID.test(id || '')) return { section: 'agents', agentId: id };
+    if (section === 'pipelines' && PIPELINE_ID.test(id || '')) return { section, agentId: null, pipelineId: id };
+    if (section === 'runs' && RUN_ID.test(id || '')) return { section: 'pipelines', agentId: null, runId: id };
     if (['graph', 'library'].includes(section) && NETWORK_ID.test(id || '')) return { section, agentId: null, networkId: id, version: section === 'graph' && /^v[1-9]\d{0,8}$/.test(extra || '') ? Number(extra.slice(1)) : null };
     return { section: SECTIONS.some(([key]) => key === section) ? section : 'agents', agentId: null, networkId: null, version: null };
   }
@@ -118,7 +121,7 @@ window.PromptboardNetwork = (() => {
     titles.append(heading, note('Register Base agents once, then find them here. Their definitions stay in Base.', 'intro-description'));
     headActions.append(register); head.append(titles, headActions);
     const privacy = note('Network keeps references to Base agents in this computer’s data folder. Opening or editing them never runs an agent.', 'note network-privacy');
-    const panelOf = id => ({ agents: 'network-panel-agents', graph: 'network-panel-graph', library: 'network-panel-library' })[id] || 'network-panel-soon';
+    const panelOf = id => ({ agents: 'network-panel-agents', graph: 'network-panel-graph', library: 'network-panel-library', pipelines: 'network-panel-pipelines' })[id] || 'network-panel-soon';
     const sections = tablist('Network sections', SECTIONS.map(([id, label, soon]) => [id, label, Boolean(soon)]), 'network-tab', panelOf, id => go(hashFor(id)), 'network-tabs');
     const status = note('', 'note network-status'); status.id = 'network-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
     const alert = el('div', 'inline-error network-alert'); alert.id = 'network-error'; alert.setAttribute('role', 'alert'); alert.hidden = true;
@@ -155,7 +158,11 @@ window.PromptboardNetwork = (() => {
     // Graph and Library (network-graph.js): the networks, their versions and the editor, beside the same status line.
     const graphs = window.PromptboardNetworkGraph?.create({ request, say, go, showError, openDialog, closeDialog: () => closeDialog(),
       memoryPanel: networkId => memoryView(null, networkId), openAgent: id => go(hashFor('agents', id)) }) || null;
-    view.append(head, privacy, sections, status, alert, agentsPanel, soonPanel, ...(graphs ? [graphs.library, graphs.graph] : []));
+    // Pipelines (network-pipeline.js): the designer and the run view. `openJob` and `followRun` are optional seams for the
+    // Activity drill-down and the live event stream (architecture §21); without them it shows the job as JSON and polls.
+    const pipes = window.PromptboardNetworkPipeline?.create({ request, say, go, showError, openDialog, closeDialog: () => closeDialog(), openAgent: id => go(hashFor('agents', id)),
+      openJob: context.openJob, followRun: context.followRun }) || null;
+    view.append(head, privacy, sections, status, alert, agentsPanel, soonPanel, ...(graphs ? [graphs.library, graphs.graph] : []), ...(pipes ? [pipes.panel] : []));
 
     // The sidebar lists the same sections as links, so the phone drawer and the keyboard both reach them.
     const sideNav = el('nav', 'base-categories network-sections'); sideNav.id = 'network-sections'; sideNav.setAttribute('aria-label', 'Network sections');
@@ -169,13 +176,15 @@ window.PromptboardNetwork = (() => {
     // ---- Rendering
     function render() {
       const where = route(), { section } = where;
-      if (graphs && !graphs.guard(where)) return; // A graph with unsaved changes asks first; "keep editing" brings its address back.
+      // A graph or pipeline with unsaved changes asks first; "keep editing" brings its address back.
+      if ((graphs && !graphs.guard(where)) || (pipes && !pipes.guard(where))) return;
       sections.select(section);
       for (const link of sideNav.children) { if (link.dataset.section === section) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current'); }
-      const own = Boolean(graphs) && ['graph', 'library'].includes(section);
+      const own = (Boolean(graphs) && ['graph', 'library'].includes(section)) || (Boolean(pipes) && section === 'pipelines');
       agentsPanel.hidden = section !== 'agents'; soonPanel.hidden = section === 'agents' || own;
       register.hidden = section !== 'agents';
-      graphs?.show(own ? where : null);
+      graphs?.show(['graph', 'library'].includes(section) ? where : null);
+      pipes?.show(section === 'pipelines' ? where : null);
       if (own) return;
       if (section !== 'agents') {
         const [, label, text] = SECTIONS.find(([id]) => id === section);
@@ -768,8 +777,8 @@ window.PromptboardNetwork = (() => {
       if (entering) { say(''); showError(''); await load(); }
     }
     function leave() {
-      if (graphs && !graphs.guard(null)) return; // Unsaved graph changes: "keep editing" brings the editor's address back.
-      visible = false; graphs?.show(null);
+      if ((graphs && !graphs.guard(null)) || (pipes && !pipes.guard(null))) return; // Unsaved changes: "keep editing" brings the editor's address back.
+      visible = false; graphs?.show(null); pipes?.show(null);
       if (dialog.open) { opener = null; closeDialog(); } // A dialog never stays over another page.
     }
     return { show, leave, refresh: load };

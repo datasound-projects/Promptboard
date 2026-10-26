@@ -411,6 +411,16 @@ export class PipelineRunner {
     await this.#cancelJobs(id);
     return { run: this.#view(saved) };
   }
+  /** The report an output step saved, read again and shown only when it still hashes to what the step recorded. */
+  async report(id, nodeId) {
+    await this.#ready();
+    const run = this.#run(id), step = this.#plans.get(id).nodes.find(item => item.id === nodeId), result = run.nodes[nodeId]?.result;
+    if (step?.type !== 'output') fail('This step is not an output step of the run.', 'NOT_FOUND', 404);
+    if (run.nodes[nodeId].status !== 'completed' || !result?.text) fail('This output step has not saved its report.', 'STEP_STATE', 409);
+    const text = await readFile(this.#file(id, result.text.ref), 'utf8').catch(() => null);
+    if (text === null || sha256(text) !== result.text.sha256) fail('The saved report is missing or changed since it was written, so it is not shown.', 'ARTIFACT_INVALID', 409, { nodeId });
+    return { nodeId, name: step.config.name, file: step.file, text, sha256: result.text.sha256, chars: text.length };
+  }
   /** The owner's decision on an approval step (owner routes only): approve lets the steps after it run; reject cancels them. */
   async decide(id, nodeId, input) {
     only(input, ['decision'], 'an approval');

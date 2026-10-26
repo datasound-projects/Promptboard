@@ -284,7 +284,7 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     // Pipelines and runs (Task 09): starting, cancelling and approving are the owner's control, which a paired device has.
     'GET /api/network/pipelines', 'POST /api/network/pipelines', 'GET /api/network/pipeline-runs',
     ...each(`/api/network/pipelines/pip_${'a'.repeat(20)}`, ['GET', 'PATCH', 'DELETE', 'POST validate', 'POST publish', 'GET versions/1', 'POST runs']),
-    ...each(`/api/network/pipeline-runs/run_${'a'.repeat(20)}`, ['GET', 'POST cancel', `POST nodes/n_${'b'.repeat(12)}/n_${'c'.repeat(12)}/approve`])];
+    ...each(`/api/network/pipeline-runs/run_${'a'.repeat(20)}`, ['GET', 'POST cancel', `POST nodes/n_${'b'.repeat(12)}/n_${'c'.repeat(12)}/approve`, `GET nodes/n_${'b'.repeat(12)}/report`])];
   // The table covers every route the server and Base declare: a new route must be added here, local-only or not.
   const paths = [...LOCAL_ONLY, ...ALLOWED].map(row => row.split(' ')[1].split('?')[0]);
   for (const file of ['server.mjs', 'base-http.mjs', 'sandbox.mjs']) {

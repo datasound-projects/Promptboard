@@ -59,6 +59,7 @@
  *   GET  /api/network/pipeline-runs/:id     the run with its plan
  *   POST /api/network/pipeline-runs/:id/cancel {}
  *   POST /api/network/pipeline-runs/:id/nodes/:nodeId/approve { decision: 'approve' | 'reject' } (nodeId may be <substep>/<step>)
+ *   GET  /api/network/pipeline-runs/:id/nodes/:nodeId/report   an output step's saved report, hash-checked
  */
 import { JOB_LIMITS } from './jobs.mjs';
 import { PIPELINE_LIMITS } from './pipeline-model.mjs';
@@ -131,6 +132,7 @@ export const NETWORK_ROUTES = Object.freeze([
   route('GET', `/pipeline-runs/${RUN}`, (c, id) => c.runs.read(id)),
   route('POST', `/pipeline-runs/${RUN}/cancel`, async (c, id) => c.runs.cancel(id, await c.body(BODY.small))),
   route('POST', `/pipeline-runs/${RUN}/nodes/${STEP}/approve`, async (c, id, node) => c.runs.decide(id, node, await c.body(BODY.small))),
+  route('GET', `/pipeline-runs/${RUN}/nodes/${STEP}/report`, (c, id, node) => c.runs.report(id, node)),
 ]);
 
 export async function networkRoute({ network, jobs, pipelines, runs, req, res, pathname, searchParams, jsonBody, send }) {

@@ -71,7 +71,7 @@ test('Network is the fifth page: nav, title, skip link and sidebar; back and for
   assert.deepEqual([win.document.activeElement.id, win.location.hash], ['network-view', '#/network']);
   assert.equal($('#network-view').getAttribute('aria-labelledby'), 'network-heading'); assert.equal($('#network-heading').textContent, 'Network');
   assert.deepEqual([...$('#network-view [role="tablist"]').querySelectorAll('[role="tab"]')].map(tab => [tab.dataset.tab, tab.getAttribute('aria-selected'), tab.dataset.available || 'true']),
-    [['agents', 'true', 'true'], ['graph', 'false', 'true'], ['pipelines', 'false', 'false'], ['activity', 'false', 'false'], ['library', 'false', 'true'], ['federation', 'false', 'false']]);
+    [['agents', 'true', 'true'], ['graph', 'false', 'true'], ['pipelines', 'false', 'true'], ['activity', 'false', 'false'], ['library', 'false', 'true'], ['federation', 'false', 'false']]);
   // Every page still opens, and history moves through all five pages and Network's own sub-routes.
   const open = page => () => Object.entries(VIEWS).every(([hash, id]) => $(id).hidden === (hash !== page));
   for (const hash of ['#/origin', '#/', '#/kanban', '#/base']) await visit(ctx, hash, open(hash));

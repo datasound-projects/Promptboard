@@ -84,6 +84,7 @@ const assets = new Map([
   ['/sandbox.js', ['sandbox.js', 'text/javascript; charset=utf-8']],
   ['/network.js', ['network.js', 'text/javascript; charset=utf-8']],
   ['/network-graph.js', ['network-graph.js', 'text/javascript; charset=utf-8']],
+  ['/network-pipeline.js', ['network-pipeline.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal and graph assets, served from the installed packages by exact path only (no CDN,
 // no directory browsing). Missing files (no npm install) return 404: the dock and the Network graph fall back.
