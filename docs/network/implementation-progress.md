@@ -51,7 +51,10 @@ branch from the same verified base, merged by the coordinator in order, then int
 
 ## Live provider runs
 
-None yet.
+- Task 07: 3 runs (Codex, Claude haiku, Gemini refused by the provider), in the Task 07 section.
+- Task 12: 2 runs of Claude Code haiku in one script invocation (`PB_NETWORK_LIVE=claude node scripts/network-delegation-live.mjs`,
+  2026-10-26 12:30 UTC, port 4912, temporary data folder): the model emitted the delegation request exactly as specified; cost
+  reported $0.0015 + $0.0017 = $0.0032. Details in the Task 12 section.
 
 ## Task log
 
@@ -1503,3 +1506,161 @@ revoke the old one). No Streamable HTTP MCP endpoint. Until Task 07 is merged, j
 queued (no worker), as the smoke shows; with it, they run like owner jobs. Port 0 shows as "0" in the port field.
 
 **Commits.** a1d6642 (code, tests, dependency, architecture §22), then this log entry.
+
+### Task 12 — Delegation, job messages and schedules (2026-10-26, parallel wave B, branch `feat/network-12`)
+
+**What was done.** A running agent can ask for help in the only way it has: the last fenced ```json block of its final report,
+`{"promptboard": {"needs_input": {"question"}}}` or `{"promptboard": {"delegate": [{ agentId, task, tools?, json? }]}}`. The server
+treats it as a request: it checks it against the owner's handoff policy (off by default; Network → Settings → Handoffs) and either
+refuses it (recorded as a `blocked` message and a `job.handoff` event; the job completes with its report) or acts: the job waits
+(`waiting_for_input`) for the owner's (or its client's) answer, or for sub-jobs created under keys of its own, then runs again
+as a new attempt that reads its report and the handoff messages as data. Delegation follows only a `delegate` relation in the
+job's network, within depth, fan-out and time-budget ceilings, with no wider tools, no other project, no cycles and optional
+owner approval; queued sub-jobs are checked again at their claim, cancelled with their parent and never doubled across
+restarts. Job messages are bounded records with read receipts apart from execution. Network job schedules (daily, weekdays,
+weekly, monthly or on demand) reuse Kanban's slot arithmetic: off until confirmed at the computer, one coalesced job after
+downtime, no pile-up, no replay after a restart, nothing while the computer's zone differs. External clients get sub-jobs,
+messages and answers on their own jobs. Activity shows each job's origin, approval request, question, sub-job tree and
+messages, and a Schedules list; Settings holds the policy. Webhook triggers are deferred (no private verified delivery path).
+Decisions in architecture §23; the progress status table is left to the coordinator.
+
+**Files.** New: `src/network/delegation.mjs` (policy, request format, checks, guide), `src/network/messages.mjs`,
+`src/network/schedules.mjs`, `public/network-delegation.js`, `scripts/network-delegation-live.mjs` (opt-in, never in `npm test`),
+`tests/network-delegation.test.mjs`, `tests/network-delegation-http.test.mjs`, `tests/network-delegation-e2e.test.mjs`,
+`tests/network-delegation-ui.test.mjs`, `tests/network-delegation-browser.test.mjs`, `tests/network-schedules.test.mjs`.
+Changed: `src/network/jobs.mjs` (handoff path, `#accept` split out of `submit` with a server-only `link`, `#resume`, cancel
+propagation, claim recheck, `answer`, `messagesOf`, `postMessage`, `readMessages`, `delegate`, `jobSubmission` export, the
+`waiting` texts, a delete guard), `src/network/worker-local.mjs` (`jobPrompt` gains `handoff`: HANDOFFS after the header,
+EARLIER WORK before the input; byte-identical when null), `src/network/http.mjs` (12 routes, `schedules` in the route context,
+export/import of schedule definitions), `src/network/rest.mjs` (5 machine routes), `src/network/events.mjs` (`scheduleId`
+field), `src/network/activity.mjs` (origin fields on queue rows), `src/network/registry.mjs` (the export file may carry
+`schedules`), `src/schedules.mjs` (exports `dueSlot` and `since`, nothing else), `src/server.mjs` (wiring, start/stop,
+`networkScheduleOptions`, asset), `src/remote-access.mjs` (`localOnly`: policy PATCH and schedule confirm),
+`public/network-activity.js`, `public/network-clients.js`, `public/index.html`, `public/styles.css` (appended block),
+`tests/remote-access.test.mjs` (14 rows), `tests/helpers/network-worker.mjs` (optional `json`), `tests/helpers/ui-harness.mjs`,
+`tests/fixtures/fake-headless-cli.mjs` (`[[delegate:<id>]]`), `docs/network/architecture.md` (§23), this file. `acceptance.md`
+already had the Task 12 rows and is unchanged.
+
+**Data layout.** `network/delegation.json` (`promptboard.network-delegation` v1, created on the first policy change),
+`network/schedules.json` (`promptboard.network-schedules` v1), `network/jobs/<id>/messages.json`
+(`promptboard.network-messages` v1), `attempts/<att>/handoff.md` and `handoff.json` (written once); `job.json` gains
+`awaiting`, `delegation`, `schedule` and `attempt.handoff`, and `request.json` `delegation` or `schedule`, only when present
+(older files and hashes unchanged). The Network export carries `schedules` only when there are any.
+
+**Routes.** Owner: `GET/POST /api/network/jobs/:id/messages`, `POST …/messages/read`, `POST …/answer`, `GET/PATCH
+/api/network/delegation`, `GET/POST /api/network/schedules`, `PATCH/DELETE /api/network/schedules/:id`, `POST …/confirm`,
+`POST …/run`. Local-only: `PATCH /api/network/delegation` and `POST /api/network/schedules/:id/confirm` (both switch standing
+automation on); everything else is the owner's control over saved definitions and their own jobs, allowed from a paired phone
+(a phone can create a switched-off schedule, edit it — which can only switch it off — run it once, delete it; it can never
+switch one on). Machine (own jobs only): `POST /machine/v1/jobs/:id/children` (`submit_jobs`, a submit), `GET …/messages`,
+`POST …/messages/read` (`read_job_result`), `POST …/messages`, `POST …/answer` (`submit_jobs`). The MCP bridge is unchanged.
+
+**UI.** A job's record in Activity: "Started by" (you, a client, a schedule and its slot, or the delegating job with a link),
+Approve/Reject when it waits for approval, the question with an answer form that survives live redraws, the sub-job tree
+(four levels, 50 rows, with Approve/Reject), the handoff messages with Unread marks, "Mark … as read" and a folded note form.
+Activity's side column: Schedules (zone note, state, repeat, next time, last skip, Switch on… with a confirmation, Switch off,
+Run now, Last job, Edit, Delete, editor dialog). Settings: Handoffs (two switches, approval, depth, fan-out, time budget). The
+timeline names and filters handoff, message and schedule events; open sub-jobs and scheduled jobs say where they came from.
+
+**Tests** (temporary data folders, the deterministic fake worker or the fake CLIs, no real CLI; module tests on fake clocks):
+
+- `tests/network-delegation.test.mjs` 10 tests: (1) the request format, strict, malformed ones are errors; (2) A delegates an
+  approved sub-job to B along a delegate relation: the guide offers exactly B, the sub-job's requester, source, key
+  `delegate:a1:0`, delegation record in `request.json`, inherited permissions and the 50 % budget, nothing before approval, the
+  parent's second attempt reads the request and B's result as data, the result links back, events carry no text, no
+  `federation.json` or `clients.json` (A2A not required); (3) refusals create nothing and are recorded: switched off, no
+  relation, escalation, another project, unregistered, no network, malformed, one bad sub-task of two (all-or-nothing),
+  switched-off registration; (4) depth and fan-out, the guide empty at the depth limit, cycle suppression (helper cannot hand
+  back to lead) and the guide never offering a chain agent; (5) a second round counts against the fan-out, five handoffs per
+  job, then nothing is offered; (6) one child per key across two restarts after a simulated crash, and an awaited child cannot
+  be deleted; (7) revocation: a removed relation and a switched-off policy fail queued sub-jobs at their claim with no attempt,
+  and the parent goes on with that outcome; (8) cancelling a parent cancels the whole open tree; (9) questions: off, then wait,
+  read receipts change no execution state and only mark what is addressed to the reader, answer revision checked, the new
+  attempt reads question and answer, no question or answer in any event, notes only review/request, 16 KiB, 200 per job,
+  secrets masked, 500 per job; (10) a client-started chain stays inside the client's scope, a client's own sub-job with its key,
+  cycle and scope refusals, revoked client refused and its queued sub-job fails at claim, no sub-job of a finished job.
+- `tests/network-delegation-http.test.mjs` 1 test: the policy routes (revision), a client's sub-jobs over REST (202, the same
+  key 200, its own job, outside its scope 403, extra field 400, another principal's job 404 on all three routes, no
+  `submit_jobs` 403), messages without `attemptId`, a question addressed to the client, read, answered, `JOB_STATE` after; the
+  owner's message, read and answer routes.
+- `tests/network-delegation-e2e.test.mjs` 1 test: the real `LocalJobWorker` with fake Claude and Codex CLIs only on PATH: the
+  parent's `prompt.md` has the HANDOFFS section with the checker, the fake CLI's json delegates, the Codex sub-job runs, the
+  second `prompt.md` holds the sub-job's result indented in EARLIER WORK, three CLI runs, no A2A or machine files.
+- `tests/network-schedules.test.mjs` 7 tests: off until confirmed, saving and editing start nothing, no catch-up before the
+  confirmation, one job per slot with its key and `request.schedule`, firing keeps the revision, an edit switches it off;
+  one coalesced job after four missed slots, the next slot skipped and used up while the job is open (`PREVIOUS_OPEN`), a new
+  job after it ended; a restart never fires a slot twice, also after a crash between submit and save; a zone change warns and
+  fires nothing until confirmed again; Run now (with and without key), on-demand cannot be switched on, a refused time is used
+  up with its code, delete; a pipeline schedule saves its slot before the run, skips while a run is open, and a crash between
+  save and start never starts that slot again; over HTTP: definitions-only export (none: no `schedules` key), an import with an
+  unresolved agent refused whole, the import comes back switched off and remapped, the routes' statuses, only Run now started
+  a job.
+- `tests/network-delegation-ui.test.mjs` 4 tests (jsdom): the policy card; a delegating job's record (origin, tree, approval,
+  messages, timeline words without text, the parent going on, the child's link back, the queue row's origin); a question
+  answered from the record with the typed answer kept across a redraw, read marks, a folded note; Schedules (new, validation,
+  confirmation text, switch on, Run now, an edit switching it off, delete, its job stays).
+- `tests/network-delegation-browser.test.mjs` 1 test (Chrome): light and dark at 1440 and 390 px (side column at 1440, nothing
+  sideways at 390), the editor dialog inside the screen, the delegating and question records and the policy card at both
+  widths, Tab to New schedule with a visible ring, Enter opens on the name, Escape returns focus, Tab from the answer to Send
+  answer with a ring, no exception or CSP message. Screenshots (all looked at): `$TMPDIR/network-logs/task-12-screens/`
+  `activity-schedules-*`, `schedule-editor-390-*`, `job-delegating-*`, `job-question-*`, `settings-handoffs-*`.
+- Changed: `tests/remote-access.test.mjs` (2 local-only and 12 allowed rows).
+- Mutation check (`$TMPDIR/network-logs/task-12-mutations.log`, a throw-away script outside the repo, each source restored and
+  hash-checked): 50 mutations of the policy, engine, messages, schedules, phone rule and UI; **49 killed**. The survivor, the
+  `lastSlot >= slot` re-check inside `#fire`, was unreachable (only the busy-guarded tick fires, and `dueSlot` already counts
+  from `lastSlot`) and differed from Kanban for a slot recorded while the clock ran ahead, so it was removed: 49 of 49 remaining.
+
+**Runs.** `npm run check` pass. New tests twice on the final code: 24/24 and 24/24 (`task-12-new-run1.log`, `-run2.log`).
+Touched modules (every non-browser `network-*`, `remote-access`, `schedules`, `schedules-ui`, `server`, `ui`, `ui-2`, `ui-3`,
+`project-explorer-ui`, `sandbox-ui`, `cli`; 35 files, concurrency 4): first run 355 tests, 354 pass, 1 fail —
+`network-mcp` test 1 hit its own client's 60-requests-a-minute limit (`RATE_LIMITED`) while polling every 5 ms under load
+(`task-12-touched.log`); alone it passed 3 of 3 (`task-12-mcp-alone.log`), the same 35-file load on an exported copy of the
+base commit c074c7b passed 332/332 once (`task-12-base-touched.log`), and the rerun of the full set passed 355/355
+(`task-12-touched-rerun.log`). I read it as a load flake of that test's polling (Task 12 adds one cached policy read before a
+claim), not a regression, but one base run is not proof. Browser: `network-activity`, `network-clients`, `network`,
+`network-tasks`, `network-graph`, `network-review`, `network-delegation`, `remote-access`, `schedules` 11/11
+(`task-12-browser.log`). The full `npm test` is left to the coordinator (parallel wave rule).
+
+**Live provider runs (Task 12).** `PB_NETWORK_LIVE=claude node scripts/network-delegation-live.mjs`, 2026-10-26 12:30 UTC,
+16 s: an isolated app on port 4912 with a temporary data folder (removed), the app's own worker; the parent agent Claude Code
+haiku (real CLI through a stdout-copying wrapper), the sub-job agent on the **fake** Codex CLI; delegation on, approval off,
+`maxChildren` 1. **2 real CLI runs.** Attempt 1 ended its report with exactly `{"promptboard": {"delegate": [{"agentId":
+"agt_…", "task": "Confirm the version number format …"}]}}`; the sub-job was created (depth 1, `delegate:a1:0`) and completed
+("Answer from codex."); attempt 2 read it as data, judged the fake answer empty and asked again, which the fan-out ceiling
+refused (recorded `blocked`), so the job completed with its partial checklist. Usage as reported: attempt 1 input 5,487
+(cached 649), output 819, $0.00151; attempt 2 input 5,915 (cached 649), output 1,088, $0.00173. Output in
+`task-12-live.log`.
+
+**Acceptance criteria and evidence.**
+
+- *Agent A can delegate an approved sub-job to Agent B; the child result links back to the parent:* delegation test 2, e2e,
+  UI test 2, the live run.
+- *Recursion, budgets, ownership and cross-project permission checks work server-side:* delegation tests 3, 4, 5, 10, http.
+- *Scheduled Network Jobs run only when the owner opted in; duplicate missed jobs are not replayed:* schedules tests 1–3, 7.
+- *All handoffs are inspectable and revocable; no free-form unbounded agent-to-agent messaging:* delegation tests 2, 7, 8, 9
+  (agents cannot post; bounded notes), UI tests 2–3.
+- acceptance.md Task 12 rows: 1 → delegation 2, 3; 2 → delegation 4, 5, 6 (the key is `job:<parent>:delegate:a<attempt>:<n>`);
+  3 → delegation 9; 4 → delegation 7, 8, 10; 5 → schedules 1–4, 7; 6 → UI 2, 4, browser. Failure matrix 32 → schedules 7 (import
+  and restore start nothing); 33 → schedules 2; 34 → delegation 4, 6; 37 → webhooks deferred (§23 item 15), jobs by key.
+- Task prompt list: bounded depth and fan-out, denied delegate, no duplicate child on retry, cycle suppression, schedule
+  restart and no pile-up, permission revocation, cancellation propagation, A2A not required → delegation 2–8, 10, schedules 2–3.
+
+**Expected merge overlaps with Task 10** (all additive): `src/network/http.mjs` (the header comment's end, the `SCHEDULE`
+pattern beside `PIPELINE/RUN/STEP`, `importNetwork` after `jobAction`, the export and import rows, rows appended to
+`NETWORK_ROUTES`, `schedules` in `networkRoute`'s parameters and context), `src/server.mjs` (two imports after
+`MachineListener`, the `/network-delegation.js` asset after `/network-clients.js`, `networkScheduleOptions` in `startServer`'s
+options, two lines after the `MachineListener`, `schedules` in the `networkRoute` call, `networkSchedules.start()` after
+`machine.start()`, `.stop()` in `close`), `public/index.html` (one script line after `network-clients.js`), `public/styles.css`
+(a block appended at the end), `tests/helpers/ui-harness.mjs` (one eval line before `network-clients.js`). Not touched:
+`public/network.js`, `public/network-graph.js`, `src/network/pipeline-runner.mjs` (only called), `tests/network-ui.test.mjs`.
+
+**For Task 13.** A2A-started chains are refused delegation (`#rootClient`) until the A2A principal's scope is defined; extend
+that function, never widen it. A question from an `a2a` job goes to the owner (`#requesterParty`). Inbound A2A that should
+answer questions or ask for sub-jobs can reuse `jobs.answer(…, { by })` and `jobs.delegate(…)` with its own principal checks.
+
+**Known limits.** One policy for all networks. A waiting parent restored from its backup becomes `interrupted`; its sub-jobs
+still run but their results are recorded for it only while it waits. Pipeline schedules are made through the API (the editor
+makes job schedules). No MCP tools for sub-jobs, messages or answers yet. Webhooks deferred. A refused request stays in the
+completed job's report text (the report is kept as written).
+
+**Commits.** 7d3adb5 (code, tests, architecture §23), then this log entry with the live-run script.
