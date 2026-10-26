@@ -974,7 +974,8 @@ Refinements of the plan above made while building `public/network.js`; none chan
    them); the in-page tablist is the primary control.
 6. **Scrolling:** `showPage()` keeps the scroll position while moving between Network sub-routes; every other page change
    still scrolls to the top. On a phone (≤ 730 px) choosing an agent shows the profile instead of the list and toolbar
-   and focuses its heading; "Back to agents" returns focus to that row.
+   and focuses its heading; "Back to agents" returns focus to that row. From 731 to 900 px, beside the docked sidebar, the list
+   and the profile stand one after the other, both shown (wave B integration: two columns left the profile about 70 px wide).
 7. **Revision conflicts:** the switch shows the server's message with **Reload** (reads the list again, nothing is
    retried); an edit dialog's **Reload** closes the dialog and shows the current version (the edit is never re-sent over
    someone else's change); a register dialog's **Reload** only refreshes the collection revision and keeps the form.

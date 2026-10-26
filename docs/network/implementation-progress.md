@@ -2063,6 +2063,19 @@ last test change (`wave-b-mcp-final{1,2}.log`). Touched modules (every non-brows
 view with a step waiting for an answer, the editor with a pipeline target and its facts, the Switch on… confirmation, light and
 dark at 1440 and 390 px, nothing sideways, the dialogs inside the screen; app stopped and folder removed.
 
+**Final full suite.** Run 1 on 27ff897 (`npm run check` + `npm test`, `$TMPDIR/network-logs/wave-b-integration-suite-run1.log`,
+19:10–19:45 CET): check pass; non-browser 1,690 tests (the baseline's 1,685 + 5 new), 1,689 pass, 0 fail, 0 cancelled, 1 skipped
+(the win32-only test); browser 157 of 158 — `app-fixes-browser` "the shell fits phones and tablets" timed out at 735 px on the
+Network page: the document was 723 px wide in a 720 px client area. Alone it failed 3 of 3 on this commit and also on the 5aceacb
+export (`wave-b-shell-alone-{1,2,3}.log`, `wave-b-shell-base.log`), which had passed it at 14:30 in the baseline suite, so it
+is not a wave B change: this computer's headless Chrome now reserves 15 px for scroll bars (`innerWidth` 735, `clientWidth`
+720; the macOS setting is "Automatic"), and Task 03's two-column agents layout left the profile column 68 px wide, whose
+placeholder ("A registered agent’s profile…", min-content 98 px) pushed the page 3 px sideways
+(`wave-b-tools/overflow.mjs`). It is ours and cheap, so it is fixed at its cause (fe464c1): from 731 to 900 px the list and
+the profile stack, both shown (architecture §12.1 item 6); the page is then 720 px in 720, and `app-fixes-browser` with every
+`network-*browser*` file passes 22/22 (`wave-b-layout-browser.log`); `agents-800.png` looked at. Run 2 on the final code is
+below.
+
 **For the Task 13 merge** (its branch is cut from 96987d8, before Task 12): `src/server.mjs` — the `startServer` signature
 (here `networkScheduleOptions` and `networkPipelineOptions`, there `a2aOptions`: keep all) and the `new PipelineRunner(…)` line
 (here `...networkPipelineOptions`), next to its `networkJobs`/`machine` hunk; `src/network/jobs.mjs` — the `tags` helper after
@@ -2074,5 +2087,6 @@ Task 12 block, not at the end); `docs/network/architecture.md` §19–§23 edite
 `federated` step's job can ask or delegate only through the same checks (§23 item 17); the run view's waiting state reads the
 step's job, so it applies to it unchanged.
 
-**Commits** (local `feat/network`, never pushed or merged): 1bd3407, a0bc6e0, 4c53a6f, d9447df, 8651ae4, 720989f, then this
-entry with architecture §19 item 8, §20 items 11, 14 and 16, §21 items 10 and 11, §22 item 11 and §23 items 8, 12, 14 and 16.
+**Commits** (local `feat/network`, never pushed or merged): 1bd3407, a0bc6e0, 4c53a6f, d9447df, 8651ae4, 720989f, 27ff897 (this
+entry with architecture §19 item 8, §20 items 11, 14 and 16, §21 items 10 and 11, §22 item 11 and §23 items 8, 12, 14 and 16),
+fe464c1 (the layout fix), then this entry's suite results with §12.1 item 6.
