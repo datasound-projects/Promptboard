@@ -53,6 +53,7 @@ function labels(value, label) {
 }
 function time(value) { if (!Number.isSafeInteger(value) || value < 0) invalidFile(); return value; }
 const accepts = check => { try { check(); return true; } catch { return false; } };
+const tooLarge = draft => Buffer.byteLength(JSON.stringify(draft)) > LIMITS.draftBytes;
 /** A stored row or draft is used only when it is exactly what this module writes; anything else counts as damaged. */
 const storedRow = row => object(row) && AGENT_ID.test(row.id) && typeof row.baseResourceId === 'string' && EXTERNAL_ID.test(row.baseResourceId) && Number.isSafeInteger(row.revision)
   && ['tags', 'capabilities', 'projectAllowlist'].every(key => Array.isArray(row[key])) && typeof row.enabled === 'boolean';
@@ -367,7 +368,7 @@ export class NetworkRegistry {
     return next;
   }
   async #saveDraft(draft) {
-    if (Buffer.byteLength(JSON.stringify(draft)) > LIMITS.draftBytes) fail('This network is larger than 8 MiB. Split it into sub-networks.', 'NETWORK_LIMIT', 413);
+    if (tooLarge(draft)) fail('This network is larger than 8 MiB. Split it into sub-networks.', 'NETWORK_LIMIT', 413);
     await writeDocument(this.#draftPath(draft.id), draft);
     (await this.#loadDrafts()).set(draft.id, draft);
     return draft;
@@ -632,7 +633,9 @@ export class NetworkRegistry {
         return { schema: SCHEMA.draft, version: 1, id, name, description: draft.description, revision: 1, createdAt: draft.createdAt, updatedAt: at, nodes: remap(draft.nodes), edges: draft.edges,
           publishedVersions: draft.publishedVersions.map(entry => ({ ...entry, sha256: hashes.get(`${id}@${entry.version}`) })), ...(draft.archived ? { archived: true } : {}) };
       });
-      // Registrations first, then versions, then drafts: a saved draft never names a missing agent or file.
+      // Every check before the first write; then registrations, versions and drafts: a saved draft never names a missing agent or file.
+      const large = networks.find(tooLarge);
+      if (large) fail(`The network “${large.name}” in this file is larger than 8 MiB. Nothing was imported.`, 'NETWORK_LIMIT', 413);
       const saved = rows.length ? await this.#saveAgents(agents, [...agents.rows, ...rows]) : agents;
       for (const item of versions) await writeImmutable(this.#versionPath(item.networkId, item.number, item.sha256), item.content);
       for (const draft of networks) await this.#saveDraft(draft);

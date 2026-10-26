@@ -250,7 +250,9 @@ above; the others fill in what it left open.
    incomplete file.
 7. **Publish order.** The version file is written before the draft names it; a crash between leaves an unreferenced
    version file (harmless, never deleted), and the next publish takes the same number with a new hash.
-8. **Import.** Validation is all-or-nothing and happens before any write. Writes go registrations (disabled), then
+8. **Import.** Validation is all-or-nothing and happens before any write (since the Phase-1 review, P1-8, that includes
+   the 8 MiB size of every remapped draft, which `#saveDraft` used to check only after the registrations and version
+   files were written). Writes go registrations (disabled), then
    version files, then drafts, so a saved draft never names a missing agent or file; a crash in between can leave
    disabled registrations or unreferenced version files, never a run. A version whose network and references keep
    their IDs keeps its bytes and hash; a remapped one is re-hashed. Project IDs that are not on this board are dropped

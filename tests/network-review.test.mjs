@@ -201,3 +201,16 @@ test('P1-2: a crafted file whose networks all pin each other in one loop, withou
   assert.equal(looping.code, 'NETWORK_CYCLE');
   assert.deepEqual([looping.details.path[0], looping.details.path.at(-1)], [hexId(0), hexId(0)]);
 });
+
+test('P1-8: an imported draft over 8 MiB is refused before anything is written', async t => {
+  const { base } = await fixture(t);
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-network-review-large-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const registry = new NetworkRegistry({ dataDir, base, projects: async () => [] });
+  // One registration and one network with 82,000 published versions: its draft (the list of versions) passes 8 MiB.
+  const data = exportFile([Array.from({ length: 82_000 }, () => [])]);
+  data.agents.push({ id: `agt_${'1'.repeat(20)}`, baseResourceId: 'lead', displayName: null, tags: [], capabilities: [], enabled: true, visibility: 'private', projectAllowlist: [], createdAt: 1, updatedAt: 1, revision: 1 });
+  assert.ok(Buffer.byteLength(JSON.stringify(data.networks[0])) > 8 * 1024 * 1024);
+  await assert.rejects(registry.import({ data, expectedRevision: 0 }), { code: 'NETWORK_LIMIT', status: 413, message: /“N0” in this file is larger than 8 MiB\. Nothing was imported\./ });
+  await assert.rejects(readdir(join(dataDir, 'network')), { code: 'ENOENT' }, 'no registration, version or draft was written');
+  assert.deepEqual([(await registry.listAgents()).total, (await registry.listNetworks()).total], [0, 0]);
+});
