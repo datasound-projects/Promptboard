@@ -96,7 +96,7 @@ test('a real MCP client over stdio lists the tools and the allowed agent, submit
   }
   assert.equal((await ctx.owner('/api/network/jobs?limit=200')).json.total, 3, 'no refused call made a job');
   const all = [...host.answers, host.log.stderr].join('\n');
-  assert.ok(!all.includes(token) && !all.includes(token.split('_').at(-1)) && !all.includes(ctx.session), 'no token in any answer or log');
+  assert.ok(!all.includes(token) && !all.includes(token.slice(-43)) && !all.includes(ctx.session), 'no token in any answer or log');
 });
 
 test('same-provider nesting: an MCP submit while a job of the same provider runs answers at once and queues; nothing blocks; it runs when the slot frees', async t => {
@@ -175,5 +175,5 @@ test('the bridge takes the token only from its environment or a file, never from
   assert.equal(off.isError, true);
   assert.match(off.content[0].text, /did not answer.*Network → Settings/);
   const everything = [...fromFile.answers, ...host.answers, fromFile.log.stderr, host.log.stderr].join('\n');
-  for (const secret of [token, other.token]) assert.ok(!everything.includes(secret) && !everything.includes(secret.split('_').at(-1)));
+  for (const secret of [token, other.token]) assert.ok(!everything.includes(secret) && !everything.includes(secret.slice(-43)));
 });

@@ -87,7 +87,7 @@ test('Settings: opening it opens nothing; the listener turns on and changes port
   // Snippets name the listener and the variable; Copy copies the snippet, never a token.
   for (const button of $('.network-clients-hosts').querySelectorAll('button')) {
     button.click(); $('#network-setup-copy').click(); await until(() => ctx.copied() === $('#network-setup-snippet').textContent, `copy ${button.dataset.host}`);
-    assert.ok($('#network-setup-snippet').textContent.includes(`http://127.0.0.1:${port}`) && !ctx.copied().includes(token.split('_').at(-1)), button.dataset.host);
+    assert.ok($('#network-setup-snippet').textContent.includes(`http://127.0.0.1:${port}`) && !ctx.copied().includes(token.slice(-43)), button.dataset.host);
   }
   assert.match($('#network-setup-snippet').textContent, /Authorization: Bearer \$PROMPTBOARD_MACHINE_TOKEN/);
 

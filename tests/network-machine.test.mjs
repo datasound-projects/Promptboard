@@ -64,9 +64,9 @@ test('clients: the token is shown once and stored only as its SHA-256; lists nev
   assert.deepEqual([client.status, client.tokenHint, client.scopes.agents, client.scopes.projects, client.scopes.permissions, client.revision], ['active', token.slice(-4), [lead.id, scout.id], [ctx.projects[0]], ALL, 1]);
   assert.equal(client.tokenSha256, undefined, 'the answer never carries the hash');
   const file = await readFile(join(ctx.dataDir, 'network', 'clients.json'), 'utf8');
-  assert.ok(file.includes(sha(token)) && !file.includes(token) && !file.includes(token.split('_').at(-1)), 'only the hash is stored');
+  assert.ok(file.includes(sha(token)) && !file.includes(token) && !file.includes(token.slice(-43)), 'only the hash is stored');
   const listed = await ctx.owner('/api/network/clients');
-  assert.ok(!listed.text.includes(token.split('_').at(-1)) && !listed.text.includes(sha(token)), 'a list shows neither the token nor its hash');
+  assert.ok(!listed.text.includes(token.slice(-43)) && !listed.text.includes(sha(token)), 'a list shows neither the token nor its hash');
   assert.equal(listed.json.clients[0].id, client.id);
   assert.equal((await ctx.machine(token, '/agents')).status, 200);
   // Rotate: the expected revision, a new token, the same client; the old token stops at once; its jobs stay its own.
@@ -352,7 +352,7 @@ test('no token or secret in any Network file, event, log or answer after creatio
   const lead = await ctx.register('lead');
   await ctx.on();
   const created = await ctx.client({ agents: [lead.id] }), rotated = (await ctx.owner(`/api/network/clients/${created.client.id}/rotate`, 'POST', { expectedRevision: 1 })).json;
-  const tokens = [created.token, rotated.token], secrets = tokens.flatMap(token => [token, token.split('_').at(-1)]);
+  const tokens = [created.token, rotated.token], secrets = tokens.flatMap(token => [token, token.slice(-43)]);
   const answers = [];
   const keep = async pending => { const answer = await pending; answers.push(answer.text); return answer; };
   const jobId = (await keep(ctx.machine(rotated.token, '/jobs', { method: 'POST', body: { agentId: lead.id, input: { text: 'Report.' } } }))).json.jobId;
@@ -411,7 +411,7 @@ test('paired-device remote access stays separate: a phone lists and revokes clie
   const session = (await request(remotePort, '/api/session', { headers: { Cookie: cookie } })).json.token;
   const phone = (path, method = 'GET', body, headers = {}) => request(remotePort, path, { method, body, headers: { Cookie: cookie, 'X-STE-Token': session, ...headers } });
   const listed = await phone('/api/network/clients');
-  assert.deepEqual([listed.status, listed.json.clients[0].id, listed.text.includes(token.split('_').at(-1))], [200, client.id, false]);
+  assert.deepEqual([listed.status, listed.json.clients[0].id, listed.text.includes(token.slice(-43))], [200, client.id, false]);
   assert.equal((await phone('/api/network/listener')).json.listener.listening, true);
   for (const [method, path, body] of [['PATCH', '/api/network/listener', { enabled: false }], ['POST', '/api/network/clients', { name: 'Phone', scopes: { agents: [lead.id], permissions: ['read_agents'] } }], ['POST', `/api/network/clients/${client.id}/rotate`, { expectedRevision: 1 }]]) {
     assert.deepEqual(await status(phone(path, method, body)), [403, 'REMOTE_LOCAL_ONLY'], `${method} ${path}`);
