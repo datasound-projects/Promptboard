@@ -51,7 +51,15 @@ branch from the same verified base, merged by the coordinator in order, then int
 
 ## Live provider runs
 
-None yet.
+Every real (paid) CLI run, in order. Five in all so far.
+
+| When (UTC) | Task | Provider | Model / effort | Purpose | Result |
+|---|---|---|---|---|---|
+| 2026-10-26 10:25 | 07 | Codex CLI | CLI default, effort low | one job end to end, usage fields (R1) | completed in 7 s (details in "Task 07") |
+| 2026-10-26 10:25 | 07 | Claude Code | haiku | one job end to end, usage fields (R1) | completed in 5 s |
+| 2026-10-26 10:25 | 07 | Gemini CLI | CLI default | one job end to end | failed `CLIENT_UNSUPPORTED` (provider refused the client); not retried |
+| 2026-10-26 11:07 | wave A integration | Codex CLI | CLI default, effort low | pipeline step "Benefit" (two parallel steps → join → output) | completed, exit 0, 5.5 s, `partial-tools`, usage reported |
+| 2026-10-26 11:07 | wave A integration | Codex CLI | CLI default, effort low | pipeline step "Risk" (the parallel branch) | completed, exit 0, 5.5 s, `partial-tools`, usage reported |
 
 ## Task log
 
@@ -1326,3 +1334,119 @@ own settings are ignored. Pipeline jobs never carry a project (no project lesson
 smoke wait for Task 07. Task 06's ECONNRESET flake above is pre-existing and was not changed here.
 
 **Commits.** See `git log feat/network-09` (Task 09 code and tests, then this log entry).
+
+### Wave A integration (2026-10-26, after the merge of Tasks 07, 08 and 09)
+
+**What was done.** The three wave-A lanes were checked against each other in the real app and the gaps closed: every event
+type reaches the journal through `startServer`, the Activity view names worker activity by its kind and ties a pipeline step's
+job to its run, the job record shows the result text, and the agent's Tasks tab now follows the same event stream as Activity
+instead of polling every 2 seconds. Task 09's deferred `tests/network-pipeline-e2e.test.mjs` runs the MVP pipeline through the
+real local worker with fake CLIs, and a bounded live smoke ran a two-step parallel pipeline on the real Codex CLI.
+
+**Wiring checked; each gap fixed with a test that fails without the fix (the result text needed no change and is now covered).**
+
+- *Events in the real server.* `job.status` (Task 08's engine hook), `pipeline.run`/`pipeline.node` (Task 09's runner, given
+  `networkEvents` at the merge) and `job.activity` (Task 07's `jobs.activity()`) all reach `network/events/`. Gap: the activity
+  event had no `kind` and no pipeline link, so the timeline showed every activity as "Activity" and
+  `GET /api/network/events?pipelineRunId=` missed a run's activity. `src/network/jobs.mjs` now adds `kind`, `pipelineRunId` and
+  `nodeId` (journal fields Task 08 already keeps); architecture §18 item 10 updated.
+- *Activity shows each type sensibly.* `job.activity` reads "Web search", "Tool", "Writing", "Status" (Task 08's labels, now fed);
+  `job.status` and `pipeline.*` as before.
+- *Result text.* Task 08 had already wired Task 07's `GET /api/network/jobs/:id/result` into the job record; now covered by a test
+  with real result text (shown as text, a `<script>` stays text).
+- *Step jobs linked to their run.* A step job's timeline entries read "Job abc123 (pipeline run def456, step n_…) · …", its row
+  in Running and queued names the run and step, and its record has "Pipeline run" (button "Run def456: show its events": the
+  timeline searched by that run ID, focus in the search field) and "Pipeline step". There is no run view yet (Task 10), so the
+  link targets the timeline.
+- *Tasks tab and Activity.* They never ran at the same time (each only while its own tab shows), so nothing fought; Task 07 left
+  the switch to the stream to Task 08. Now `network-activity.js`'s `create(host)` takes `onEvent(event)` and
+  `onLive(state, was)` and answers `streaming()`; `network.js` keeps the page's one stream open while the profile shows Tasks or
+  Activity (`STREAM_TABS`). On the Tasks tab, every `job.status` event (queue positions move with any agent's jobs) or a job
+  event of this agent reads the list again (debounced 250 ms); while the stream is live the timer is a 30 s safety read for what
+  is not journaled (a sign-in wait, the slot count); when the stream is not live (refused at the 4-per-computer ceiling,
+  reconnecting) it polls every 2 s / 10 s as before, and a drop from live reads at once. Architecture §18 item 15 and §19 item 12
+  updated. Found on the way: Task 07's jsdom tests closed their window while the stream reconnected, and the new listener threw
+  (`location is not defined`) inside the stream loop; listeners are now guarded so a throwing one never stops the stream.
+- *Fake CLI.* `tests/fixtures/fake-headless-cli.mjs` gained `[[barrier:<name>:<n>]]`: a run waits until `n` runs carrying the
+  same barrier have started (exit 4 after 30 s), so parallelism is proven by a handshake, not by timing.
+
+**Tests.**
+
+- `tests/network-pipeline-e2e.test.mjs` (1 test, about 13 s): `startServer` with the default `LocalJobWorker`, `PATH` = fake
+  `claude` and `codex` plus a `node` symlink only. The MVP pipeline (Research A on Claude and Research B on Codex, both with the
+  barrier → join → Review → approval → output) followed through the NDJSON stream: both research jobs `running` before either
+  `completed` (and the barrier itself would fail a sequential run), the reviewer queued only after both, its input holding the
+  run input and both results indented; the approval waits for 2.5 s with no CLI run and no `reports/`, then **across an app
+  restart** (stream reconnected from its last seq); a non-approval step refuses a decision; approve → `reports/report.md`
+  exactly, run history `running → waiting_for_approval → running → completed`; one job per step with keys
+  `run:<id>:node:<step>:a1`, three CLI runs in all; the run's journal holds `job.status` (each job `queued → preparing → running
+  → completed` with its step), `job.activity` (with `kind`, `nodeId`, `agentId`; started then writing), `pipeline.node` (naming
+  each job) and `pipeline.run`, and the stream gave exactly the journal's events once, in order; no event holds a result or the
+  input. Run 2 cancelled while both research CLIs hang: run and steps cancelled, both process groups (CLI and helper) gone, no
+  reviewer, no new job. Run 3: the app stops while both hang: groups gone; after the restart the run is `blocked` on both steps
+  (`APP_STOPPED`, "Retry the job (confirming it) or close it"), jobs `interrupted`/`uncertain`, nothing resubmitted or relaunched
+  after 2.5 s; the owner cancels it. Throughout, a `child_process` recorder sees only `claude` and `codex` (never `git`), every
+  file outside `network/` (except the instance lock) and `state.json` are byte-identical, and the board view is unchanged.
+- `tests/network-integration-ui.test.mjs` (2 tests, jsdom, real server, fake worker driven through the engine's own calls):
+  (1) a pipeline run's step job: its `job.activity` (kind web) appears as "… (pipeline run …, step …) · Web search", its status
+  event and queue row name the run and step; its record shows the result text from the result route as text and the run link,
+  which opens the timeline searched by the run (focus in the search) showing exactly the journal's events of that run, all four
+  types. (2) The Tasks tab with the stream live: activity and the completion read the list on their events, and no list read
+  happens for 2.6 s while a job is open; with every stream slot of the computer taken (the page's stream refused, "limited"), the
+  tab polls again and shows new activity.
+- Mutation checks (scratch edits restored, `git diff` checked after each): the e2e test fails without the `jobs.mjs` change (no
+  `job.activity` in the run's journal) and with the runner's per-run cap forced to 1 (the barrier keeps the first research step
+  waiting, the run never reaches its approval); the UI tests fail with `public/network.js` reverted (Tasks test), with
+  `public/network-activity.js` reverted (both) and with `src/network/jobs.mjs` reverted (Activity test).
+- Runs: `npm run check` pass; the new tests twice, 3/3 and 3/3 (`$TMPDIR/network-logs/wave-a-new-run{1,2}.log`); every
+  non-browser and browser `network-*` file plus `remote-access` and `server` (`wave-a-touched*.log`): the first run found the
+  listener throw above (2 Task 07 jsdom tests), then 36/36 for the touched jsdom/engine files and 4/4 for `network-tasks-browser`,
+  `network-activity-browser` and `network-browser` in Chrome.
+
+**Live smoke** (`PB_NETWORK_LIVE=codex node scripts/network-pipeline-live-smoke.mjs`, 2026-10-26 11:07:39–11:07:47 UTC, log
+`$TMPDIR/network-logs/wave-a-live.log`): an isolated app on port 4930 with a temporary data folder (removed afterwards), the
+app's own local worker, `PATH` holding only a Codex wrapper (it runs the real Codex by absolute path with the original `PATH`)
+and `node`. One Base agent (Codex, effort low) in a published one-agent network; pipeline "Benefit" and "Risk" (two agent steps,
+no retries) → join → output. **2 real Codex runs**, no retry needed: the run `completed` in 8 s; both jobs `completed`, exit 0,
+`partial-tools`, usage reported (2,313/17 and 2,309/18 input/output tokens, 8,192 cached each); they ran in parallel (spawned 22 ms
+apart, each about 5.5 s); the journal held `pipeline.run` 2, `pipeline.node` 10, `job.status` 8 and `job.activity` 4 (kinds
+`status`, `text`); `reports/report.md` held both one-sentence answers under their step labels. Logged in "Live provider runs".
+
+**Full suite.**
+
+- Baseline, the merged HEAD `403e184` before any integration change (a `git archive` export with this worktree's
+  `node_modules`, `$TMPDIR/network-logs/wave-a-baseline-suite.log`, about 10:56–11:29 UTC): `npm run check` pass; non-browser 1,627 tests,
+  1,626 pass, 0 fail, 1 skipped (the win32-only `editors.test.mjs` test); browser 153/153. Exit 0. (The last full run before wave
+  A: 1,585 non-browser tests, 1 skipped, and 151 browser; wave A added 42 non-browser tests, 13 + 12 + 17, and 2 browser.)
+- Run 1 on the integration commit `730c862` (`$TMPDIR/network-logs/wave-a-integration-suite-run1.log`, 11:30–12:00 UTC):
+  `npm run check` pass; non-browser 1,630 tests (the baseline's 1,627 + the 3 new), 1,629 pass, 0 fail, 0 cancelled, 1 skipped
+  (the same win32-only test); browser 153/153. Exit 0, no reruns. The new tests took 13.6 s (end to end), 1.9 s and 8.1 s.
+- Run 2, the same commit (`$TMPDIR/network-logs/wave-a-integration-suite.log`, 12:00–12:30 UTC): `npm run check` pass;
+  non-browser 1,630 tests, 1,629 pass, 0 fail, 0 cancelled, 1 skipped; browser 153/153. Exit 0, no reruns.
+- No failure appeared in any of the three full runs, so nothing needed a timing fix; Task 06's known `ECONNRESET` flake in
+  `network-jobs` "job routes over HTTP" did not occur.
+
+**For wave B at merge (Tasks 10 and 11).**
+
+- *Merge overlaps:* `public/network.js` (the `activity` creation line now passes `onEvent`/`onLive`; `STREAM_TABS`; the
+  `activity?.live(...)` lines in `render()` and `showInner()`; `loadJobs()`'s scheduling and the new `tasksShown`, `tasksEvent`,
+  `tasksLive`), `public/network-activity.js` (`setLive`, `receive`, `describe`, `queueRow`, `renderJob`/`runLink`, the returned
+  object), `src/network/jobs.mjs` (`activity()`'s event), `tests/fixtures/fake-headless-cli.mjs`, architecture §18 items 10 and
+  15 and §19 item 12 (edited in place; no new section, so the lanes' appended sections do not collide with this one).
+- *Task 10 (designer and run view):* the page keeps **one** event stream (4 per computer); a run view should follow it through
+  the same `create(host)` hooks rather than open a second stream: extend `network.js`'s `onEvent` to dispatch `pipeline.*` and
+  step-job events to the run view and include its section in the `activity.live(...)` condition. `GET
+  /api/network/events?pipelineRunId=` now also returns the run's `job.activity` events. The job record's "Run …: show its events"
+  button (`runLink` in `network-activity.js`) should open the run view once it exists. `[[barrier:…]]` and
+  `tests/network-pipeline-e2e.test.mjs` show how to run pipelines on the real worker with fakes.
+- *Task 11 (REST/MCP):* `job.activity` events now carry `kind`, `pipelineRunId` and `nodeId`; a machine-facing event or job view
+  that allowlists fields should decide whether to pass them (they are IDs and a lower-case word, no content). Nothing in
+  `src/network/http.mjs`, `events.mjs` or the route table changed here.
+
+**Known limits.** The Tasks tab's 30 s safety read means a change that is not journaled (a sign-in wait, a new slot count) can
+take up to 30 s to show while the stream is live. With the Tasks tab open the page also reads the Activity summary (after events
+and every 20 s), as the Activity tab does. The run link searches the loaded timeline (newest 100 events, live ones, older pages),
+not the whole journal. Paid CLI runs: 2.
+
+**Commits** (local `feat/network`, never pushed or merged): 730c862 (wiring, tests, smoke script, architecture §18/§19), then this log
+entry with the "Live provider runs" table.
