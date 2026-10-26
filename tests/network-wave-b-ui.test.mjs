@@ -116,6 +116,7 @@ test('Schedules: a pipeline schedule of a published version only, saved off; Swi
   assert.deepEqual([...$('#network-schedule-pipeline').options].map(option => [option.value, option.textContent]), [[`${digest.id}@2`, 'Digest · version 2 (latest)'], [`${digest.id}@1`, 'Digest · version 1']], 'published versions only');
   assert.equal($('#network-schedule-agent').closest('.network-schedule-part').hidden, true, 'the job fields are hidden');
   await until(() => /Steps2 steps after sub-pipelines are expanded; 1 agent job\..*Cost/.test($('#network-schedule-facts')?.textContent || ''), 'the run facts of the chosen version');
+  assert.match($('#network-schedule-facts').textContent, /a step whose agent waits for your answer or for its sub-jobs does\)/, 'the deadline keeps counting while a step’s job waits');
   ctx.choose('#network-schedule-pipeline', `${digest.id}@1`);
   $('#network-schedule-name').value = 'Nightly digest'; $('#network-schedule-run-input').value = 'Today’s notes.';
   $('.network-schedule-form').dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
