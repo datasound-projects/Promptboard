@@ -126,6 +126,31 @@ test('P2-5: a replay from 0 parses each journal segment about once, not once per
   assert.deepEqual((await events.read({ after: total - 2, limit: 10 })).events.map(event => event.seq), [total - 1, total, total + 1], 'forward after backward reads');
 });
 
+test('P2-7: a join(any) report says a step was still running when it was saved, never that it did not run', async t => {
+  const worker = fakeWorker({ mode: 'manual' });
+  const ctx = await fixture(t, { worker });
+  const lead = await ctx.register('lead');
+  const network = (await ctx.owner('/api/network/networks', 'POST', { name: 'Desk', nodes: [{ id: `n_${pad(1)}`, type: 'agent', agentId: lead.id, position: { x: 0, y: 0 } }], edges: [] })).json.network;
+  await ctx.owner(`/api/network/networks/${network.id}/publish`, 'POST', { expectedRevision: 1 });
+  const step = (n, type, label, config) => ({ id: `n_${pad(n)}`, type, label, position: { x: n * 200, y: 0 }, config });
+  const edge = (n, from, to, fromPort) => ({ id: `e_${pad(n)}`, from: `n_${pad(from)}`, to: `n_${pad(to)}`, fromPort, toPort: 'input' });
+  const pipeline = (await ctx.owner('/api/network/pipelines', 'POST', { networkId: network.id, networkVersion: 1, name: 'First answer wins',
+    nodes: [step(1, 'agent', 'Fast', { agentId: lead.id }), step(2, 'agent', 'Slow', { agentId: lead.id }), step(3, 'join', 'First', { require: 'any' }),
+      step(4, 'output', 'Report', { name: 'report', include: [`n_${pad(1)}`, `n_${pad(2)}`] })],
+    edges: [edge(1, 1, 3, 'text'), edge(2, 2, 3, 'text'), edge(3, 3, 4, 'done')] })).json.pipeline;
+  assert.equal((await ctx.owner(`/api/network/pipelines/${pipeline.id}/publish`, 'POST', { expectedRevision: 1 })).status, 200);
+  const a = worker.next(), b = worker.next();
+  const { runId } = (await ctx.owner(`/api/network/pipelines/${pipeline.id}/runs`, 'POST', { version: 1, confirm: true })).json;
+  const entries = await Promise.all([a, b]), byNode = id => entries.find(entry => entry.job.nodeId === `n_${pad(id)}`);
+  const finish = async (entry, text) => { await entry.own.launching(); await entry.own.spawned({ pid: 4242 }); await entry.own.finish({ status: 'completed', exitCode: 0, result: { text } }); entry.end(); };
+  await finish(byNode(1), 'Fast answer.');
+  await until(async () => (await ctx.owner(`/api/network/pipeline-runs/${runId}`)).json.run.nodes[`n_${pad(4)}`].status === 'completed', 'report written', 10000);
+  await finish(byNode(2), 'Slow answer.');
+  await until(async () => (await ctx.owner(`/api/network/pipeline-runs/${runId}`)).json.run.status === 'completed', 'run completed', 10000);
+  const report = (await ctx.owner(`/api/network/pipeline-runs/${runId}/nodes/n_${pad(4)}/report`)).json.text;
+  assert.equal(report, '# First answer wins\n\n## Fast\n\nFast answer.\n\n## Slow\n\n_This step had not finished when this report was saved._\n');
+});
+
 test('P2-9: a machine client’s open stream ends at its expiry and delivers nothing after it', async t => {
   let skew = 0;
   const ctx = await fixture(t, { worker: fakeWorker({ mode: 'manual' }), machineOptions: { now: () => Date.now() + skew } });

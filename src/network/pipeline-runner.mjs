@@ -244,7 +244,8 @@ export class PipelineRunner {
     for (const id of step.config.include) {
       const refs = inputs.filter(ref => ref.node === id);
       lines.push('', `## ${this.#label(plan, id)}`, '');
-      if (!refs.length) lines.push('_This step did not run in this run._');
+      // After a join of `any`, a step can still be on its way when the report is saved: it may complete later.
+      if (!refs.length) lines.push(STEP_ENDED.has(r.nodes[id].status) ? '_This step did not run in this run._' : '_This step had not finished when this report was saved._');
       for (const ref of refs) { const text = await this.#artifact(r, ref); lines.push(ref.port === 'json' ? `\`\`\`json\n${JSON.stringify(JSON.parse(text), null, 2)}\n\`\`\`` : text.trimEnd()); }
     }
     const text = `${lines.join('\n')}\n`;
