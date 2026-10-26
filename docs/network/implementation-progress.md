@@ -1655,3 +1655,39 @@ at a time. The run view's network is named by version only. The 200-step canvas 
 software rendering. Paid CLI runs: 0.
 
 **Commits.** 6bc96d1 (Task 10), then this log entry.
+
+### Phase-2 review fixes (Tasks 06–11)
+
+An independent review of Tasks 06–11 at 96987d8 (`$TMPDIR/network-logs/review-p2/FINDINGS.md`, its repros and outputs
+beside it) listed one P2 and ten P3 findings. All eleven are fixed at their root on `feat/network-wave-b`, each with a test
+in `tests/network-review2.test.mjs` (server) or `tests/network-review2-ui.test.mjs` (page) that failed before its fix
+(`review2-fix-before-server.log`: 7 of 7 failing; `review2-fix-before-ui.log`: 6 of 6, the Task 10 seams test included)
+and passes after. Task 10's two seams are wired. Mutation check: each fix reverted on its own, its test run, the file
+restored from HEAD (`git stash` never used): 25 of 25 mutations fail (`review2-fix-mutations.log`). Architecture: §19 item 8
+(`job.recovered`), §21 item 11 (the seams).
+
+| Finding | Fix | Test (`network-review2*`) | Commit |
+|---|---|---|---|
+| P2-1 an edit made while a pipeline draft saves is lost | the working copy becomes the server's copy only when it still equals what the save (or the publish) sent; otherwise only the draft and its revision move on and the edit stays unsaved with its undo steps. `network-graph.js` had the same save-then-replace pattern and is fixed the same way (its publish saves inside its modal dialog, so it needs nothing more) | "P2-1: an edit made while the pipeline draft saves…" (Save, and Save, validate and publish), "P2-1 (Graph)…" | 225681e |
+| P2-2 a machine stream slot leaks when its reader leaves during an await | the listener returns when the response is gone after authentication (nothing kept in the open set), and `eventStream` counts the stream and hears its close before awaiting the own-job scan | "P2-2…" (8 drops during a slow scan, 8 during slow authentication; a new client's stream is then 200) | ab5797d |
+| P2-3 retention never removes finished runs' step-job logs | the runner asks the job engine for one more retention pass once it has loaded (`jobs.sweep()`, which `close()` waits for) | "P2-3…" | c6d2d97 |
+| P2-4 an interrupted run hides Cancel | Cancel run is offered for every run that has not ended | "P2-4…" (interrupted from its backup, then cancelled from the view) | 72e72fe |
+| P2-5 each journal page parses a whole segment | a segment's parse is reused while the file keeps the size it was parsed at (append only, so the same lines); the two segments read last stay parsed; a backward page no longer reverses the shared array. Repro: 50,000 events in 250 pages took 5.8 s (23 ms a page, event loop blocked up to 46 ms) before, 0.1 s after (blocked up to 21 ms: one parse) | "P2-5…" (JSON.parse calls for a 6,000-event replay: 96,034 before, under 3 per event after; appends and backward reads stay right) | 2e0ee9d |
+| P2-6 a job's or agent's events older than one journal read are "not in the journal" | the job record and the agent's Activity tab follow `prev` until they have a page of events or reach the journal's start (at most 40 reads, more than the kept journal holds) | "P2-6…" (50,000 newer events) | 2213d5d |
+| P2-7 a join(any) report says a slower step "did not run" | a step still open when the report is saved reads "This step had not finished when this report was saved."; an ended step without a result keeps "did not run" | "P2-7…" (exact report) | 8838923 |
+| P2-8 a finished job read from its backup is recovered silently | every job read from its `.bak` is saved once, one revision past the lost copy, and appends one `job.recovered` event (`RESTORED_FROM_BACKUP`, `by: app`) | "P2-8…" (the event, its fields, revision newer than the lost one) | c574994 |
+| P2-9 a machine client's stream outlives its expiry | the stream ends at the client's expiry (a timer, re-armed past setTimeout's 24.8-day ceiling), and an event that comes after the expiry by the clock ends it instead of reaching the client | "P2-9…" (a stream opened 400 ms before expiry ends; a clock jump past expiry delivers nothing) | ab5797d |
+| P2-10 the Create client form offers only the first 200 agents and networks | it reads every page of both | "P2-10…" (205 agents) | 520d7af |
+| P2-11 a job cancelled during the worker's claim leaves its entry in memory | `LocalJobWorker.claim()` keeps nothing once the attempt's signal is aborted (the repro now answers `{ process: 'none' }`) | "P2-11…" | 8acaea3 |
+| Task 10 seams | `network.js` passes its own `followRun` on the page's one event stream (Activity's; never a second, per the wave-A integration constraint): a run on screen turns that stream on, the `onEvent` fan-out calls `changed()` for `pipeline.run`, `pipeline.node`, `job.status` and `job.activity` events of the run, and it polls every second only while the stream is not live. `app.js` passes `openJob` (`#/network/activity/<jobId>`); the job record also offers "Open run". The Task 10 UI test expects the Activity record and now waits for the cancelled job, since the live view shows the cancelled run before the runner has stopped its job | "Task 10 seams…" (at most one stream; no run reads for 2.5 s while live; an approval made elsewhere arrives live; polling while all 4 stream slots are taken) | 55d80e2 (a first wiring with its own stream), dfb0c68, 5ed5dcf |
+
+**Test runs** (PATH: a `node` symlink plus `/usr/bin:/bin:/usr/sbin:/sbin`, which hold `git` and `sh` but no AI CLI; with
+`node` alone the two tests that call `git --version` fail): `npm run check` passes; the new and changed tests
+(`network-review2`, `network-review2-ui`, `network-pipeline-ui`) twice, 18 of 18 each time; every non-browser
+`tests/network-*.test.mjs` (23 files) with `remote-access`, `project-explorer-ui`, `sandbox-ui`, `ui`, `ui-2` and `ui-3`,
+301 of 301 (`review2-fix-touched.log`); every `tests/network-*browser*.test.mjs` (7 files), 11 of 11
+(`review2-fix-browser.log`). The full `npm test` is left to the coordinator after the merge.
+
+**Known limits.** When a run ends, its view stops following at the first read that sees the end; jobs the runner stops
+after saving that end (a failed step halting the run) can show their last status in the step details until the view is
+opened again, as with polling before. The journal keeps at most two parsed segments in memory. Paid CLI runs: 0.
