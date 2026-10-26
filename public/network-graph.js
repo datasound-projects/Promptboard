@@ -509,12 +509,14 @@ window.PromptboardNetworkGraph = (() => {
         return false;
       } finally { ed.saving = false; syncCanvas(); renderEditor(); }
     }
-    /** The nodes a refused save points at: the sub-network that closes a cycle, or references that are not valid. */
+    /**
+     * The nodes a refused save or publish points at: the sub-network on the way of a cycle or to a version that cannot be
+     * read (`details.path[1]` is this network's own node), or references that are not valid.
+     */
     function problemNodes(failure) {
       const details = failure.details || {};
-      if (failure.code === 'NETWORK_CYCLE') return ed.nodes.filter(node => node.networkId === details.path?.[1]).map(node => node.id);
-      if (failure.code === 'NETWORK_REFERENCE_INVALID') return ed.nodes.filter(node => details.agentIds?.includes(node.agentId) || (node.networkId && node.networkId === details.networkId)).map(node => node.id);
-      return [];
+      return ed.nodes.filter(node => (node.networkId && node.networkId === details.path?.[1]) || details.agentIds?.includes(node.agentId)
+        || (failure.code === 'NETWORK_REFERENCE_INVALID' && node.networkId && node.networkId === details.networkId)).map(node => node.id);
     }
     function publishDialog() {
       const next = (ed.draft.publishedVersions.at(-1)?.version || 0) + 1;

@@ -343,6 +343,12 @@ Refinements made while building Network → Graph and Network → Library (`src/
    this network, or pin a version of it that does not contain this network"); a self-pin is a cycle, not a missing
    reference. The editor marks the node that closes the loop (`details.path[1]`) and the nodes of a
    `NETWORK_REFERENCE_INVALID`, and offers to remove them; the draft on disk is unchanged and the edits are kept.
+   *(Phase-1 review, P1-6)* A draft update checks only the references it adds (a new agent, a new or changed pin):
+   pinned versions never change, so kept pins cannot form a new cycle, and an unreadable version deep inside one no
+   longer blocks a rename, a description or an archive. Create, duplicate and publish check every reference. A version
+   that cannot be read on the way fails with its own code plus `details: { networkId, version, path }` (`path[1]` is the
+   network's own node) and a message naming that sub-network; the editor marks and offers to remove that node, after a
+   refused save or a refused publish.
 6. **`collapsed`** stays accepted and round-trips unchanged, but the Graph does not write it: expansion is view state
    (default collapsed, lazy), because expanding must not change the draft or a version's hash.
 

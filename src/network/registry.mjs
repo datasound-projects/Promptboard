@@ -54,6 +54,7 @@ function labels(value, label) {
 function time(value) { if (!Number.isSafeInteger(value) || value < 0) invalidFile(); return value; }
 const accepts = check => { try { check(); return true; } catch { return false; } };
 const tooLarge = draft => Buffer.byteLength(JSON.stringify(draft)) > LIMITS.draftBytes;
+const reference = node => (node.type === 'agent' ? node.agentId : `${node.networkId}@${node.version}`);
 /** A stored row or draft is used only when it is exactly what this module writes; anything else counts as damaged. */
 const storedRow = row => object(row) && AGENT_ID.test(row.id) && typeof row.baseResourceId === 'string' && EXTERNAL_ID.test(row.baseResourceId) && Number.isSafeInteger(row.revision)
   && ['tags', 'capabilities', 'projectAllowlist'].every(key => Array.isArray(row[key])) && typeof row.enabled === 'boolean';
@@ -125,7 +126,7 @@ const breathe = () => new Promise(resolve => setImmediate(resolve));
  * The containment path from `rootId` back to itself through pinned published versions, or null. Pins name published
  * versions only, so drafts are reached only as the root. Depth first with one shared path: each version is walked once,
  * O(versions + pins); `within(networkId)` may leave out networks that cannot lead back. Every 1,000 versions it lets the
- * event loop run, so a large walk never holds the server.
+ * event loop run, so a large walk never holds the server. A version it cannot read fails with `details.path` to it.
  */
 async function containmentCycle(rootId, nodes, versionOf, within = () => true) {
   const walked = new Set(), path = [rootId];
@@ -138,7 +139,13 @@ async function containmentCycle(rootId, nodes, versionOf, within = () => true) {
       walked.add(key);
       if (walked.size % 1000 === 0) await breathe();
       path.push(node.networkId);
-      const found = await walk((await versionOf(node.networkId, node.version)).nodes);
+      let version;
+      try { version = await versionOf(node.networkId, node.version); } catch (error) {
+        // Where the unreadable version is: its network and number, and the path to it (path[1] is the root's own node).
+        if (error instanceof NetworkError) error.details = { networkId: node.networkId, version: node.version, ...error.details, path: [...path] };
+        throw error;
+      }
+      const found = await walk(version.nodes);
       if (found) return found;
       path.pop();
     }
@@ -386,7 +393,13 @@ export class NetworkRegistry {
       if (error.code === 'NOT_FOUND') fail('A sub-network node pins a version that is not published.', 'NETWORK_REFERENCE_INVALID', 400, { networkId, version: number });
       throw error;
     });
-    const path = await containmentCycle(id, nodes, pinned);
+    let path;
+    try { path = await containmentCycle(id, nodes, pinned); } catch (error) {
+      if (!(error instanceof NetworkError) || !error.details?.path) throw error;
+      const through = (await this.#loadDrafts()).get(error.details.path[1])?.name;
+      error.message = `${error.message} It is reached through the sub-network ${through ? `“${through}”` : error.details.path[1]}: remove that node, or restore the network’s files.`;
+      throw error;
+    }
     if (!path) return;
     const drafts = await this.#loadDrafts(), names = path.map(item => item === id ? name : drafts.get(item)?.name || item);
     fail(`A network cannot contain itself: ${names.join(' → ')}. Remove the sub-network “${names[1]}” from this network, or pin a version of it that does not contain this network.`, 'NETWORK_CYCLE', 400, { path });
@@ -566,7 +579,10 @@ export class NetworkRegistry {
       if (input.expectedRevision !== draft.revision) conflict('This network');
       const content = networkContent(input, draft);
       this.#uniqueName(await this.#loadDrafts(), content.name, id);
-      await this.#checkReferences(id, content);
+      // Only references this change adds: pinned versions never change, so kept pins cannot form a cycle now, and a
+      // damaged version deep inside one must not block a rename or an archive (publish still checks everything).
+      const known = new Set(draft.nodes.map(reference));
+      await this.#checkReferences(id, { name: content.name, nodes: content.nodes.filter(node => !known.has(reference(node))) });
       const { archived, ...rest } = draft, shelved = input.archived ?? Boolean(archived); // Archived only hides it from lists: pins of it keep working.
       return this.#detail(await this.#saveDraft({ ...rest, ...content, revision: draft.revision + 1, updatedAt: this.now(), ...(shelved ? { archived: true } : {}) }));
     });

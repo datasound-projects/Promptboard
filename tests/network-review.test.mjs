@@ -214,3 +214,37 @@ test('P1-8: an imported draft over 8 MiB is refused before anything is written',
   await assert.rejects(readdir(join(dataDir, 'network')), { code: 'ENOENT' }, 'no registration, version or draft was written');
   assert.deepEqual([(await registry.listAgents()).total, (await registry.listNetworks()).total], [0, 0]);
 });
+
+test('P1-6: a damaged version deep inside a pinned sub-network blocks neither rename, description, archive nor an unchanged save; publish and a new pin name the node', async t => {
+  const { registry, lead, open, file } = await fixture(t);
+  const sub = (n, networkId) => ({ id: `n_${pad(n)}`, type: 'subnetwork', networkId, version: 1, position: { x: 0, y: 0 } });
+  const c = (await registry.createNetwork({ name: 'C' })).network; await registry.publishNetwork(c.id, { expectedRevision: 1 });
+  const b = (await registry.createNetwork({ name: 'B', nodes: [sub(1, c.id)] })).network; await registry.publishNetwork(b.id, { expectedRevision: 1 });
+  const a = (await registry.createNetwork({ name: 'A', nodes: [sub(1, b.id), agentNode(2, lead.id)] })).network;
+  const folder = file('networks', c.id.replace('_', '__')), [name] = (await readdir(folder)).filter(item => item.endsWith('.json'));
+  await writeFile(join(folder, name), `${await readFile(join(folder, name), 'utf8')} `); // C v1 no longer matches its hash.
+  const fresh = open(); // A restart: nothing cached.
+  let revision = 1;
+  for (const change of [{ name: 'A2' }, { description: 'Changed' }, { archived: true }, { archived: false },
+    { nodes: [{ ...sub(1, b.id), position: { x: 40, y: 50 } }, agentNode(2, lead.id)] }, { nodes: [sub(1, b.id)] }]) {
+    const saved = await fresh.updateNetwork(a.id, { expectedRevision: revision, ...change });
+    revision = saved.network.revision;
+  }
+  assert.equal(revision, 7, 'every change that adds no reference saved');
+  // Publishing checks every pin: refused, and the error says which node of A leads to the damaged version.
+  const publish = await fresh.publishNetwork(a.id, { expectedRevision: revision }).catch(error => error);
+  assert.equal(publish.code, 'NETWORK_CONTENT_INVALID');
+  assert.deepEqual(publish.details, { networkId: c.id, version: 1, path: [a.id, b.id, c.id] });
+  assert.match(publish.message, /It is reached through the sub-network “B”: remove that node, or restore the network’s files\./);
+  // A change that adds a pin to it is refused the same way; the draft is unchanged.
+  const added = await fresh.createNetwork({ name: 'D', nodes: [sub(1, b.id)] }).catch(error => error);
+  assert.deepEqual([added.code, added.details.path], ['NETWORK_CONTENT_INVALID', [added.details.path[0], b.id, c.id]]);
+  const d = (await fresh.createNetwork({ name: 'D' })).network;
+  const pin = await fresh.updateNetwork(d.id, { expectedRevision: 1, nodes: [sub(1, b.id)] }).catch(error => error);
+  assert.deepEqual([pin.code, pin.details.path, (await fresh.network(d.id)).network.revision], ['NETWORK_CONTENT_INVALID', [d.id, b.id, c.id], 1]);
+  // Adding a new reference still checks it: an unregistered agent, and a cycle through a kept pin's network.
+  await assert.rejects(fresh.updateNetwork(a.id, { expectedRevision: revision, nodes: [sub(1, b.id), agentNode(2, `agt_${'9'.repeat(20)}`)] }), { code: 'NETWORK_REFERENCE_INVALID' });
+  const e = (await fresh.createNetwork({ name: 'E' })).network; await fresh.publishNetwork(e.id, { expectedRevision: 1 });
+  const f = (await fresh.createNetwork({ name: 'F', nodes: [sub(1, e.id)] })).network; await fresh.publishNetwork(f.id, { expectedRevision: 1 });
+  await assert.rejects(fresh.updateNetwork(e.id, { expectedRevision: 2, nodes: [sub(1, f.id)] }), { code: 'NETWORK_CYCLE' });
+});

@@ -180,13 +180,15 @@ test('issues name agents that cannot take work and pins that are outdated or unr
   assert.match(detail.issues[1].message, /“Writer” cannot take work: its Base agent is switched off\. Fix it in Base, or remove it from this network\./);
   assert.deepEqual([detail.issues[2].latest, detail.issues[2].version], [2, 1]);
   assert.deepEqual([detail.refs.agents[agents[1].id].enabled, detail.refs.agents[agents[2].id].staleReason], [false, 'disabled']);
-  // A pinned version whose file no longer matches its hash: the detail still answers and says so; a save is refused.
+  // A pinned version whose file no longer matches its hash: the detail still answers and says so; a change that adds no
+  // reference still saves (Phase-1 review P1-6), publishing is refused and names the node.
   const folder = draftFile(child.id).replace(/\.json$/, ''), v1 = (await readdir(folder)).find(name => name.startsWith('v1-'));
   await writeFile(join(folder, v1), (await readFile(join(folder, v1), 'utf8')).replace('Review pair', 'Tampered pair'));
   const fresh = new NetworkRegistry({ dataDir, base: registry.base, projects: async () => [] });
   const damaged = await fresh.networkDetail(parent.network.id);
   assert.deepEqual([damaged.refs.networks[child.id].pinned, damaged.issues.at(-1).code], [null, 'SUBNETWORK_UNAVAILABLE']);
-  await assert.rejects(fresh.updateNetwork(parent.network.id, { expectedRevision: 1, description: 'x' }), { code: 'NETWORK_CONTENT_INVALID' });
+  assert.equal((await fresh.updateNetwork(parent.network.id, { expectedRevision: 1, description: 'x' })).network.description, 'x');
+  await assert.rejects(fresh.publishNetwork(parent.network.id, { expectedRevision: 2 }), { code: 'NETWORK_CONTENT_INVALID', details: { networkId: child.id, version: 1, path: [parent.network.id, child.id] } });
   assert.equal((await fresh.networkDetail(child.id)).usedByUnknown.length, 0);
 });
 
