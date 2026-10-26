@@ -91,8 +91,11 @@ test('the accepted request pins the agent and Base revision with default permiss
   const resource = (await ctx.base.list()).resources.find(item => item.id === 'lead');
   assert.deepEqual(request.permissions, { filesystem: 'read_only', memory: 'agent', projectLessons: false });
   assert.deepEqual([request.tools, request.requireApproval, request.limits, request.instructions], ['none', false, { timeoutMs: 20 * 60_000, maxOutputBytes: 1024 * 1024 }, '']);
-  assert.deepEqual(request.agent, { registrationId: ctx.lead.id, registrationRevision: 1, baseResourceId: 'lead', baseKind: 'profile', baseRevisionRef: resource.revisionRef,
-    primaryAgent: null, provider: 'claude', model: 'sonnet', effort: null, manifest: null });
+  const { manifest, ...agent } = request.agent;
+  assert.deepEqual(agent, { registrationId: ctx.lead.id, registrationRevision: 1, baseResourceId: 'lead', baseKind: 'profile', baseRevisionRef: resource.revisionRef,
+    primaryAgent: null, provider: 'claude', model: 'sonnet', effort: null });
+  // Task 07: the Base manifest is pinned at acceptance with the revision references it delivers (tests/network-worker.test.mjs).
+  assert.deepEqual([manifest.profiles.map(profile => profile.revisionRef), manifest.errors], [[resource.revisionRef], []]);
   assert.deepEqual([request.projectId, request.networkId, request.parentJobId, job.projectId, job.source, job.requester], [null, null, null, null, 'owner', { kind: 'owner', id: null }], 'no card, branch, repository or project is needed');
   assert.equal(request.input.text, 'Use api_key=[redacted] to read it.');
   assert.deepEqual(request.input.json, { token: '[redacted]', n: 1 });
@@ -570,7 +573,7 @@ async function app(t, options = {}, dataDir = null) {
     await board.createProject({ name: 'Site' });
     await board.base.create({ id: 'lead', kind: 'profile', name: 'Lead', configuration: { agent: { provider: 'claude', model: 'sonnet' } } });
   }
-  const started = await startServer({ port: 0, dataDir, executor: null, catalogReader: async provider => ({ provider, source: 'test fixture', models: [] }), ...options });
+  const started = await startServer({ port: 0, dataDir, executor: null, catalogReader: async provider => ({ provider, source: 'test fixture', models: [] }), networkWorker: null, ...options });
   t.after(() => started.close());
   const port = Number(new URL(started.url).port), token = (await (await fetch(`${started.url}/api/session`)).json()).token;
   const call = (path, method = 'GET', body) => request(port, path, { method, body, headers: { 'X-STE-Token': token } });
@@ -597,7 +600,9 @@ test('job routes over HTTP: token checks, 202 queued with the reason, bounded bo
   await new Promise(resolve => {
     const payload = JSON.stringify({ ...body, idempotencyKey: 'lost-answer' });
     const req = http.request({ host: '127.0.0.1', port, path: '/api/network/jobs', method: 'POST', headers: { Host: `127.0.0.1:${port}`, 'X-STE-Token': token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } });
-    req.on('error', () => resolve()); req.on('close', resolve);
+    // A reply that arrives before the socket is destroyed is never read; its reset is expected (unhandled, it failed this
+    // test under load: Task 07 review).
+    req.on('error', () => resolve()); req.on('close', resolve); req.on('response', res => res.on('error', () => {}));
     req.end(payload, () => setTimeout(() => req.destroy(), 30));
   });
   const retried = (await call('/api/network/jobs', 'POST', { ...body, idempotencyKey: 'lost-answer' })).json;

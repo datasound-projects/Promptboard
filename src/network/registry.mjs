@@ -200,11 +200,12 @@ function issuesOf(nodes, refs) {
 /**
  * What each CLI can do for Network, from the provider capability matrix (docs/network/architecture.md §8): 'yes',
  * 'partial', 'no' or 'unknown'; `jobTools` lists the Network job tool modes ([] = refused). A provider that is unset or
- * not in the matrix is unknown throughout, never assumed capable.
+ * not in the matrix is unknown throughout, never assumed capable. Headless usage of Claude and Codex was confirmed by the
+ * Task 07 live smoke (architecture §18).
  */
 const MATRIX = Object.freeze({
-  claude: { jobTools: ['none', 'web'], toolEvents: 'yes', waitingEvents: 'yes', readOnly: 'yes', webSearch: 'yes', sessionId: 'yes', usage: 'unknown', dockerSandbox: 'yes', liveVerified: 'yes' },
-  codex: { jobTools: ['none', 'web'], toolEvents: 'partial', waitingEvents: 'no', readOnly: 'yes', webSearch: 'yes', sessionId: 'yes', usage: 'unknown', dockerSandbox: 'yes', liveVerified: 'yes' },
+  claude: { jobTools: ['none', 'web'], toolEvents: 'yes', waitingEvents: 'yes', readOnly: 'yes', webSearch: 'yes', sessionId: 'yes', usage: 'yes', dockerSandbox: 'yes', liveVerified: 'yes' },
+  codex: { jobTools: ['none', 'web'], toolEvents: 'partial', waitingEvents: 'no', readOnly: 'yes', webSearch: 'yes', sessionId: 'yes', usage: 'yes', dockerSandbox: 'yes', liveVerified: 'yes' },
   gemini: { jobTools: ['none'], toolEvents: 'partial', waitingEvents: 'yes', readOnly: 'yes', webSearch: 'no', sessionId: 'partial', usage: 'no', dockerSandbox: 'no', liveVerified: 'no' },
   agy: { jobTools: [], toolEvents: 'no', waitingEvents: 'no', readOnly: 'no', webSearch: 'no', sessionId: 'unknown', usage: 'no', dockerSandbox: 'no', liveVerified: 'partial' },
 });

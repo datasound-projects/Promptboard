@@ -35,7 +35,7 @@ export function fakeAuth(overrides = {}) {
     logout: async provider => { log.push(['logout', provider]); return { state: 'signed-out' }; }, ...overrides };
 }
 const running = new Map(); // Data folder → the app serving it.
-export async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner, dataDir, executor = 'auto', folderPicker, usageReader } = {}) {
+export async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner, dataDir, executor = 'auto', folderPicker, usageReader, networkWorker = null } = {}) {
   // Every page gets a private board folder unless a test shares one to simulate a reload.
   const ownsDataDir = !dataDir;
   if (!dataDir) dataDir = await mkdtemp(join(tmpdir(), 'pb-ui-'));
@@ -61,7 +61,7 @@ export async function setup(t, { catalogReader = async id => ({ provider: id, ..
   const requests = [];
   // A shared folder simulates a restart and reload: one app runs per data folder, so the earlier one stops first.
   await running.get(dataDir)?.close();
-  app = await startServer({ port: 0, dataDir, executor, authAdapter, usageReader, ...(folderPicker ? { folderPicker } : {}), detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
+  app = await startServer({ port: 0, dataDir, executor, authAdapter, usageReader, networkWorker, ...(folderPicker ? { folderPicker } : {}), detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
     runner: runner ? async request => { calls.push(request); return runner(request); } : async request => { calls.push(request); return { text: request.prompt.includes('prose in Polish') ? 'Dodaj test.' : request.prompt.includes('prose in German') ? 'Füge einen Test hinzu.' : 'Add a test.', reportedModels: ['actual-model'], durationMs: 3 }; } });
   const dom = new JSDOM(await readFile(new URL('../../public/index.html', import.meta.url), 'utf8'), { url: app.url + hash, runScripts: 'outside-only' });
   running.set(dataDir, app);

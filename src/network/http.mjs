@@ -32,12 +32,13 @@
  *   PATCH /api/network/agents/:id/posts/:pid  { expectedRevision, markdown?, references? }
  *   DELETE /api/network/agents/:id/posts/:pid { expectedRevision }
  *
- * Jobs (jobs.mjs). None starts a process by itself: a job runs only when the injected worker claims it.
+ * Jobs (jobs.mjs). None starts a process by itself: a job runs only when the worker (worker-local.mjs) claims it.
  *   GET  /api/network/settings              maxConcurrentJobs, defaultTimeoutMs, outputRetentionDays, limits
  *   PATCH /api/network/settings             { expectedRevision, …settings }
  *   GET  /api/network/jobs                  ?status agentId projectId networkId parentJobId offset limit
  *   POST /api/network/jobs                  { agentId, input: { text, json? }, instructions?, tools?, permissions?, limits?, requireApproval?, projectId?, networkId?, parentJobId?, idempotencyKey? }
  *   GET  /api/network/jobs/:id              the job, its accepted request and child jobs
+ *   GET  /api/network/jobs/:id/result       a completed job's result { text, json } (checked against its hash)
  *   DELETE /api/network/jobs/:id            { expectedRevision }: a finished job only
  *   POST /api/network/jobs/:id/cancel       {}
  *   POST /api/network/jobs/:id/approve      { expectedRevision, decision: 'approve' | 'reject' }
@@ -98,6 +99,7 @@ export const NETWORK_ROUTES = Object.freeze([
   route('GET', '/jobs', c => c.jobs.list(query(c.searchParams, ['status', 'agentId', 'projectId', 'networkId', 'parentJobId']))),
   route('POST', '/jobs', async c => c.jobs.submit(await c.body(JOB_LIMITS.submitBody)), accepted => (accepted.deduplicated ? 200 : 202)),
   route('GET', `/jobs/${JOB}`, (c, id) => c.jobs.read(id)),
+  route('GET', `/jobs/${JOB}/result`, (c, id) => c.jobs.result(id)),
   route('DELETE', `/jobs/${JOB}`, async (c, id) => c.jobs.remove(id, await c.body(BODY.small))),
   jobAction('cancel', 'cancel'), jobAction('approve', 'approve'), jobAction('retry', 'retry'), jobAction('close', 'closeJob'),
 ]);

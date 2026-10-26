@@ -168,7 +168,7 @@ test('register a Base agent, edit its Network identity, disable and enable it: B
   assert.match($('#network-status').textContent, /Registered Research lead\. Base is unchanged\./);
   // The profile: identity, Base settings read from Base, projects, capabilities with unknown where unknown, operations.
   const detail = $('#network-detail').textContent;
-  for (const text of [stored.id, 'Lead · Agent · revision 1', 'Claude Code', 'sonnet', 'Site', 'Lead the research.', 'Not in a network yet.', 'Usage reported', 'Unknown', 'Read only. Network jobs never change files.', 'No tools, Web search']) assert.ok(detail.includes(text), `profile shows ${text}`);
+  for (const text of [stored.id, 'Lead · Agent · revision 1', 'Claude Code', 'sonnet', 'Site', 'Lead the research.', 'Not in a network yet.', 'Usage reported', 'Read only. Network jobs never change files.', 'No tools, Web search']) assert.ok(detail.includes(text), `profile shows ${text}`);
   // Edit the Network identity.
   $('#network-edit').focus(); $('#network-edit').click(); await until(() => $('#network-form-name')?.value === 'Research lead', 'edit form');
   assert.equal($('#network-form-base'), null, 'the Base agent of a registration never changes');
@@ -274,12 +274,12 @@ test('keyboard and labels: tablists follow arrow keys, every control is named, E
   assert.equal($('#network-register').hidden, true, 'no Register agent outside Agents');
   key(ctx, tab('federation'), 'Home'); await until(() => selected('agents', '#/network')() && !$('#network-panel-agents').hidden, 'Home');
   await visit(ctx, `#/network/agents/${lead.id}`, () => $('#network-detail-heading'));
-  // Profile tabs: Tasks and Activity are clearly unavailable; Memory and Posts work.
+  // Profile tabs: Activity is clearly unavailable; Tasks (Task 07), Memory and Posts work.
   const inner = id => $(`#network-profile-tab-${id}`);
   inner('profile').focus(); key(ctx, inner('profile'), 'ArrowRight');
   assert.deepEqual([win.document.activeElement, $('#network-profile-panel-tasks').hidden, $('#network-profile-panel-profile').hidden], [inner('tasks'), false, true]);
-  for (const id of ['tasks', 'activity']) assert.match($(`#network-profile-panel-${id}`).textContent, /Not available yet\./);
-  for (const id of ['memory', 'posts']) assert.doesNotMatch($(`#network-profile-panel-${id}`).textContent, /Not available yet/);
+  assert.match($('#network-profile-panel-activity').textContent, /Not available yet\./);
+  for (const id of ['tasks', 'memory', 'posts']) assert.doesNotMatch($(`#network-profile-panel-${id}`).textContent, /Not available yet/);
   key(ctx, inner('tasks'), 'End'); assert.deepEqual([win.document.activeElement, $('#network-profile-panel-posts').hidden], [inner('posts'), false]);
   key(ctx, inner('posts'), 'Home'); assert.equal($('#network-profile-panel-profile').hidden, false);
 
@@ -444,8 +444,9 @@ test('Posts tab: a report in safe Markdown, labelled as yours and not as a run e
   $('#network-confirm-delete').click();
   await until(() => !$('#network-dialog').open && /No reports yet\./.test($('#network-post-empty').textContent), 'deleted'); await ctx.idle();
   assert.equal(win.document.activeElement, $('#network-post-write'));
-  // A report is never shown as activity or a job: those tabs still have nothing.
-  for (const id of ['tasks', 'activity']) assert.match($(`#network-profile-panel-${id}`).textContent, /Not available yet\./);
+  // A report is never shown as activity or a job: Activity still has nothing, and no job exists.
+  assert.match($('#network-profile-panel-activity').textContent, /Not available yet\./);
+  assert.equal((await call(ctx, '/api/network/jobs')).json.total, 0);
   assert.deepEqual([ctx.calls.length, (await ctx.app.board.view()).runs.length], [0, 0]);
 });
 

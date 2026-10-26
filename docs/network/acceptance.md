@@ -128,8 +128,9 @@ requirements are in [NETWORK_REQUIREMENTS.md](NETWORK_REQUIREMENTS.md).
 
 ### Task 07 — local worker runtime
 
-`tests/network-worker.test.mjs` (fake headless Claude, Codex and Gemini executables, like `tests/research-cli.test.mjs`)
-and `tests/network-worker-live.test.mjs` (opt-in):
+`tests/network-worker.test.mjs` (fake headless Claude, Codex and Gemini executables, `tests/fixtures/fake-headless-cli.mjs`),
+`tests/network-tasks-ui.test.mjs` and `tests/network-tasks-browser.test.mjs` (the Tasks tab), and the opt-in
+`scripts/network-live-smoke.mjs` (a script, never part of `npm test`, so no real CLI can reach the suite's PATH):
 
 1. Exact argv per provider and tool mode (`none`, `web`): only the flags of architecture §7.2; Antigravity and Gemini
    `web` refused with a reason.

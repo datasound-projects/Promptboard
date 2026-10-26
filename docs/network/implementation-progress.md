@@ -850,3 +850,167 @@ Paid CLI runs: 0.
 a5e709e (P1-4, P1-5, P1-9, P1-10), 62fb4bb (unconfirmed points), then this log entry.
 
 **Next task: 07.**
+
+### Task 07 — Local worker runtime (2026-10-26, parallel wave A, branch `feat/network-07`)
+
+**What was done.** Network jobs now run on this computer. `src/network/worker-local.mjs` (`LocalJobWorker`) is the worker of
+Task 06's engine: an accepted job runs once through the existing headless adapters (`streamResearch` for Claude Code and
+Codex, `runProvider` for tool-less Gemini; Antigravity refused), in an empty folder of its own under the data folder,
+read-only, with the Base revisions pinned when the job was accepted, the approved memory and lessons it may have, and its
+instructions and input indented inside labelled sections. It completes only with exit 0 and the CLI's structured final answer.
+The app uses this worker by default (tests inject a fake or `null`). The agent's **Tasks** tab runs a job after a confirmation
+and follows the agent's jobs (polling). Not done here: the event journal (Task 08; activity goes to `this.events?.append`) and
+pipelines (Task 09). Decisions: architecture §18.
+
+**Files.** New: `src/network/worker-local.mjs`, `tests/network-worker.test.mjs`, `tests/network-tasks-ui.test.mjs`,
+`tests/network-tasks-browser.test.mjs`, `tests/fixtures/fake-headless-cli.mjs`, `scripts/network-live-smoke.mjs`. Changed:
+`src/research-cli.mjs` (R1), `src/providers.mjs` (`onSpawn`), `src/base-resolver.mjs` (R2), `src/server.mjs` (default worker),
+`src/network/jobs.mjs`, `src/network/http.mjs`, `src/network/registry.mjs` (usage `yes` for Claude/Codex), `public/network.js`,
+`public/styles.css`; tests `network-jobs` (manifest expectation; the lost-answer flake below), `network-ui` (Tasks works),
+`network-registry` (usage), `remote-access` (result row), `helpers/test-server.mjs` and `helpers/ui-harness.mjs` (no worker
+unless a test passes one); `docs/network/architecture.md` §18, `docs/network/acceptance.md` (Task 07 file names), this section.
+
+**Worker design** (§18 items 1–12). `claim(job, own)`: the launch checks (read-only only, Claude/Codex/Gemini, tool mode,
+`checkBaseRevocations` of the pinned manifest, the CLI resolves); any refusal fails the job with no `launchingAt` and no
+process. `start(job, own)`: a new `attempts/<att>/workspace/` (0700, empty) as the working directory; `prepareBase` from exactly
+the pinned revisions; `registry.memory.resolve()` for memory and lessons; `prompt.md` and `base-manifest.json` written;
+`own.launching()`; the runner (`streamResearch` with `persist: false`, `requireFinal`, `onSpawn`, `onUsage`, `onEvent`, or
+`runProvider` with `timeoutMs: null`, `onSpawn`); `onSpawn` → `own.spawned({ pid })` (its failure stops the CLI at once); the
+CLI's process group is ended when it exits; then exactly one `own.finish()` with status, code, fixed reason, exit code,
+coverage, `sideEffects`, `usage` and `nativeSessionId`. Ownership is the engine's lease (`own`), never a card or run; cancel is
+the engine's `AbortController` plus `worker.cancel` (waits for the run to settle, ≤ 3 s); a cancelled, timed-out or stopped run
+reports nothing. Activity goes to `own.activity()` (labels never carry tool arguments) and `stream.jsonl` (bounded evidence).
+
+**Shared-file edits.** `src/server.mjs`: imports `LocalJobWorker`; `networkWorker` defaults to it (`undefined` → local, `null`
+→ none). `src/network/jobs.mjs`: `jobManifest()` and the manifest pinned at submit (`BASE_REQUIRED_UNAVAILABLE` refusal),
+`activity(own, item)` and `own.activity`, `usage`/`nativeSessionId` accepted in reports and stored on the attempt, the view's
+`lastActivity` and `live.coverage`, `result(id)`. No constructor change (Task 08 adds `events`; `activity()` already calls
+`this.events?.append`). `src/research-cli.mjs` (R1): optional `onSpawn`, `onUsage` (usage parsed from Claude `result` and Codex
+`turn.completed`), `requireFinal`, `error.exitCode`; Origin Research passes none of them. `src/base-resolver.mjs` (R2): optional
+`layers`. Also `src/providers.mjs`: optional `onSpawn` on `execute`/`runProvider` (Gemini pid and launch order; §18 item 13).
+
+**Routes.** One new route: `GET /api/network/jobs/:id/result` (`NETWORK_ROUTES` row, allowed from a paired device, row added
+to `tests/remote-access.test.mjs`). `localOnly()` unchanged.
+
+**Task 06's `manifest: null` decision.** Built at claim from the current Base only while the agent (and an agent profile's
+primary agent) is still exactly the pinned revision; otherwise `failed BASE_CHANGED` before anything runs (§18 item 3; test
+"a job accepted before Base pinning …").
+
+**UI.** The agent profile's **Tasks** tab (no longer "soon"; Activity stays "soon" for Task 08): "Run a job" (text, tools
+none/web with web disabled and named for Gemini, time limit, optional project and network, approved memory on/off, project
+lessons, and the memory preview of exactly what is added), a confirmation listing what the job may use (and "Cost: not limited;
+usage only if the CLI reports it"), then the agent's jobs with status, live process and last activity, coverage, reported usage,
+reason and code, Cancel / Approve / Reject / Retry… (uncertainty confirmation) / Close…, and details with the result as
+Markdown (HTML shown as text), its json, the input and the attempt facts. A switched-off, stale or refused agent shows why and
+disables the form. Polling: 2 s while a job is open, 10 s otherwise, only while the tab shows. Both themes, 1440 and 390 px,
+keyboard (tab arrows, Enter on Run job…, focus on the confirm button, Escape returns focus, Enter opens the details).
+Screenshots looked at (`$TMPDIR/network-logs/task-07-shots/`): `tasks-1440-{light,dark}`, `tasks-1440-{light,dark}-confirm`,
+`tasks-390-{light,dark}-form`, `tasks-390-{light,dark}-job`; the first round showed the textarea unstyled beside its label
+(fixed: block textarea in the app's input style) and a cramped note under the confirmation facts (fixed).
+
+**Tests** (fake CLIs only; the real ones are never on a test's PATH; test helpers default to no worker):
+
+- `tests/network-worker.test.mjs` 11 tests: (1) exact argv for Claude none/web, Codex none/web (ambient MCP disabled), Gemini
+  (deny-all policy); cwd = the attempt's empty 0700 workspace; stdin = `prompt.md`; coverage `tools`/`partial-tools`/`final-only`;
+  activity events only where the CLI reported tools, never with the query or a local folder; `stream.jsonl` evidence. (2) exact
+  `prompt.md` (header, pinned definition, indented instructions, approved memory and the allowed project's lessons only, input
+  with forged delimiters and a U+2028 break indented, JSON input), and none of memory/lessons when not asked for. (3) Base pinned
+  at acceptance: manifest revision refs in `request.json`, later edits of the agent and its knowledge not received, optional MCP
+  omitted and never configured, required MCP refused at submit; a revoked dependency (worker) or agent (engine) fails the job
+  before launch with no CLI started; revoked while running → completed with the "revoked after start" reason. (4) Task 06
+  `manifest: null` jobs: unchanged agent runs, changed agent `BASE_CHANGED`, nothing started. (5) completion rules: result + exit
+  0 → completed (json block → `result.json`), no structured answer → `unknown INVALID_OUTPUT` (Claude, Codex, Gemini), rate limits
+  → `RATE_LIMITED` with the fixed message (all three), signed out → `AUTH_REQUIRED`, exit 3 → `CLI_FAILED`, oversized output →
+  `OUTPUT_LIMIT` (Claude stream, Gemini runner), 1.5 s limit → `TIMEOUT` with the CLI and its helper gone; no result kept for any
+  failure. (6) a `spawned` that cannot be saved stops the CLI at once and reports nothing. (7) a CLI killed from outside →
+  `failed CLI_FAILED`, pid recorded, its helper gone. (8) six jobs with the default pool of 2: never more than two CLIs at once and
+  two did run together; every file outside `network/jobs/<these jobs>/` (state.json, Base, lessons) and a project folder with
+  `.git` byte-identical; board view unchanged; a `child_process` recorder sees only the three CLIs, never `git`. (9) native
+  session IDs kept or `null` when missing; usage `reported: true` with the exact numbers only when the stream carries them.
+  (10) refusals: write access `EXECUTION_POLICY_UNSUPPORTED`, Antigravity `PROVIDER_UNSUPPORTED`, web on Gemini
+  `TOOLS_UNSUPPORTED`, no CLI on PATH `NOT_INSTALLED` before launch. (11) through `startServer` with the default worker: three
+  jobs at once, cancel one (its process group gone, the others still run), stop the app (both `interrupted`/`uncertain`/
+  `APP_STOPPED`, process groups gone), restart (nothing relaunched), a new job completes and its result route answers; 404
+  without a result.
+- `tests/network-tasks-ui.test.mjs` 2 tests (jsdom, real server, deterministic fake worker): the form, preview with lessons, empty
+  input refused, the confirmation's content, Escape sends nothing, the exact POST body (with a `ui-` idempotency key), the live
+  list without a click (running with activity), coverage and reported usage, the result as Markdown with `<script>`/`<img>` kept as
+  text, details staying open, Cancel; a switched-off agent's disabled form with its reason, Gemini's web option disabled and named,
+  Approve, Retry gated by the uncertainty checkbox (a second attempt), Close.
+- `tests/network-tasks-browser.test.mjs` 1 test (Chrome, the app's own local worker, fake CLIs only on PATH): the flow above by
+  keyboard in light and dark at 1440 and 390 px, no sideways scroll, theme colours differ, no console exception or CSP message.
+- Changed: `network-jobs` (the pinned manifest replaces `manifest: null`; the lost-answer request now ignores the reset of its
+  unread reply: beside the worker tests' extra load it failed 2 of 3 runs with an uncaught `ECONNRESET` (the base commit, which
+  has no worker tests, passed), and 0 of 6 after the fix), `network-ui` (Tasks works; a report creates no job),
+  `network-registry` (usage `yes`), `remote-access` (result row).
+- Mutation check (`$TMPDIR/network-logs/task-07-mutations.log`, scratch copy of HEAD, `git stash` never used): 39 of 39 killed
+  (prompt indenting and sections, workspace cwd, persistence flags, each refusal, revocation at launch, the accepted-manifest
+  check, the process-group kill, coverage, usage, sessions, unknown on no answer, failure codes, revoked-after-start, activity and
+  its event, the manifest at submit and its refusal, stored usage, `lastActivity`, the result route, R1 usage/onSpawn/
+  requireFinal, R2 layers, Gemini onSpawn, the default worker, and six UI behaviours); plus the two later checks (`spawned`
+  failure stops the CLI; the signed-out scenario) killed.
+- Runs on the final code (parallel-wave rule: no full `npm test` here; logs in `$TMPDIR/network-logs/`): `npm run check` pass;
+  the new tests twice — `network-worker` + `network-tasks-ui` + `remote-access` 30/30 and 30/30, `network-tasks-browser` 1/1 and
+  1/1 (`task-07-new-run{1,2}.log`, `task-07-new-browser-run{1,2}.log`); every touched module's suite (`research-cli`,
+  `origin-research*`, `base-*`, `network-*`, `remote-access`, `server`, `providers`): non-browser 304/304 (`task-07-touched.log`;
+  the base commit's same set is 291, + 13 new), browser 24/24 (`task-07-touched-browser.log`: `base-profiles`, `network`,
+  `network-graph`, `network-review`, `network-tasks`, `origin-research`, `origin-research-approval`, `origin-research-chat`,
+  `remote-access`). No skips, no reruns.
+
+**Live provider runs (Task 07).** `PB_NETWORK_LIVE=codex,claude,gemini node scripts/network-live-smoke.mjs`, 2026-10-26 10:25
+UTC: an isolated app on port 4917 with a temporary data folder (removed afterwards), the app's own local worker, the real
+signed-in CLIs behind a wrapper that copied their stdout for the usage check. One job each, "Summarise in three bullet points:
+<two sentences about Network>". **3 real CLI runs in total** (plus Codex's own `codex mcp list --json`, which reads its
+configuration and calls no model).
+
+| Provider | Model / effort | Purpose | Result | Usage fields seen in the stream → recorded |
+|---|---|---|---|---|
+| Codex CLI | CLI default, effort low | R1 + end-to-end job | `completed` in 7 s, exit 0, three bullets, `partial-tools`, thread ID reported | `turn.completed.usage`: `input_tokens` 10471, `cached_input_tokens` 3968, `cache_write_input_tokens` 0, `output_tokens` 47, `reasoning_output_tokens` 0 → `{ inputTokens: 6503, cachedTokens: 3968, outputTokens: 47 }` |
+| Claude Code | haiku | R1 + end-to-end job (not rate-limited) | `completed` in 5 s, exit 0, three bullets, `tools`, session ID reported | `result.usage`: `input_tokens` 2, `cache_creation_input_tokens` 5212, `cache_read_input_tokens` 649, `output_tokens` 205; `total_cost_usd` 0.00115159 → `{ inputTokens: 5214, cachedTokens: 649, outputTokens: 205, costUsd: 0.00115159 }` |
+| Gemini CLI | CLI default | end-to-end job (OAuth credentials present) | `failed CLIENT_UNSUPPORTED` in 8 s (the provider refused the client, as `docs/live-verification.md` already records); fixed message shown, nothing retried | none (no stdout) → `{ reported: false }` |
+
+The R1 field names are confirmed for Claude and Codex (§18 item 11); the §8 matrix's `usage` is now `yes` for both. Gemini
+Network jobs are covered by fakes only.
+
+**Acceptance criteria and evidence.**
+
+- *A real Network job can execute with an existing supported CLI and return result/artifact, without a repo:* live Codex and
+  Claude runs above (completed, result read through the result route); worker tests 1, 5, 8 (cwd is an empty attempt folder,
+  no repository, `result.json` artifact); test 11 (through the app).
+- *A rejected/disabled Base profile cannot start, and a job cannot write to an unrelated project:* worker test 3 (revoked
+  dependency or disabled agent → `BASE_REVOKED`, no CLI started; required MCP refused at submit), test 4 (`BASE_CHANGED`),
+  test 10 (write access refused), test 8 (project folder and every file outside the job's folder unchanged; never `git`); UI test 2
+  (disabled agent cannot start).
+- *Task lifecycle and cancellation are visible; provider status is explicitly uncertain when evidence is inadequate:* tests 5
+  (`unknown`/uncertain without a structured answer), 6, 7, 11 (cancel, app stop, restart); UI tests (live status, activity,
+  coverage, "May have run", Retry's uncertainty confirmation); Chrome test.
+- *Existing Kanban Supervisor/Autopilot behaviour is unchanged and regressions pass:* the Supervisor, `agents.mjs` and Board are
+  untouched; the shared changes are optional parameters whose defaults keep behaviour (R1/R2, `onSpawn`); `research-cli`,
+  `origin-research*`, `providers`, `base-*`, `server`, `remote-access` and every `network-*` suite pass (runs below). The full
+  `npm test` is the coordinator's after merging (parallel-wave rule).
+- acceptance.md Task 07 rows: 1 → worker test 1 (+10 for Antigravity and Gemini web); 2 → test 2; 3 → test 3; 4 → tests 1, 8;
+  5 → test 5; 6 → tests 7, 11 (three concurrent, cancel and app stop, pids checked); 7 → test 1; 8 → test 9; 9 → touched-suite runs;
+  10 → the live smoke (a script, not `tests/network-worker-live.test.mjs`, so no real CLI is ever reachable from `npm test`).
+- Failure matrix rows: 4 and 5 → test 11 and Task 06's reconcile (pid recorded by the worker, test 7); 6 → test 6; 12 → test 3;
+  13 → test 3 (revoked while running) and the Tasks tab mark; 17 → tests 5 (`AUTH_REQUIRED`) and 10 (`NOT_INSTALLED`); 19 → test 5;
+  20 → test 5; 21 → test 11.
+
+**Known limits.** Claude and Codex results are cut at 100,000 characters by `streamResearch`'s existing ceiling. Base MCP
+servers, command recipes and supporting agents never reach a job; workspace-write and repository access stay refused (§14 item
+14). The CLI's own user-level configuration still applies (as in Origin Research). Gemini is verified with fakes only
+(`CLIENT_UNSUPPORTED` live). A process left by a hard crash is not signalled after a restart (Task 06 rule). The Tasks list polls;
+the "revoked after start" mark is computed from the agent's current Base state. Paid CLI runs: 3 (above).
+
+**For Task 08 and Task 09.** `NetworkJobs.activity(own, { kind, label })` exists and calls `this.events?.append({ type:
+'job.activity', jobId, attemptId, agentId, projectId, networkId, status, coverage?, message })` (async, never awaited); Task 08 only
+adds the constructor option. The job view now has `lastActivity` (memory only) and `live: { process, coverage }`. The attempt has
+`coverage`, `usage` (`costUsd`) and `nativeSessionId` after the worker reports. Worker refusals and runs use these codes:
+`EXECUTION_POLICY_UNSUPPORTED`, `PROVIDER_UNSUPPORTED`, `TOOLS_UNSUPPORTED`, `BASE_REVOKED`, `BASE_ROOT_NOT_APPROVED`,
+`BASE_CHANGED`, `BASE_REQUIRED_UNAVAILABLE` (also at submit), `NOT_INSTALLED`, `INVALID_OUTPUT` (unknown), the provider codes of
+`FAILURE_MESSAGES`, `CLI_FAILED`, `OUTPUT_LIMIT`. `jobs.submit` refuses a required undeliverable Base resource; pipeline steps
+(Task 09) get the same check. Result text: `GET /api/network/jobs/:id/result` or `jobs.result(id)`. Test helpers start the app
+without a worker unless a test passes one (`networkWorker: undefined` selects the real one). Activity in the profile stays "soon"
+for Task 08, which can replace the Tasks tab's polling with the stream.
+
+**Commits** (local, `feat/network-07`, never pushed or merged): a6aab88 (worker, engine and shared changes, Tasks tab, tests),
+b3fa6fb (Chrome test, live smoke script, usage confirmed), then this entry with the last test additions and fixes.
