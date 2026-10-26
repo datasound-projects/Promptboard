@@ -72,6 +72,7 @@ test('Run view: a step whose job asked a question or waits for its sub-jobs says
   $('#network-profile-tab-tasks').click();
   await until(() => $(`#network-job-${job1.id}-record`), 'the job in Tasks with its answer link');
   assert.equal($(`#network-job-${job1.id}-record`).textContent, 'Answer…');
+  assert.deepEqual([$('#network-run-steps').childElementCount, $('#network-run-details').childElementCount], [0, 0], 'the left run view keeps no stale step to click');
   $(`#network-job-${job1.id}-record`).click();
   await until(() => win.location.hash === `#/network/activity/${job1.id}` && $('#network-handoff-answer'), 'the record from Tasks');
   win.location.hash = `#/network/runs/${run1}`;

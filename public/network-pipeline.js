@@ -1309,7 +1309,8 @@ window.PromptboardNetworkPipeline = (() => {
       follow();
     }
     function follow() { if (rv && !rv.stop && MOVING.has(rv.run?.status)) { const mine = rv; rv.stop = followRun(rv.runId, async () => { if (rv !== mine) return false; await refreshRun(); const again = MOVING.has(mine.run.status); if (!again) mine.stop = null; return again; }); } }
-    function leaveRun() { rv?.stop?.(); rv = null; destroyCanvas('r'); }
+    // The left run's steps and details go with it: a stale row's click must not reach the next run (or none) while it loads.
+    function leaveRun() { rv?.stop?.(); rv = null; destroyCanvas('r'); rSteps.replaceChildren(); rDetails.replaceChildren(); }
     /** Read the run (and its step jobs) again and redraw only what changed. Answers whether it is still moving. */
     async function refreshRun() {
       const mine = rv;
