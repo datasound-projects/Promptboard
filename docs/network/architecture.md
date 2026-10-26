@@ -787,6 +787,13 @@ routes are allowed from it except those that create a new way in or change trust
 access. Task 02 adds `src/network/http.mjs` to the scanned file list in `tests/remote-access.test.mjs:277` and every new
 route to `ALLOWED`. Revoking a paired device already ends its open Network streams (`src/remote-access.mjs:210`).
 
+*(Phase-1 review, P1-3)* The source scan saw only literal paths, so every `:id` route was invisible to it. Now
+`src/network/http.mjs` exports `NETWORK_ROUTES`, one frozen table of `{ method, pattern, run, status? }` that the
+dispatcher itself reads (first match by method and anchored pattern; a known path with another method is 404), and
+`tests/remote-access.test.mjs` imports it: every route must match exactly one `ALLOWED`/`LOCAL_ONLY` row and every
+`/api/network` row must match a route. A new Network route (Tasks 07–13 too) goes into that table and gets exactly one
+row; a local-only one is also added to `localOnly()`.
+
 ### 10.3 Machine listener (Task 11): REST and MCP for external clients
 
 - **Off by default.** A separate `http.Server` owned by `src/network/machine-listener.mjs`, started only when the owner

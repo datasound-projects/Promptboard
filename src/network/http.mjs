@@ -2,7 +2,8 @@
  * Owner Network routes (/api/network/*), mounted in src/server.mjs behind its unchanged token, Host, Origin, proxy and
  * fetch-site checks. Every route here is also allowed from a paired device (architecture §10.2): none of them creates a
  * way in, shows a secret or changes trust (a paired device has the owner's control, so it may submit and cancel jobs too).
- * Only the job routes lead to work, and only through the job engine's worker. tests/remote-access.test.mjs scans this file.
+ * Only the job routes lead to work, and only through the job engine's worker. NETWORK_ROUTES below is the one route table:
+ * the dispatcher reads it, and tests/remote-access.test.mjs checks that every row has exactly one paired-device row there.
  *
  *   GET  /api/network/agents                ?q tag capability status kind provider baseResourceId projectId networkId offset limit
  *   POST /api/network/agents                { baseResourceId, expectedRevision, displayName?, tags?, capabilities?, enabled?, projectAllowlist? }
@@ -55,69 +56,65 @@ const query = (params, keys) => ({ ...Object.fromEntries(keys.map(key => [key, p
 const preview = params => ({ projectId: params.get('projectId') || null, networkId: params.get('networkId') || null, memory: params.get('memory') || 'agent',
   projectLessons: ({ true: true, false: false, null: false })[params.get('projectLessons')] ?? params.get('projectLessons') });
 
+const AGENT = '(agt_[0-9a-f]{20})', NETWORK = '(net_[0-9a-f]{20})', MEMORY = '(mem_[0-9a-f]{20})', POST = '(pst_[0-9a-f]{20})', JOB = '(job_[0-9a-f]{20})';
+const route = (method, path, run, status) => Object.freeze({ method, pattern: new RegExp(`^/api/network${path}$`), run, status });
+/** Memory routes of one scope: an agent's (agents/agt_…) or a network's (networks/net_…). */
+const memoryRoutes = (kind, prefix) => [
+  route('GET', `${prefix}/memory`, (c, id) => c.network.memory.list(kind, id, query(c.searchParams, ['q', 'status']))),
+  route('POST', `${prefix}/memory`, async (c, id) => c.network.memory.propose(kind, id, await c.body(BODY.small))),
+  route('PATCH', `${prefix}/memory/${MEMORY}`, async (c, id, record) => c.network.memory.edit(kind, id, record, await c.body(BODY.small))),
+  route('DELETE', `${prefix}/memory/${MEMORY}`, async (c, id, record) => c.network.memory.remove(kind, id, record, await c.body(BODY.small))),
+  route('POST', `${prefix}/memory/${MEMORY}/approve`, async (c, id, record) => c.network.memory.decide(kind, id, record, await c.body(BODY.small))),
+];
+const jobAction = (action, method) => route('POST', `/jobs/${JOB}/${action}`, async (c, id) => c.jobs[method](id, await c.body(BODY.small)));
+/**
+ * Every Network route: method, path pattern and handler `(context, ...path IDs)`; `status(answer)` when it is not 200.
+ * Patterns never overlap, so each request matches at most one path; a known path with another method is 404.
+ */
+export const NETWORK_ROUTES = Object.freeze([
+  route('GET', '/agents', c => c.network.listAgents(query(c.searchParams, ['q', 'tag', 'capability', 'status', 'kind', 'provider', 'baseResourceId', 'projectId', 'networkId']))),
+  route('POST', '/agents', async c => c.network.registerAgent(await c.body(BODY.small))),
+  route('GET', `/agents/${AGENT}`, (c, id) => c.network.agent(id)),
+  route('PATCH', `/agents/${AGENT}`, async (c, id) => c.network.updateAgent(id, await c.body(BODY.small))),
+  ...memoryRoutes('agent', `/agents/${AGENT}`),
+  route('GET', `/agents/${AGENT}/memory/preview`, (c, id) => c.network.memory.resolve(id, preview(c.searchParams))),
+  route('GET', `/agents/${AGENT}/posts`, (c, id) => c.network.posts.list(id, query(c.searchParams, []))),
+  route('POST', `/agents/${AGENT}/posts`, async (c, id) => c.network.posts.create(id, await c.body(BODY.small))),
+  route('PATCH', `/agents/${AGENT}/posts/${POST}`, async (c, id, post) => c.network.posts.update(id, post, await c.body(BODY.small))),
+  route('DELETE', `/agents/${AGENT}/posts/${POST}`, async (c, id, post) => c.network.posts.remove(id, post, await c.body(BODY.small))),
+  route('GET', '/networks', c => c.network.listNetworks(query(c.searchParams, ['q', 'agentId', 'archived']))),
+  route('POST', '/networks', async c => c.network.createNetwork(await c.body(BODY.network))),
+  route('GET', `/networks/${NETWORK}`, (c, id) => c.network.networkDetail(id)),
+  route('PATCH', `/networks/${NETWORK}`, async (c, id) => c.network.updateNetwork(id, await c.body(BODY.network))),
+  route('DELETE', `/networks/${NETWORK}`, async (c, id) => c.network.deleteNetwork(id, await c.body(BODY.small))),
+  route('POST', `/networks/${NETWORK}/publish`, async (c, id) => c.network.publishNetwork(id, await c.body(BODY.small))),
+  route('POST', `/networks/${NETWORK}/duplicate`, async (c, id) => c.network.duplicateNetwork(id, await c.body(BODY.small))),
+  route('GET', `/networks/${NETWORK}/versions/([1-9]\\d{0,8})`, (c, id, number) => c.network.version(id, Number(number))),
+  ...memoryRoutes('network', `/networks/${NETWORK}`),
+  route('GET', '/export', c => c.network.export()),
+  route('POST', '/import', async c => c.network.import(await c.body(BODY.import))),
+  route('GET', '/settings', c => c.jobs.settings()),
+  route('PATCH', '/settings', async c => c.jobs.updateSettings(await c.body(BODY.small))),
+  route('GET', '/jobs', c => c.jobs.list(query(c.searchParams, ['status', 'agentId', 'projectId', 'networkId', 'parentJobId']))),
+  route('POST', '/jobs', async c => c.jobs.submit(await c.body(JOB_LIMITS.submitBody)), accepted => (accepted.deduplicated ? 200 : 202)),
+  route('GET', `/jobs/${JOB}`, (c, id) => c.jobs.read(id)),
+  route('DELETE', `/jobs/${JOB}`, async (c, id) => c.jobs.remove(id, await c.body(BODY.small))),
+  jobAction('cancel', 'cancel'), jobAction('approve', 'approve'), jobAction('retry', 'retry'), jobAction('close', 'closeJob'),
+]);
+
 export async function networkRoute({ network, jobs, req, res, pathname, searchParams, jsonBody, send }) {
-  const method = req.method;
   const body = async limit => {
     const value = await jsonBody(req, limit);
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new NetworkError('Send a JSON object.');
     return value;
   };
   try {
-    if (pathname === '/api/network/agents') {
-      if (method === 'GET') return send(res, 200, await network.listAgents(query(searchParams, ['q', 'tag', 'capability', 'status', 'kind', 'provider', 'baseResourceId', 'projectId', 'networkId'])));
-      if (method === 'POST') return send(res, 200, await network.registerAgent(await body(BODY.small)));
-    }
-    if (pathname === '/api/network/networks') {
-      if (method === 'GET') return send(res, 200, await network.listNetworks(query(searchParams, ['q', 'agentId', 'archived'])));
-      if (method === 'POST') return send(res, 200, await network.createNetwork(await body(BODY.network)));
-    }
-    if (method === 'GET' && pathname === '/api/network/export') return send(res, 200, await network.export());
-    if (method === 'POST' && pathname === '/api/network/import') return send(res, 200, await network.import(await body(BODY.import)));
-    const agent = pathname.match(/^\/api\/network\/agents\/(agt_[0-9a-f]{20})$/);
-    if (agent && method === 'GET') return send(res, 200, await network.agent(agent[1]));
-    if (agent && method === 'PATCH') return send(res, 200, await network.updateAgent(agent[1], await body(BODY.small)));
-    const memory = pathname.match(/^\/api\/network\/(?:agents\/(agt_[0-9a-f]{20})|networks\/(net_[0-9a-f]{20}))\/memory(?:\/(mem_[0-9a-f]{20})(\/approve)?|\/(preview))?$/);
-    if (memory) {
-      const [, agentId, networkId, recordId, approve, forJob] = memory, kind = agentId ? 'agent' : 'network', id = agentId || networkId;
-      if (forJob && agentId && method === 'GET') return send(res, 200, await network.memory.resolve(agentId, preview(searchParams)));
-      if (!recordId && !forJob && method === 'GET') return send(res, 200, await network.memory.list(kind, id, query(searchParams, ['q', 'status'])));
-      if (!recordId && !forJob && method === 'POST') return send(res, 200, await network.memory.propose(kind, id, await body(BODY.small)));
-      if (recordId && approve && method === 'POST') return send(res, 200, await network.memory.decide(kind, id, recordId, await body(BODY.small)));
-      if (recordId && !approve && method === 'PATCH') return send(res, 200, await network.memory.edit(kind, id, recordId, await body(BODY.small)));
-      if (recordId && !approve && method === 'DELETE') return send(res, 200, await network.memory.remove(kind, id, recordId, await body(BODY.small)));
-    }
-    const posts = pathname.match(/^\/api\/network\/agents\/(agt_[0-9a-f]{20})\/posts(?:\/(pst_[0-9a-f]{20}))?$/);
-    if (posts) {
-      const [, agentId, postId] = posts;
-      if (!postId && method === 'GET') return send(res, 200, await network.posts.list(agentId, query(searchParams, [])));
-      if (!postId && method === 'POST') return send(res, 200, await network.posts.create(agentId, await body(BODY.small)));
-      if (postId && method === 'PATCH') return send(res, 200, await network.posts.update(agentId, postId, await body(BODY.small)));
-      if (postId && method === 'DELETE') return send(res, 200, await network.posts.remove(agentId, postId, await body(BODY.small)));
-    }
-    if (pathname === '/api/network/settings') {
-      if (method === 'GET') return send(res, 200, await jobs.settings());
-      if (method === 'PATCH') return send(res, 200, await jobs.updateSettings(await body(BODY.small)));
-    }
-    if (pathname === '/api/network/jobs') {
-      if (method === 'GET') return send(res, 200, await jobs.list(query(searchParams, ['status', 'agentId', 'projectId', 'networkId', 'parentJobId'])));
-      if (method === 'POST') { const accepted = await jobs.submit(await body(JOB_LIMITS.submitBody)); return send(res, accepted.deduplicated ? 200 : 202, accepted); }
-    }
-    const job = pathname.match(/^\/api\/network\/jobs\/(job_[0-9a-f]{20})(?:\/([a-z]+))?$/);
-    if (job) {
-      const [, id, action] = job;
-      if (method === 'GET' && !action) return send(res, 200, await jobs.read(id));
-      if (method === 'DELETE' && !action) return send(res, 200, await jobs.remove(id, await body(BODY.small)));
-      if (method === 'POST' && ['cancel', 'approve', 'retry', 'close'].includes(action)) return send(res, 200, await jobs[action === 'close' ? 'closeJob' : action](id, await body(BODY.small)));
-    }
-    const match = pathname.match(/^\/api\/network\/networks\/(net_[0-9a-f]{20})(?:\/(publish|duplicate)|\/versions\/([1-9]\d{0,8}))?$/);
-    if (match) {
-      const [, id, action, number] = match;
-      if (method === 'GET' && number) return send(res, 200, await network.version(id, Number(number)));
-      if (method === 'POST' && action === 'publish') return send(res, 200, await network.publishNetwork(id, await body(BODY.small)));
-      if (method === 'POST' && action === 'duplicate') return send(res, 200, await network.duplicateNetwork(id, await body(BODY.small)));
-      if (method === 'GET' && !action && !number) return send(res, 200, await network.networkDetail(id));
-      if (method === 'PATCH' && !action && !number) return send(res, 200, await network.updateNetwork(id, await body(BODY.network)));
-      if (method === 'DELETE' && !action && !number) return send(res, 200, await network.deleteNetwork(id, await body(BODY.small)));
+    for (const row of NETWORK_ROUTES) {
+      if (row.method !== req.method) continue;
+      const match = row.pattern.exec(pathname);
+      if (!match) continue;
+      const answer = await row.run({ network, jobs, searchParams, body }, ...match.slice(1));
+      return send(res, row.status ? row.status(answer) : 200, answer);
     }
     return send(res, 404, { error: 'This Network route does not exist.', code: 'NOT_FOUND' });
   } catch (error) {

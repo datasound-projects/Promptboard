@@ -11,6 +11,7 @@ import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { privateAddress, remoteSettings, RemoteAccess, tailscaleState } from '../src/remote-access.mjs';
+import { NETWORK_ROUTES } from '../src/network/http.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 import { setup, until } from './helpers/ui-harness.mjs';
 
@@ -282,12 +283,17 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     ...each(`/api/network/networks/net_${'a'.repeat(20)}`, ['GET', 'PATCH', 'DELETE', 'POST publish', 'POST duplicate', 'GET versions/1', 'GET memory', 'POST memory', `PATCH memory/mem_${'b'.repeat(20)}`, `DELETE memory/mem_${'b'.repeat(20)}`, `POST memory/mem_${'b'.repeat(20)}/approve`])];
   // The table covers every route the server and Base declare: a new route must be added here, local-only or not.
   const paths = [...LOCAL_ONLY, ...ALLOWED].map(row => row.split(' ')[1].split('?')[0]);
-  for (const file of ['server.mjs', 'base-http.mjs', 'sandbox.mjs', 'network/http.mjs']) {
+  for (const file of ['server.mjs', 'base-http.mjs', 'sandbox.mjs']) {
     const source = await readFile(new URL(`../src/${file}`, import.meta.url), 'utf8');
     for (const [, literal] of source.matchAll(/'(\/api\/[^'`$]*)'/g)) assert.ok(paths.some(path => path.startsWith(literal)), `${file}: ${literal} is not in the route table`);
     const actions = [...source.matchAll(/action === '([a-z-]+)'/g)].map(match => match[1]).concat([...source.matchAll(/\[([^\]]+)\]\.includes\(action\)/g)].flatMap(match => match[1].match(/[a-z-]+/g)));
     for (const action of actions) assert.ok(paths.some(path => path.endsWith(`/${action}`)), `${file}: the ${action} action is not in the route table`);
   }
+  // Network routes come from the dispatcher's own table (src/network/http.mjs): each method and path pattern has exactly
+  // one row above, and each Network row above is a route of that table, so a route can be neither left out nor invented.
+  const networkRows = [...LOCAL_ONLY, ...ALLOWED].map(row => row.split(' ')).filter(([, path]) => path.startsWith('/api/network'));
+  for (const route of NETWORK_ROUTES) assert.equal(networkRows.filter(([method, path]) => method === route.method && route.pattern.test(path.split('?')[0])).length, 1, `${route.method} ${route.pattern}: one row in ALLOWED or LOCAL_ONLY`);
+  for (const [method, path] of networkRows) assert.ok(NETWORK_ROUTES.some(route => route.method === method && route.pattern.test(path.split('?')[0])), `${method} ${path} is not a Network route`);
   // Refused with the right token too: the refusal comes before the app.
   for (const row of LOCAL_ONLY) {
     const [method, path] = row.split(' ');
