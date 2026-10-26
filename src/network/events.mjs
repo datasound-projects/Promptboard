@@ -27,7 +27,7 @@ const SEGMENT = /^(\d{16})\.jsonl$/, ID = /^[A-Za-z0-9_-]{1,100}$/, NODE = /^[A-
 const TYPE = /^[a-z]{1,20}\.[a-z_]{1,30}$/, WORD = /^[a-z][a-z_-]{0,39}$/, CODE = /^[A-Z][A-Z0-9_]{1,59}$/, REF = /^(?![/.])(?!.*\.\.)[A-Za-z0-9_./-]{1,200}$/;
 /** The fields an event may carry and the shape each must have; anything else is left out (never copied). */
 const FIELDS = { jobId: ID, attemptId: ID, agentId: ID, pipelineRunId: ID, networkId: ID, projectId: ID, nodeId: NODE, status: WORD, from: WORD, by: WORD, kind: WORD,
-  errorCode: CODE, coverage: WORD, artifactRef: REF };
+  errorCode: CODE, coverage: WORD, artifactRef: REF, scheduleId: ID /* Task 12: schedule.run */ };
 export const EVENT_FILTERS = ['agentId', 'jobId', 'networkId', 'pipelineRunId'];
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const NEWER = 'The Network activity journal was saved by a newer Promptboard version. Update the app; nothing was changed.';

@@ -21,6 +21,13 @@
  *   GET  /machine/v1/jobs/:id/result        read_job_result: { jobId, text, json, chars }
  *   GET  /machine/v1/events                 ?after limit: events of the client's own jobs
  *   GET  /machine/v1/events/stream          ?after: NDJSON (events.mjs), own jobs only; ends at once when the client is revoked
+ * Task 12 (architecture §23), own jobs only:
+ *   POST /machine/v1/jobs/:id/children      submit_jobs: { agentId, task, tools?, json? }, header Idempotency-Key → 202: a sub-job
+ *                                           of its own job, through the owner's delegation policy and inside its own scope
+ *   GET  /machine/v1/jobs/:id/messages      read_job_result: the job's messages and how many to the client are unread
+ *   POST /machine/v1/jobs/:id/messages      submit_jobs: { kind: 'review' | 'request', text, json? } → 201
+ *   POST /machine/v1/jobs/:id/messages/read read_job_result: { ids? } read receipts
+ *   POST /machine/v1/jobs/:id/answer        submit_jobs: { text }: answers the question the job asked
  */
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
@@ -48,6 +55,8 @@ const machineAgent = view => ({ id: view.id, name: view.displayName || view.base
 const machineJob = job => ({ jobId: job.id, agentId: job.agentId, projectId: job.projectId, networkId: job.networkId, status: job.status, outcome: job.outcome, errorCode: job.errorCode,
   reason: job.reason, createdAt: job.createdAt, updatedAt: job.updatedAt, attempts: job.attempts.length, result: job.result ? { chars: job.result.chars, sha256: job.result.sha256, json: Boolean(job.result.jsonRef) } : null,
   waiting: job.waiting ? { for: job.waiting.for, position: job.waiting.position ?? null, message: job.waiting.message } : null });
+/** What a client sees of a message on its own job: everything but the internal attempt reference. */
+const machineMessage = ({ attemptId, ...message }) => message;
 /** What a client sees of an event of its own job. */
 const machineEvent = event => ({ seq: event.seq, at: event.at, type: event.type, jobId: event.jobId, agentId: event.agentId, ...(event.status ? { status: event.status } : {}),
   ...(event.from ? { from: event.from } : {}), ...(event.kind ? { kind: event.kind } : {}), ...(event.errorCode ? { errorCode: event.errorCode } : {}), ...(event.message ? { message: event.message } : {}) });
@@ -244,6 +253,33 @@ export class MachineListener {
     const { text, json, chars } = await this.jobs.result(id);
     return { body: { jobId: id, text, json, chars } };
   }
+  /** A sub-job of an own job (Task 12): the owner's delegation policy decides, inside this client's scope; counts as a submit. */
+  async children({ client, req }, id) {
+    if (!this.#allow(client.id, 'submits', this.limits.submitsPerMinute)) return { status: 429, body: { error: 'Too many jobs submitted. Wait a minute.', code: 'RATE_LIMITED' } };
+    await this.#ownJob(client, id);
+    const accepted = await this.jobs.delegate(id, await readBody(req), { clientId: client.id, idempotencyKey: req.headers['idempotency-key'] ?? null });
+    (await this.#ownSet(client)).add(accepted.jobId);
+    return { status: accepted.deduplicated ? 200 : 202, body: { jobId: accepted.jobId, status: accepted.status, deduplicated: accepted.deduplicated, job: machineJob(accepted.job) } };
+  }
+  async messages({ client }, id) {
+    await this.#ownJob(client, id);
+    const { messages, unread } = await this.jobs.messagesOf(id, { reader: { clientId: client.id } });
+    return { body: { messages: messages.map(machineMessage), unread } };
+  }
+  async postMessage({ client, req }, id) {
+    await this.#ownJob(client, id);
+    const { message } = await this.jobs.postMessage(id, await readBody(req), { from: { clientId: client.id } });
+    return { status: 201, body: { message: machineMessage(message) } };
+  }
+  async readMessages({ client, req }, id) {
+    await this.#ownJob(client, id);
+    return { body: await this.jobs.readMessages(id, await readBody(req), { reader: { clientId: client.id } }) };
+  }
+  async answer({ client, req }, id) {
+    await this.#ownJob(client, id);
+    const { job } = await this.jobs.answer(id, await readBody(req), { by: 'machine', clientId: client.id });
+    return { body: { job: machineJob(job) } };
+  }
   async eventPage({ client, params }) {
     const own = await this.#ownSet(client), limit = count(params.get('limit'), 100);
     const page = await this.events.read({ after: seq(params.get('after')) ?? 0, limit, view: event => (own.has(event.jobId) ? machineEvent(event) : null) });
@@ -271,4 +307,9 @@ export const MACHINE_ROUTES = Object.freeze([
   route('GET', `/jobs/${JOB}/result`, 'read_job_result', MachineListener.prototype.result),
   route('GET', '/events', null, MachineListener.prototype.eventPage),
   route('GET', '/events/stream', null, MachineListener.prototype.eventStream),
+  route('POST', `/jobs/${JOB}/children`, 'submit_jobs', MachineListener.prototype.children),
+  route('GET', `/jobs/${JOB}/messages`, 'read_job_result', MachineListener.prototype.messages),
+  route('POST', `/jobs/${JOB}/messages`, 'submit_jobs', MachineListener.prototype.postMessage),
+  route('POST', `/jobs/${JOB}/messages/read`, 'read_job_result', MachineListener.prototype.readMessages),
+  route('POST', `/jobs/${JOB}/answer`, 'submit_jobs', MachineListener.prototype.answer),
 ]);

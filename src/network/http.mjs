@@ -75,6 +75,22 @@
  *   POST /api/network/clients/:id/rotate    { expectedRevision } → { client, token } (local-only)
  *   GET  /api/network/listener              the machine listener (off by default) and the MCP command
  *   PATCH /api/network/listener             { enabled?, port? } (local-only)
+ *
+ * Handoffs, messages and schedules (Task 12: delegation.mjs, messages.mjs, schedules.mjs; architecture §23). Switching
+ * handoffs on and switching a schedule on create standing automation, so those two are local-only; everything else here is
+ * the owner's control over saved definitions and their own jobs. No save, edit or import starts anything.
+ *   GET  /api/network/jobs/:id/messages     the job's messages (oldest first) and how many to you are unread
+ *   POST /api/network/jobs/:id/messages     { kind: 'review' | 'request', text, json? } → 201: a note for the record
+ *   POST /api/network/jobs/:id/messages/read { ids? }: read receipts (never execution state)
+ *   POST /api/network/jobs/:id/answer       { expectedRevision, text }: answers the question a waiting job asked
+ *   GET  /api/network/delegation            the handoff policy (off by default) and its ranges
+ *   PATCH /api/network/delegation           { expectedRevision, askOwner?, delegate?, maxDepth?, maxChildren?, budgetShare?, requireApproval? } (local-only)
+ *   GET  /api/network/schedules             the schedules, their next times and this computer's time zone
+ *   POST /api/network/schedules             { expectedRevision, name, target, cadence } → 201, switched off
+ *   PATCH /api/network/schedules/:id        { expectedRevision, name?, target?, cadence?, enabled?: false }
+ *   DELETE /api/network/schedules/:id       { expectedRevision }
+ *   POST /api/network/schedules/:id/confirm { expectedRevision, confirm: true }: switches it on (local-only)
+ *   POST /api/network/schedules/:id/run     { idempotencyKey? } → 202: Run now
  */
 import { activitySummary } from './activity.mjs';
 import { EVENT_FILTERS } from './events.mjs';
@@ -96,7 +112,7 @@ const preview = params => ({ projectId: params.get('projectId') || null, network
   projectLessons: ({ true: true, false: false, null: false })[params.get('projectLessons')] ?? params.get('projectLessons') });
 
 const CLIENT = '(cli_[0-9a-f]{20})', AGENT = '(agt_[0-9a-f]{20})', NETWORK = '(net_[0-9a-f]{20})', MEMORY = '(mem_[0-9a-f]{20})', POST = '(pst_[0-9a-f]{20})', JOB = '(job_[0-9a-f]{20})';
-const PIPELINE = '(pip_[0-9a-f]{20})', RUN = '(run_[0-9a-f]{20})', STEP = '(n_[0-9a-f]{12}(?:/n_[0-9a-f]{12}){0,4})';
+const PIPELINE = '(pip_[0-9a-f]{20})', RUN = '(run_[0-9a-f]{20})', STEP = '(n_[0-9a-f]{12}(?:/n_[0-9a-f]{12}){0,4})', SCHEDULE = '(sch_[0-9a-f]{20})';
 const route = (method, path, run, status, stream = false) => Object.freeze({ method, pattern: new RegExp(`^/api/network${path}$`), run, status, stream });
 /** Memory routes of one scope: an agent's (agents/agt_…) or a network's (networks/net_…). */
 const memoryRoutes = (kind, prefix) => [
@@ -107,6 +123,17 @@ const memoryRoutes = (kind, prefix) => [
   route('POST', `${prefix}/memory/${MEMORY}/approve`, async (c, id, record) => c.network.memory.decide(kind, id, record, await c.body(BODY.small))),
 ];
 const jobAction = (action, method) => route('POST', `/jobs/${JOB}/${action}`, async (c, id) => c.jobs[method](id, await c.body(BODY.small)));
+const OWNER = Object.freeze({ owner: true });
+/**
+ * Import (Task 12): the file's schedule definitions are checked with the rest before anything is written, then added after
+ * the registrations and networks, with their references remapped and switched off.
+ */
+async function importNetwork(c, input) {
+  const data = input?.data, ids = key => new Set(Array.isArray(data?.[key]) ? data[key].map(item => item?.id) : []);
+  const schedules = await c.schedules.checkImport(data?.schedules, { agentIds: ids('agents'), networkIds: ids('networks') });
+  const answer = await c.network.import(input), added = await c.schedules.importDefinitions(schedules, answer.remapped, new Set(await c.network.projects()));
+  return added.imported ? { ...answer, imported: { ...answer.imported, schedules: added.imported }, warnings: [...answer.warnings, ...added.warnings] } : answer;
+}
 /**
  * Every Network route: method, path pattern and handler `(context, ...path IDs)`; `status(answer)` when it is not 200.
  * Patterns never overlap, so each request matches at most one path; a known path with another method is 404.
@@ -131,8 +158,9 @@ export const NETWORK_ROUTES = Object.freeze([
   route('POST', `/networks/${NETWORK}/duplicate`, async (c, id) => c.network.duplicateNetwork(id, await c.body(BODY.small))),
   route('GET', `/networks/${NETWORK}/versions/([1-9]\\d{0,8})`, (c, id, number) => c.network.version(id, Number(number))),
   ...memoryRoutes('network', `/networks/${NETWORK}`),
-  route('GET', '/export', c => c.network.export()),
-  route('POST', '/import', async c => c.network.import(await c.body(BODY.import))),
+  // Schedule definitions only when there are any, so an export without them stays readable by a Promptboard before Task 12.
+  route('GET', '/export', async c => { const exported = await c.network.export(), schedules = await c.schedules.definitions(); return schedules.length ? { ...exported, schedules } : exported; }),
+  route('POST', '/import', async c => importNetwork(c, await c.body(BODY.import))),
   route('GET', '/settings', c => c.jobs.settings()),
   route('PATCH', '/settings', async c => c.jobs.updateSettings(await c.body(BODY.small))),
   route('GET', '/jobs', c => c.jobs.list(query(c.searchParams, ['status', 'agentId', 'projectId', 'networkId', 'parentJobId', 'pipelineRunId']))),
@@ -164,9 +192,21 @@ export const NETWORK_ROUTES = Object.freeze([
   route('POST', `/clients/${CLIENT}/rotate`, async (c, id) => c.machine.clients.rotate(id, await c.body(BODY.small))),
   route('GET', '/listener', c => c.machine.status()),
   route('PATCH', '/listener', async c => c.machine.configure(await c.body(BODY.small))),
+  route('GET', `/jobs/${JOB}/messages`, (c, id) => c.jobs.messagesOf(id, { reader: OWNER })),
+  route('POST', `/jobs/${JOB}/messages`, async (c, id) => c.jobs.postMessage(id, await c.body(BODY.small), { from: OWNER }), () => 201),
+  route('POST', `/jobs/${JOB}/messages/read`, async (c, id) => c.jobs.readMessages(id, await c.body(BODY.small), { reader: OWNER })),
+  jobAction('answer', 'answer'),
+  route('GET', '/delegation', c => c.jobs.delegation.policy()),
+  route('PATCH', '/delegation', async c => c.jobs.delegation.update(await c.body(BODY.small))),
+  route('GET', '/schedules', c => c.schedules.list()),
+  route('POST', '/schedules', async c => c.schedules.create(await c.body(JOB_LIMITS.submitBody)), () => 201),
+  route('PATCH', `/schedules/${SCHEDULE}`, async (c, id) => c.schedules.update(id, await c.body(JOB_LIMITS.submitBody))),
+  route('DELETE', `/schedules/${SCHEDULE}`, async (c, id) => c.schedules.remove(id, await c.body(BODY.small))),
+  route('POST', `/schedules/${SCHEDULE}/confirm`, async (c, id) => c.schedules.confirm(id, await c.body(BODY.small))),
+  route('POST', `/schedules/${SCHEDULE}/run`, async (c, id) => c.schedules.runNow(id, await c.body(BODY.small)), () => 202),
 ]);
 
-export async function networkRoute({ network, jobs, events, board, pipelines, runs, machine, req, res, pathname, searchParams, jsonBody, send }) {
+export async function networkRoute({ network, jobs, events, board, pipelines, runs, machine, schedules, req, res, pathname, searchParams, jsonBody, send }) {
   const body = async limit => {
     const value = await jsonBody(req, limit);
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new NetworkError('Send a JSON object.');
@@ -177,7 +217,7 @@ export async function networkRoute({ network, jobs, events, board, pipelines, ru
       if (row.method !== req.method) continue;
       const match = row.pattern.exec(pathname);
       if (!match) continue;
-      const answer = await row.run({ network, jobs, events, board, pipelines, runs, machine, req, res, searchParams, body }, ...match.slice(1));
+      const answer = await row.run({ network, jobs, events, board, pipelines, runs, machine, schedules, req, res, searchParams, body }, ...match.slice(1));
       if (row.stream) return; // It answered on the response.
       return send(res, row.status ? row.status(answer) : 200, answer);
     }

@@ -1567,3 +1567,148 @@ gateway), `src/network/mcp.mjs` (the stdio MCP server behind `node bin/ste.mjs -
     the `/machine/v1/` check for `/.well-known/agent-card.json`), clients of `kind: 'a2a'` (the validator accepts only
     `'api'` now), and the same `onRevoke` teardown. Messages from a client are `{ clientId }` (§11.4); machine-written
     reports (§4.7 item 8) are not built. A client's submit is `source: 'machine'`, `requester: { kind: 'machine', id }`.
+
+## 23. Task 12 decisions (handoffs, delegation, job messages and schedules)
+
+Built in `src/network/delegation.mjs` (the policy, the request format and its checks), `src/network/messages.mjs` (job
+messages), `src/network/schedules.mjs` (Network job schedules), the job engine's handoff path in `src/network/jobs.mjs`,
+two prompt sections in `src/network/worker-local.mjs`, routes in `src/network/http.mjs` and `src/network/rest.mjs`, and
+`public/network-delegation.js` (inside Activity and Settings). Items 3, 6 and 9 deviate from §4.1, §11.4 and §10.1; the rest
+fill in what §6.1, §9, §11.4 and §14 item 7 left open.
+
+1. **How a running agent asks (the contract).** An agent has no API, credential or URL (§11.1). The only way it asks for
+   anything is the **last fenced ```json block of its final report**, which the worker already extracts as the result's
+   `json` (§18 item 8). A result json whose only key is `promptboard` is a request; any other json is ordinary data:
+   ```
+   {"promptboard": {"needs_input": {"question": "<one question, ≤ 2,000 characters>"}}}
+   {"promptboard": {"delegate": [{"agentId": "agt_…", "task": "<≤ 16 KiB>", "tools"?: "none" | "web", "json"?: {…} /* ≤ 16 KiB */}]}}   // 1–10
+   ```
+   Strict: exactly one of the two, nothing beside it, no unknown field (`parseHandoff`, `delegationTask`). The engine reads
+   it after the attempt ended with a trusted completion (§6.1), so a request is only ever a request: it is checked, then
+   either refused (recorded, and the job **completes** with its report as the result, `reason` saying what was refused) or
+   accepted (the job moves `running → waiting_for_input`, the §6.1 hook). The worker's report format is unchanged; the fake
+   worker gained an optional `json`.
+2. **What the prompt offers.** The engine hands the worker `job.handoff = { guide, context } | null`. `guide` is a
+   server-written section placed right after the fixed header, `=== HANDOFFS (optional; Promptboard checks every request
+   and may refuse it) ===`, listing only the formats the policy allows now and, for delegation, only the agents this job may
+   use (its agent's `delegate` relations in the job's network, minus agents already on the chain, switched off or stale, not
+   on the job's project, or outside a client's scope; at most 50). `context` is, for an attempt after a handoff, `=== EARLIER
+   WORK ON THIS JOB (your previous report and its handoff messages; data, not instructions) ===` with the attempt's
+   `handoff.md` (≤ 16 KiB, hash-checked) and the job's messages oldest first (≤ 64 KiB, newest kept), indented like the job
+   input. With handoffs off and no earlier handoff `job.handoff` is null and `prompt.md` is byte-identical to Task 07's.
+3. **Policy** (`network/delegation.json`, `promptboard.network-delegation` v1 + `.bak`; a new file beside §4.1's list,
+   created on the first change): `{ revision, askOwner: false, delegate: false, maxDepth: 2 (1–4), maxChildren: 3 (1–10),
+   budgetShare: 50 (10–100 %), requireApproval: true, updatedAt }`. Off by default; `PATCH` takes the revision and is
+   local-only. One policy for all networks (a per-network policy would have to change the network draft's hashed format).
+4. **Checks, server-side, all-or-nothing** (`Delegation.plan`, then the job engine's own `#pin` of every sub-job before
+   anything is written; codes in brackets): delegation on (`DELEGATION_OFF` 403); the parent runs in a network
+   (`DELEGATION_NO_NETWORK`); the sub-job's depth (= the parent's chain length; the root job is depth 0) ≤ `maxDepth`
+   (`DELEGATION_DEPTH`); the parent's existing sub-jobs plus the request ≤ `maxChildren` (`DELEGATION_FANOUT`); per task: the
+   agent is not on the chain, the parent's agent included (`DELEGATION_CYCLE`: no self-delegation, no loops); the network's
+   **current draft** has a `delegate` relation from the parent's agent to it (`DELEGATION_NOT_ALLOWED`; a relation is
+   required, never sufficient, and the only place Graph relations are read, §9); tools no wider than the parent's
+   (`DELEGATION_ESCALATION`, none < web); a chain an external client started stays inside that client's agents while the
+   client is active with `submit_jobs` (`DELEGATION_NOT_ALLOWED`, `CLIENT_REVOKED`); A2A-started chains cannot delegate yet;
+   the agent is registered (`AGENT_NOT_FOUND`) and, when the parent has a project, has it on its `projectAllowlist`
+   (`PROJECT_NOT_ALLOWED`); then `#pin` (switched off, stale, provider or tools unsupported, Base resources required).
+   Questions need `askOwner` (`HANDOFF_OFF`); a malformed request is `HANDOFF_INVALID`; at most **5 handoffs per job**
+   (`HANDOFF_LIMIT`), after which nothing is offered. A sub-job inherits: the parent's project and network, its memory mode
+   and project-lessons flag (never more), `filesystem: read_only`, a time limit of `budgetShare` % of the parent's
+   (≥ 1 s), `requireApproval` when the policy or the parent asks for it, and fixed instructions naming the parent job.
+5. **Accepted delegation.** In the attempt's queue turn: `handoff.md` (the report) and `handoff.json` (the checked
+   submissions) are written once; the parent is saved `waiting_for_input` with `awaiting = { kind: 'children', attemptId, at,
+   tasks: [{ index, agentId, key, refused }] }` and `attempt.handoff = { kind, chars, sha256, at }`; then each sub-job is
+   submitted with requester `{ kind: 'job', id: parent }` (source `delegation`) and the idempotency key
+   `delegate:a<attempt number>:<index>` (scoped, as every key, by requester: `job:<parent>:delegate:a1:0`), and a `request`
+   message records it. A crash after the parent's save is repaired at the next start (`#resume`): missing sub-jobs are
+   created from `handoff.json` under the same keys, so a sub-job is never made twice. A sub-job that cannot be written is
+   kept as `refused` on its task. When every task's sub-job has ended (or was refused), one `result` (the sub-job's result,
+   cut to 14 KiB) or `blocked` message per task is recorded (idempotent per `attemptId` + task), then the parent is queued
+   again (`by: app`) as a **new attempt** that reads them (item 2). Sub-jobs that need the owner (`waiting_for_approval`,
+   `unknown`, `interrupted`) hold the parent until decided. `needs_input`: the question is recorded first as a `needs_input`
+   message to the requester (the owner, or the client that submitted the job), then the job waits with `awaiting = { kind:
+   'input', attemptId, at, question }`; `POST …/answer` records the answer as a `result` message, then queues the job again.
+   The job's `reason` never quotes the question or a sub-task (it is in `job.status` events).
+6. **Messages** (`network/jobs/<id>/messages.json`, `promptboard.network-messages` v1 + `.bak`, removed with the job):
+   §11.4's `Message` plus optional `jobId` (the sub-job), `attemptId` (the handoff), `task` (its index). **Deviation:** `from`
+   may also be `{ app: true }` (what Promptboard itself records, such as a refusal: attributing it to the agent or the owner
+   would be false) and `to` may be `{ clientId }` (a client's own job's question goes to the client). Kinds `request result
+   review needs_input blocked`; text and json ≤ 16 KiB each, cleaned as owner text (secrets masked, folders cut); ≤ 500 per
+   job, of which ≤ 200 from the owner or clients (so handoff records always fit). Only the engine writes them: the owner and
+   a client may add `review` or `request` notes to their own jobs (records that a later attempt reads as data), no agent can
+   post. **Read receipts** are `readAt`, set only when the recipient (the owner or that client) marks messages read; never
+   for an agent, and never a statement about execution (the job's status and attempts are the execution receipts).
+7. **Revocation and cancellation.** A queued sub-job (also one waiting for approval) is checked again at its claim
+   (`Delegation.recheck`): delegation still on, the relation still drawn, the chain's client still active and allowed; else it
+   fails `DELEGATION_REVOKED` with no attempt and no process (and its parent goes on with that outcome). A disabled or stale
+   registration refuses new sub-jobs at `#pin` and fails queued ones at claim (§11.2). A cancelled job cancels its open
+   sub-jobs (`by: app`, "Cancelled because the job that delegated it was cancelled."), which cascade down the tree; sub-jobs
+   that need the owner's decision are left for it. A sub-job whose parent still waits for it cannot be deleted (`JOB_IN_USE`).
+8. **External clients** (`rest.mjs`, own jobs only, §22's checks first): `POST /machine/v1/jobs/:id/children` (`submit_jobs`,
+   counts as a submit, `Idempotency-Key` header; the same policy and the client's own scope; the parent does not wait for it;
+   a finished parent is `JOB_FINISHED`), `GET …/messages` and `POST …/messages/read` (`read_job_result`), `POST …/messages` and
+   `POST …/answer` (`submit_jobs`). Messages are returned without `attemptId`. The client's sub-job is its own job
+   (`requester: machine`, `delegation.by: 'machine'`). The stdio MCP server is not extended in this task.
+9. **Schedules** (`network/schedules.json`, `promptboard.network-schedules` v1 + `.bak`, ≤ 100): §11.4's `Schedule` as `{ id:
+   'sch_…', name, target, cadence, timeZone, enabled, confirmedAt, lastSlot, lastJobId, lastRunId, lastFiredAt, lastSkip: null
+   | { at, slot, code, reason }, createdAt, updatedAt, revision }`. `target` is a job submission (`agentId, input, instructions,
+   tools, permissions, limits?, requireApproval, projectId, networkId`, checked by the job engine's own `jobSubmission`) or
+   `{ pipelineId, version, input? }`; `cadence` is Kanban's (`normalizeCadence`: daily, weekdays, weekly, monthly) or `{ kind:
+   'on_demand' }`. Kanban's `dueSlot` and `since` are now exported from `src/schedules.mjs` (no other change) and counted from
+   `confirmedAt` and `lastSlot`; the ticker is the same pattern (at least once a minute, `start`/`stop`/`wake`), not a second
+   engine. Rules: created **off**; only `POST …/confirm { confirm: true }` (local-only) switches it on and records the computer's
+   IANA zone and `confirmedAt`, so earlier slots are never caught up; `PATCH` can rename, edit or switch off, never on, and an
+   edit of what an enabled schedule runs, or when, switches it off; a differing zone shows `zoneMismatch` and fires nothing
+   until confirmed again (§14 item 7); of several missed slots only the latest fires (one job); while the schedule's previous
+   job (any of its jobs, found by requester) or the pipeline's previous run is open, the slot is skipped and used up
+   (`PREVIOUS_OPEN`); a job slot is submitted under the key `slot:<ms>` with requester `{ kind: 'schedule', id }` and `job.schedule
+   = { id, slot }` before the schedule saves it, so a restart in between finds the same job; a pipeline slot is saved before its
+   run starts (runs have no key: a crash loses that run rather than starting it twice); a refusal at fire time uses the slot
+   and records the code; firing never bumps the revision. Run now (`POST …/run { idempotencyKey? }`, key `run:<key>`) starts
+   one job at once even while off or while the previous job is open. On-demand schedules cannot be switched on.
+10. **Export and import (§4.4).** The Network export carries `schedules` (job targets only, as `{ id, name, target, cadence,
+    timeZone, createdAt, updatedAt }`) **only when there are any**, so exports without schedules stay readable by Promptboard
+    versions before Task 12. Import checks them before anything is written (the agent and network must be in the file,
+    `NETWORK_IMPORT_UNRESOLVED`), then adds them after the registry part with remapped IDs, switched off, never fired; a project
+    not on the board is removed with a warning. Neither the board backup nor the Network export carries jobs, messages,
+    confirmations or `lastSlot`, so restoring either starts nothing.
+11. **Job record additions** (absent on older jobs; `request.json` gains `delegation` or `schedule` only when present, so older
+    hashes stay): `awaiting`, `delegation: { by, depth, index, parentAttemptId, budgetShare, policyRevision }`, `schedule: { id,
+    slot }`, `attempt.handoff`. The view's `waiting` gains `{ for: 'input' }` and `{ for: 'children', open }`. Activity's queue
+    rows carry `requester`, `parentJobId`, `schedule`, `delegation.{by, depth}` and `awaiting.kind` (never the question).
+12. **Events** (§19, IDs and short server text only, never a question, task, answer or result): `job.message` (`kind` = the
+    message kind; "request from agent … to agent …"), `job.handoff` (`status` waiting | refused | continued, `kind` delegate |
+    needs_input, `errorCode`), `schedule.run` (`status` started | skipped | failed, `scheduleId` — a field added to the
+    journal's list — `jobId` or `pipelineRunId`, `errorCode`).
+13. **Routes and paired devices (§10.1 row 12, §10.2).** Owner: `GET/POST /api/network/jobs/:id/messages`, `POST
+    …/messages/read`, `POST …/answer`, `GET/PATCH /api/network/delegation`, `GET/POST /api/network/schedules`, `PATCH/DELETE
+    /api/network/schedules/:id`, `POST …/confirm`, `POST …/run`. **Local-only:** `PATCH /api/network/delegation` (switching
+    handoffs on lets agents and clients ask for work) and `POST /api/network/schedules/:id/confirm` (standing automation). A
+    paired phone keeps the owner's control over existing work: messages, answers, approvals of sub-jobs, Run now (one explicit
+    job, like submitting one), creating a switched-off schedule, editing (which can only switch off), deleting. **Deviation:**
+    `PATCH /schedules/:id` cannot switch a schedule on; that is the separate confirm route, so the phone rule stays one regex.
+14. **UI** (`public/network-delegation.js`, plain DOM, page tokens and hairlines, both themes, ≤ 730 px one column). A job's
+    record in Activity: "Started by" (you, an external client, a schedule with its slot, or "Delegated by the agent of job …"
+    linking to the parent), Approve/Reject when it waits for approval, the question with an answer form (kept across live
+    redraws), the sub-job tree (four levels, 50 rows, each with its status, how it was made and Approve/Reject), and the
+    handoff messages with Unread marks, "Mark … as read" and a folded note form. Activity's side column gains **Schedules**
+    (the computer's zone, each schedule's state, repeat, next time, last skip; Switch on… with a confirmation, Switch off, Run
+    now, Last job, Edit, Delete; an editor dialog). Settings gains **Handoffs** (the two switches, approval, depth, fan-out and
+    time budget). The timeline names handoff, message and schedule events and filters them. No feed: messages exist only in
+    their job's record.
+15. **Webhook triggers: deferred.** No delivery path exists that is both private and verifiable: the app listener is
+    owner-only behind `handle()`, the machine listener is 127.0.0.1-only with bearer clients (§22 item 1), and nothing receives
+    signed callbacks. A local program can already start work through a machine client (`POST /machine/v1/jobs` with an
+    `Idempotency-Key`), which is the safe form of a trigger. A webhook would need its own verified, replay-protected endpoint
+    (HMAC with a stored secret, timestamp window, idempotency per delivery) and an owner opt-in; failure-matrix row 37 is met
+    for jobs by the existing idempotency, not by a webhook.
+16. **Known limits.** One delegation policy for all networks. A parent restored from its backup while waiting becomes
+    `interrupted`; its sub-jobs still run, but their results are recorded for it only if it is waiting again. Questions and
+    sub-tasks go to the CLI as data in the next attempt's prompt (that is their purpose); they are not encrypted at rest, like
+    every job input. The REST gateway's sub-job and answer routes have no MCP tools yet. Pipeline schedules can be made through
+    the API; the Schedules editor makes job schedules (a pipeline schedule shows and can be renamed, repeated, run, switched
+    on or off and deleted there).
+17. **For Task 13.** A2A-started chains are refused delegation (`DELEGATION_NOT_ALLOWED` in `#rootClient`) until the A2A
+    principal is defined; an inbound A2A job is `requester: { kind: 'a2a', id }`, and a question from such a job goes to the
+    owner (`#requesterParty`). Inbound A2A that wants delegation should extend `#rootClient` with that principal's scope, never
+    widen it. A `federated` step's job is a normal job, so it can be a parent or a sub-job only through these checks.

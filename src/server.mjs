@@ -55,6 +55,8 @@ import { networkRoute } from './network/http.mjs';
 import { NetworkPipelines } from './network/pipeline-model.mjs';
 import { PipelineRunner } from './network/pipeline-runner.mjs';
 import { MachineListener } from './network/rest.mjs';
+import { Delegation } from './network/delegation.mjs';
+import { NetworkSchedules } from './network/schedules.mjs';
 import { NetworkError } from './network/storage.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
@@ -89,6 +91,7 @@ const assets = new Map([
   ['/network-graph.js', ['network-graph.js', 'text/javascript; charset=utf-8']],
   ['/network-activity.js', ['network-activity.js', 'text/javascript; charset=utf-8']],
   ['/network-clients.js', ['network-clients.js', 'text/javascript; charset=utf-8']],
+  ['/network-delegation.js', ['network-delegation.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal and graph assets, served from the installed packages by exact path only (no CDN,
 // no directory browsing). Missing files (no npm install) return 404: the dock and the Network graph fall back.
@@ -370,7 +373,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker, networkEventOptions = {}, machineOptions = {} } = {}) {
+export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker, networkEventOptions = {}, machineOptions = {}, networkScheduleOptions = {} } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   // One app per data folder; the board itself loads lazily, so starting never reads or writes board files.
   const lock = await lockDataDir(dataDir);
@@ -476,6 +479,10 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const pipelineRuns = new PipelineRunner({ dataDir, pipelines, jobs: networkJobs, events: networkEvents });
   // External clients (REST and MCP): their own 127.0.0.1 listener, off until the owner turns it on; never this handle().
   const machine = new MachineListener({ dataDir, registry: network, jobs: networkJobs, events: networkEvents, reservedPorts: () => [server.address()?.port, remoteAccess?.settings.port], ...machineOptions });
+  // Task 12: the owner's handoff policy (off by default) checks every question and sub-job an agent or a client asks for, and
+  // job schedules start nothing until the owner confirms them at this computer.
+  networkJobs.delegation = new Delegation({ dataDir, registry: network, clients: () => machine.clients.list() });
+  const networkSchedules = new NetworkSchedules({ dataDir, jobs: networkJobs, runs: pipelineRuns, registry: network, events: networkEvents, ...networkScheduleOptions });
   // Project memory: a merged card queues one lessons job (Board.completeTask); the worker starts once the app listens.
   const lessons = new Lessons({ dataDir, board, claim, runner: call => track(runner(call)) });
   board.lessons = lessons;
@@ -551,7 +558,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       catch (error) { return sendFailure(res, error, 'The Coordinator request failed. Project data is unchanged.', { status: 500, code: 'COORDINATOR_FAILED' }); }
     }
     if (/^\/api\/network(?:\/|$)/.test(pathname)) {
-      try { return await networkRoute({ network, jobs: networkJobs, events: networkEvents, board: () => board.state(), pipelines, runs: pipelineRuns, machine, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
+      try { return await networkRoute({ network, jobs: networkJobs, events: networkEvents, board: () => board.state(), pipelines, runs: pipelineRuns, machine, schedules: networkSchedules, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The Network request failed. Nothing was changed.', { status: 500, code: 'NETWORK_FAILED' }); }
     }
     if (/^\/api\/sandbox(?:\/|$)/.test(pathname)) {
@@ -818,6 +825,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   void networkJobs.start().catch(() => {}); // Reconciles jobs a stop interrupted (never relaunched); queued ones start only with a worker.
   void pipelineRuns.start().catch(() => {}); // Open runs go on from what was saved and proven; approvals stay pending.
   await machine.start().catch(() => {}); // Listens only when the owner turned external clients on; a failure is shown in Network → Settings.
+  networkSchedules.start(); // Fires only schedules the owner confirmed; a slot missed while closed fires once.
   let closed;
   // Idempotent and bounded: stop accepting, cancel owned work, close sockets, then
   // SIGKILL any owned CLI process group that is still alive.
@@ -826,6 +834,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     closing = true;
     await remoteAccess?.shutdown();
     await machine.close();
+    networkSchedules.stop();
     notifications.close();
     const listening = new Promise(resolve => server.close(() => resolve()));
     busy?.controller.abort();

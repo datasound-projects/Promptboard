@@ -4,7 +4,9 @@
 // without the structured final answer), [[rate]] (a structured rate limit), [[auth]] (signed out), [[crash]] (exit 3), [[big]] (output over the
 // limit), [[usage]] (token counts and cost), [[nosession]] (no session or thread ID), [[json]] (a fenced json block),
 // [[slow:<ms>]] (a pause before answering), [[barrier:<name>:<n>]] (wait until n runs carrying it have started, so a test proves
-// they ran at the same time without timing; exit 4 after 30 s). FAKE_HEADLESS_LOG names a folder for one <pid>.json per run and <pid>.end.
+// they ran at the same time without timing; exit 4 after 30 s), [[delegate:<agt_id>]] (Task 12: the report ends with a delegation
+// request for that agent, unless the prompt carries earlier work on the job, when it answers finally). FAKE_HEADLESS_LOG names a
+// folder for one <pid>.json per run and <pid>.end.
 import { spawn } from 'node:child_process';
 import { readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -26,7 +28,9 @@ if (barrier && log) {
 }
 const slow = /\[\[slow:(\d+)\]\]/.exec(input);
 if (slow) await pause(Number(slow[1]));
-const text = `Answer from ${cli}.${has('json') ? '\n\n```json\n{ "verdict": "ok", "items": [1, 2] }\n```' : ''}`;
+const delegateTo = /\[\[delegate:(agt_[0-9a-f]{20})\]\]/.exec(input)?.[1], continuing = input.includes('=== EARLIER WORK ON THIS JOB');
+const handoff = delegateTo && !continuing ? `\n\n\`\`\`json\n${JSON.stringify({ promptboard: { delegate: [{ agentId: delegateTo, task: 'Check the figures.' }] } })}\n\`\`\`` : '';
+const text = continuing ? `Final answer from ${cli}, with what came back.` : `Answer from ${cli}.${has('json') ? '\n\n```json\n{ "verdict": "ok", "items": [1, 2] }\n```' : ''}${handoff}`;
 // Exits once everything written has reached the pipe (macOS pipes are asynchronous); `await end()` stops the script there.
 const end = code => new Promise(() => { if (log) writeFileSync(join(log, `${process.pid}.end`), String(Date.now())); process.stdout.write('', () => process.exit(code)); });
 const hang = async () => { await new Promise(() => setInterval(() => {}, 1000)); };

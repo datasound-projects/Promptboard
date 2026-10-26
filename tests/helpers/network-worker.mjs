@@ -5,8 +5,9 @@
  * ownership's own calls and ends the worker's part with `entry.end()`. Its "process" is a flag, so a test can see
  * whether it was stopped (`killed`). `endOnCancel: false` keeps the worker's part open after a cancel, as a worker that
  * still delivers the result it had when the stop came. `active`/`maxActive` count attempts the worker is running.
+ * `json(job)` (optional) adds a structured result, as the local worker takes it from the report's last fenced json block.
  */
-export function fakeWorker({ mode = 'complete', text = job => `Report for: ${job.request.input.text}`, refuse = null, pid = 4242, endOnCancel = true } = {}) {
+export function fakeWorker({ mode = 'complete', text = job => `Report for: ${job.request.input.text}`, json = null, refuse = null, pid = 4242, endOnCancel = true } = {}) {
   const waiting = [];
   const worker = {
     claims: [], starts: [], cancels: [], attempts: new Map(), active: 0, maxActive: 0,
@@ -27,7 +28,8 @@ export function fakeWorker({ mode = 'complete', text = job => `Report for: ${job
         entry.process = 'running';
         try { await own.spawned({ pid }); } catch (error) { entry.process = 'ended'; entry.killed = true; throw error; }
         entry.process = 'ended';
-        return await own.finish({ status: 'completed', exitCode: 0, result: { text: text(job) } });
+        const structured = json?.(job);
+        return await own.finish({ status: 'completed', exitCode: 0, result: { text: text(job), ...(structured ? { json: structured } : {}) } });
       } finally { worker.active--; }
     },
     async cancel(own) {

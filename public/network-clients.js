@@ -138,7 +138,9 @@ window.PromptboardNetworkClients = (() => {
     const heading = el('h2', '', 'External clients'); heading.id = 'network-clients-title';
     const columns = el('div', 'network-clients-columns'), side = el('div', 'network-clients-side');
     side.append(listenerCard, setupCard); columns.append(clientsCard, side);
-    panel.append(heading, intro, columns);
+    // Task 12: the owner's handoff policy (network-delegation.js) lives in Settings too, below the external clients.
+    const handoffs = window.PromptboardNetworkDelegation?.policyCard({ request: host.request, say: host.say, showError: host.showError }) || null;
+    panel.append(heading, intro, columns, ...(handoffs ? [handoffs.node] : []));
 
     // ---- The dialog: its own, so a token never stays in the page after it closes.
     const dialog = el('dialog', 'kanban-dialog network-dialog network-clients-dialog'); dialog.id = 'network-clients-dialog'; dialog.setAttribute('aria-labelledby', 'network-clients-dialog-heading');
@@ -243,7 +245,7 @@ window.PromptboardNetworkClients = (() => {
     }
     function render() { renderListener(); renderClients(); renderSetup(); }
     function show(on) {
-      const entering = on && !visible; visible = on; panel.hidden = !on;
+      const entering = on && !visible; visible = on; panel.hidden = !on; handoffs?.show(on);
       if (!on) { if (dialog.open) { opener = null; closeDialog(); } return; } // A dialog never stays over another section.
       render();
       if (entering) void load();

@@ -347,7 +347,8 @@ function localOnly(method, path) {
     || /^\/api\/projects\/[^/]+\/open$/.test(path) // Opens a window on the computer's screen.
     || /^\/api\/tasks\/[^/]+\/preview$/.test(path) // Starts or stops a dev server whose link works only on the computer.
     || path === '/api/sandbox/claude-token' // A CLI sign-in, like the ones above: set or removed at the computer.
-    || /^\/api\/network\/(?:clients(?:\/[^/]+\/rotate)?|listener)$/.test(path); // A new machine token is shown, or the machine listener opens (revoking stays allowed).
+    || /^\/api\/network\/(?:clients(?:\/[^/]+\/rotate)?|listener)$/.test(path) // A new machine token is shown, or the machine listener opens (revoking stays allowed).
+    || /^\/api\/network\/(?:delegation|schedules\/[^/]+\/confirm)$/.test(path); // Standing automation (Task 12): handoffs switched on, a schedule switched on.
 }
 /** This computer's private addresses, offered as listening addresses for Twingate. */
 function localAddresses() {
