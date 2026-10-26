@@ -28,7 +28,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 | 03 | 03-network-page-and-agent-profiles.md | done | 9edf549 |
 | 04 | 04-agent-memory-and-feed.md | done | 1fc58b6 |
 | 05 | 05-graph-designer-and-subnetworks.md | done | 47447fc |
-| 06 | 06-general-purpose-job-engine.md | done | |
+| 06 | 06-general-purpose-job-engine.md | done | d49d064 |
 | 07 | 07-local-worker-runtime.md | pending | |
 | 08 | 08-live-activity-and-observability.md | pending | |
 | 09 | 09-pipeline-dag-engine.md | pending | |
@@ -752,6 +752,6 @@ clean-up is not covered by a test (the failure cannot be injected without knowin
 `jobId`. The retention guard knows parent jobs only; Task 09 adds pipeline runs. Cross-process claims are excluded by the
 instance lock, not by the job files.
 
-**Commit.** (Task 06 commit, recorded in the next commit), then this log entry.
+**Commit.** d49d064 (Task 06), then this log entry.
 
 **Next task: 07.**
