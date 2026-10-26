@@ -181,3 +181,20 @@ test('P2-6: a job’s and an agent’s events older than the newest 50,000 journ
   $('#network-profile-tab-activity').click();
   await until(() => $('#network-agent-activity-feed')?.children.length > 0, 'the agent’s events found');
 });
+
+test('P2-10: the Create client form offers every registered agent, past the first 200', async t => {
+  const ctx = await setup(t, { hash: '#/' });
+  const COUNT = 205;
+  for (let i = 0; i < COUNT; i++) {
+    await ctx.app.board.base.create({ id: `b${i}`, kind: 'profile', name: `Agent ${String(i).padStart(3, '0')}`, configuration: { agent: { provider: 'claude' } } });
+    assert.equal((await call(ctx, '/api/network/agents', 'POST', { baseResourceId: `b${i}`, expectedRevision: i })).status, 200);
+  }
+  ctx.win.location.hash = '#/network/settings';
+  await until(() => ctx.$('#network-client-create') && !ctx.$('#network-panel-settings').hidden, 'settings');
+  await ctx.idle();
+  ctx.$('#network-client-create').click();
+  await until(() => ctx.$('#network-client-name'), 'create form');
+  const offered = [...ctx.win.document.querySelectorAll('#network-clients-dialog input[name="agents"]')];
+  assert.equal(offered.length, COUNT);
+  assert.ok(offered.some(box => box.closest('label')?.textContent.includes('Agent 204')), 'the last one too');
+});

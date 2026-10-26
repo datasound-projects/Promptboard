@@ -230,14 +230,20 @@ window.PromptboardNetworkClients = (() => {
           : 'Its token stops working at once and its open streams close. This cannot be undone. Jobs it already submitted keep running; cancel them in Activity if needed.'), failure, footer], go);
     }
 
+    /** Every page of a list (`next` is the next offset): a client may be given any registered agent or network. */
+    async function all(path, key) {
+      const items = [];
+      for (let offset = 0; offset !== null;) { const page = await host.request(`${path}?limit=200&offset=${offset}`); items.push(...page[key]); offset = page.next; }
+      return items;
+    }
     async function load() {
       const mine = ++version;
       try {
-        const [clients, status, agents, networks] = await Promise.all([host.request('/api/network/clients'), host.request('/api/network/listener'), host.request('/api/network/agents?limit=200'),
-          host.request('/api/network/networks?limit=200'), host.projects().length ? null : host.ensureBoard?.()?.catch?.(() => {})]);
+        const [clients, status, agents, networks] = await Promise.all([host.request('/api/network/clients'), host.request('/api/network/listener'), all('/api/network/agents', 'agents'),
+          all('/api/network/networks', 'networks'), host.projects().length ? null : host.ensureBoard?.()?.catch?.(() => {})]);
         if (mine !== version) return;
-        Object.assign(state, { clients: clients.clients, status, error: '', loaded: true, agents: new Map(agents.agents.map(agent => [agent.id, { id: agent.id, name: agent.displayName || agent.base.name || agent.baseResourceId, available: agent.enabled && !agent.base.stale }])),
-          networks: new Map(networks.networks.map(network => [network.id, network.name])) });
+        Object.assign(state, { clients: clients.clients, status, error: '', loaded: true, agents: new Map(agents.map(agent => [agent.id, { id: agent.id, name: agent.displayName || agent.base.name || agent.baseResourceId, available: agent.enabled && !agent.base.stale }])),
+          networks: new Map(networks.map(network => [network.id, network.name])) });
       } catch (failure) { if (mine !== version) return; state.error = failure.message; state.loaded = true; host.showError(failure); }
       if (visible) render();
     }
