@@ -204,3 +204,18 @@ test('P2-9: a machine client’s open stream ends at its expiry and delivers not
   await until(() => second.ended, 'the expired client’s stream ends', 3000);
   assert.deepEqual(second.lines.filter(line => line.jobId), [], 'no event reached the expired client');
 });
+
+test('P2-11: a job cancelled while the local worker claims it leaves no attempt entry behind', { skip: process.platform === 'win32' }, async t => {
+  const bin = await mkdtemp(join(tmpdir(), 'pb-review2-bin-')), path = process.env.PATH;
+  t.after(() => { process.env.PATH = path; return rm(bin, { recursive: true, force: true }); });
+  await writeFile(join(bin, 'claude'), '#!/bin/sh\nexit 0\n'); await chmod(join(bin, 'claude'), 0o700);
+  process.env.PATH = bin; // A fake Claude Code: the claim only looks it up.
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  const worker = new LocalJobWorker({ dataDir: bin, registry: { base: { list: async () => { await gate; return { revision: 1, resources: [], approvedRoots: [] }; } } } });
+  const controller = new AbortController(), own = { attemptId: 'att_0123456789abcdef0123', signal: controller.signal };
+  const job = { request: { agent: { provider: 'claude', manifest: { resources: [], profiles: [] } }, tools: 'none', permissions: { filesystem: 'read_only' } } };
+  const claiming = worker.claim(job, own);
+  controller.abort(); await worker.cancel(own); // The engine's stop while the claim reads Base: the worker holds nothing yet.
+  release(); await claiming;
+  assert.deepEqual(worker.getStatus(own), { process: 'none' }, 'the ended attempt is forgotten');
+});

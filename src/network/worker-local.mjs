@@ -82,6 +82,7 @@ export class LocalJobWorker {
     const manifest = request.agent.manifest ?? this.#acceptedManifest(base, request.agent);
     checkBaseRevocations(manifest, base.resources, base.approvedRoots); // BASE_REVOKED or BASE_ROOT_NOT_APPROVED
     if (!await resolveExecutable(provider)) refuse(`${NAMES[provider]} was not found. Install it, sign in from your terminal, then retry. Nothing ran.`, 'NOT_INSTALLED');
+    if (own.signal?.aborted) return; // Stopped while it claimed: cancel() found nothing and start() never comes, so keep nothing.
     this.#attempts.set(own.attemptId, { manifest, base, process: 'none', coverage: COVERAGE[provider], controller: new AbortController(), settled: null });
   }
   #acceptedManifest(base, agent) {
