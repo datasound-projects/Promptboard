@@ -410,6 +410,14 @@ window.PromptboardNetworkPipeline = (() => {
       Object.assign(ed, { draft: pipeline, ...clone({ name: pipeline.name, description: pipeline.description, networkVersion: pipeline.networkVersion, settings: pipeline.settings, nodes: pipeline.nodes, edges: pipeline.edges }), rules: new Map() });
       if (ed.selected && ed.selected !== SETTINGS && !byId(ed.selected) && !ed.edges.some(edge => edge.id === ed.selected)) ed.selected = null;
     }
+    /**
+     * The server's copy after a save or publish whose request carried `sent` (a snapshot's JSON). The working copy becomes it
+     * only when nothing was edited since; an edit made while the request was out stays, unsaved, with its undo steps.
+     */
+    function settle(pipeline, sent) {
+      if (JSON.stringify(snapshot()) === sent) { adopt(pipeline); Object.assign(ed, { dirty: false, undo: [] }); return; }
+      ed.draft = pipeline; ed.dirty = saved() !== JSON.stringify(snapshot());
+    }
     async function openDesigner(id) {
       if (ed?.key === id) return;
       ed = fresh(id); destroyCanvas('d');
@@ -643,10 +651,11 @@ window.PromptboardNetworkPipeline = (() => {
       }
       ed.saving = true; renderHead();
       try {
+        const sent = JSON.stringify(snapshot());
         const { pipeline } = await request(`/api/network/pipelines/${ed.id}`, { method: 'PATCH', body: { expectedRevision: ed.draft.revision, name: ed.name, description: ed.description, networkVersion: ed.networkVersion, settings: ed.settings, nodes: ed.nodes, edges: ed.edges } });
-        adopt(pipeline);
-        Object.assign(ed, { dirty: false, undo: [], error: null, problems: new Set(), badEdges: new Set() });
-        say(`Saved the draft of “${pipeline.name}” (revision ${pipeline.revision}). Nothing started.`);
+        settle(pipeline, sent);
+        Object.assign(ed, { error: null, problems: new Set(), badEdges: new Set() });
+        say(`Saved the draft of “${pipeline.name}” (revision ${pipeline.revision}).${ed.dirty ? ' What you changed while it saved is not saved yet.' : ''} Nothing started.`);
         return true;
       } catch (failure) {
         const marks = marksOf(failure, ed.nodes);
@@ -682,12 +691,13 @@ window.PromptboardNetworkPipeline = (() => {
       const diffNote = note(diff, 'note network-pipeline-diff'); diffNote.id = 'network-pipeline-diff';
       ask(`Publish version ${next}?`, [note(`Version ${next} of “${ed.draft.name}” is saved exactly as the draft is now (revision ${ed.draft.revision}). A published version never changes and is never deleted; a run pins its number, never the draft.`), summary, diffNote, note('Publishing starts nothing.')], `Publish version ${next}`, async () => {
         let data;
+        const sent = saved(); // Publishing carries the saved draft: unsaved edits (kept by a save meanwhile) stay unsaved.
         try { data = await request(`/api/network/pipelines/${ed.id}/publish`, { method: 'POST', body: { expectedRevision: ed.draft.revision } }); }
         catch (failure) {
           if (failure.code !== 'REVISION_CONFLICT' && !failure.details) throw failure;
           host.closeDialog(); const marks = marksOf(failure, ed.nodes); Object.assign(ed, { error: failure, problems: marks.nodes, badEdges: marks.edges }); syncDesigner(); renderEditor(); return;
         }
-        adopt(data.pipeline); Object.assign(ed, { dirty: false, undo: [] });
+        settle(data.pipeline, sent);
         host.closeDialog(); say(`Published version ${data.published.version} of “${data.pipeline.name}”. It never changes. Nothing started.`);
         syncDesigner(); renderEditor(); document.querySelector('#network-pipeline-run')?.focus();
       });

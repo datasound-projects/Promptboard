@@ -510,10 +510,15 @@ window.PromptboardNetworkGraph = (() => {
       if (!ed || ed.readOnly || ed.saving) return false;
       ed.saving = true; renderHead();
       try {
+        const sent = JSON.stringify(snapshot());
         const data = await request(`/api/network/networks/${ed.id}`, { method: 'PATCH', body: { expectedRevision: ed.draft.revision, nodes: ed.nodes, edges: ed.edges } });
+        // An edit made while the save was out stays in the working copy, unsaved, with its undo steps; the draft moves on.
+        const mine = JSON.stringify(snapshot()) !== sent && { nodes: ed.nodes, edges: ed.edges, refs: ed.refs };
         applyDetail(data);
-        Object.assign(ed, { dirty: false, undo: [], error: null, problems: new Set() });
-        say(`Saved the draft of “${data.network.name}” (revision ${data.network.revision}). Nothing started.`);
+        if (mine) Object.assign(ed, { nodes: mine.nodes, edges: mine.edges, refs: { agents: { ...mine.refs.agents, ...data.refs.agents }, networks: { ...mine.refs.networks, ...data.refs.networks } } });
+        else Object.assign(ed, { dirty: false, undo: [] });
+        Object.assign(ed, { error: null, problems: new Set() });
+        say(`Saved the draft of “${data.network.name}” (revision ${data.network.revision}).${mine ? ' What you changed while it saved is not saved yet.' : ''} Nothing started.`);
         return true;
       } catch (failure) {
         ed.error = failure; ed.problems = new Set(problemNodes(failure));
