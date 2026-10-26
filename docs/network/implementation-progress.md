@@ -25,7 +25,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 |---:|---|---|---|
 | 01 | 01-audit-and-contracts.md | done | 27646ef |
 | 02 | 02-registry-and-storage.md | done | 7771788 |
-| 03 | 03-network-page-and-agent-profiles.md | done | see "Task 03" |
+| 03 | 03-network-page-and-agent-profiles.md | done | 9edf549 |
 | 04 | 04-agent-memory-and-feed.md | pending | |
 | 05 | 05-graph-designer-and-subnetworks.md | pending | |
 | 06 | 06-general-purpose-job-engine.md | pending | |
@@ -311,6 +311,8 @@ One page of the list is 200 rows; "Show more" adds the next 200. Network names o
 `?agentId=` (one request, at most 200 networks shown by name). The directory is read again each time the page is
 opened, not pushed live; a change elsewhere while the page is open shows after Reload or the next visit. README is not
 updated yet (release notes and README are Task 14). Paid CLI runs: 0.
+
+**Commit.** 9edf549 (Task 03), then this log entry.
 
 **Next task: 04.**
 
