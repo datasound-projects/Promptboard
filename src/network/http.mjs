@@ -3,7 +3,7 @@
  * fetch-site checks. Every route here is also allowed from a paired device (architecture §10.2): none of them creates a
  * way in, shows a secret or changes trust, and none starts work. tests/remote-access.test.mjs scans this file.
  *
- *   GET  /api/network/agents                ?q tag capability status baseResourceId projectId networkId offset limit
+ *   GET  /api/network/agents                ?q tag capability status kind provider baseResourceId projectId networkId offset limit
  *   POST /api/network/agents                { baseResourceId, expectedRevision, displayName?, tags?, capabilities?, enabled?, projectAllowlist? }
  *   GET  /api/network/agents/:id
  *   PATCH /api/network/agents/:id           { expectedRevision, …fields }
@@ -33,7 +33,7 @@ export async function networkRoute({ network, req, res, pathname, searchParams, 
   };
   try {
     if (pathname === '/api/network/agents') {
-      if (method === 'GET') return send(res, 200, await network.listAgents(query(searchParams, ['q', 'tag', 'capability', 'status', 'baseResourceId', 'projectId', 'networkId'])));
+      if (method === 'GET') return send(res, 200, await network.listAgents(query(searchParams, ['q', 'tag', 'capability', 'status', 'kind', 'provider', 'baseResourceId', 'projectId', 'networkId'])));
       if (method === 'POST') return send(res, 200, await network.registerAgent(await body(BODY.small)));
     }
     if (pathname === '/api/network/networks') {

@@ -101,6 +101,7 @@ export async function setup(t, { catalogReader = async id => ({ provider: id, ..
   win.eval(await readFile(new URL('../../public/prefs.js', import.meta.url), 'utf8'));
   win.eval(await readFile(new URL('../../public/dom.js', import.meta.url), 'utf8'));
   win.eval(await readFile(new URL('../../public/base.js', import.meta.url), 'utf8'));
+  win.eval(await readFile(new URL('../../public/network.js', import.meta.url), 'utf8'));
   // Browsers share one global scope across classic scripts; jsdom's eval does not, so evaluate them together.
   // Test-only export appended by the harness (not part of the app): reload the board and read the token.
   win.eval(`${await readFile(new URL('../../public/app.js', import.meta.url), 'utf8')}\n${await readFile(new URL('../../public/dock.js', import.meta.url), 'utf8')}\nwindow.__pbTest = { loadBoard, refreshRepositoryPipelineStatus, attachComposeContext, get token() { return token; } };`);

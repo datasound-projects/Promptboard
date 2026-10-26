@@ -25,7 +25,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 |---:|---|---|---|
 | 01 | 01-audit-and-contracts.md | done | 27646ef |
 | 02 | 02-registry-and-storage.md | done | 7771788 |
-| 03 | 03-network-page-and-agent-profiles.md | pending | |
+| 03 | 03-network-page-and-agent-profiles.md | done | see "Task 03" |
 | 04 | 04-agent-memory-and-feed.md | pending | |
 | 05 | 05-graph-designer-and-subnetworks.md | pending | |
 | 06 | 06-general-purpose-job-engine.md | pending | |
@@ -38,7 +38,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 | 13 | 13-a2a-federation.md | pending | |
 | 14 | 14-verification-and-release.md | pending | |
 
-**Next task:** 03
+**Next task:** 04
 
 ## Live provider runs
 
@@ -203,4 +203,114 @@ version files (nothing runs). No delete routes yet (Task 05 adds network delete;
 Paid CLI runs: 0. The only app instance outside the tests was the port 4902 smoke above.
 
 **Next task: 03.**
+
+### Task 03 — Network page and agent profiles (2026-10-26)
+
+**What was done.** `Network` is the fifth page (`Origin · Compose · Kanban · Base · Network`, `#/network`) with the same
+routing quality as the others: nav `aria-current`, document title "Network · Promptboard", skip link, sidebar panel and
+labels, start-page option, back/forward, and a phone layout. The page has the six-section tablist (Agents, Graph,
+Pipelines, Activity, Library, Federation); only Agents works, the other five are marked "soon" and say "Not available
+yet." with one sentence on what they will do and no controls. The Agents section is a directory filled from
+`GET /api/network/agents` (search; Role, Provider, Capability and Status filters, all server-side; "Show more" paging)
+beside the chosen agent's profile; a phone shows the list, then the profile. "Register agent" picks an existing Base
+Agent or Agent profile (from `GET /api/base`) and sets the Network identity (display name, tags, capabilities, projects,
+enabled); "Edit identity…" changes it; a switch enables/disables the registration; "Open in Base" opens the real
+resource in Base's own editor. The profile shows the Network ID, Base kind/name/revision, provider/model/effort, Base
+state and use count, tags, capabilities, projects, networks, the instructions preview, the provider capability matrix
+(unknown where unknown) and the allowed operations, plus Tasks/Activity/Memory tabs that say they are not available
+yet. Empty, loading, error (with Retry), stale and revision-conflict (with Reload) states are explicit. Nothing on the
+page starts a job, a run or a model call, and it calls only the app's own API.
+
+**Files.** New: `public/network.js` (the page module, `window.PromptboardNetwork.create`), `tests/network-ui.test.mjs`,
+`tests/network-browser.test.mjs`. Changed: `public/index.html` (nav link, `#network-sidebar-panel`, `#network-view`,
+start-page option, script), `public/app.js` (`currentPage`, `showPage`, sidebar label, skip link, start page,
+`networkView` creation with `api`, `projects`, `ensureBoard`, `openBase`; scroll kept between Network sub-routes),
+`public/styles.css` (Network section; top-bar breakpoints for five links), `src/server.mjs` (`/network.js` asset),
+`src/network/registry.mjs` (provider capability matrix, instructions preview, Base use count, `kind`/`provider` filters,
+`facets`), `src/network/http.mjs` (the two query keys), `tests/network-registry.test.mjs` (one test),
+`tests/helpers/ui-harness.mjs` (evaluates `network.js` like the page does), `tests/ui-3.test.mjs`,
+`tests/browser.test.mjs`, `tests/origin-browser.test.mjs` (five nav links), `tests/app-fixes-browser.test.mjs` (top bar
+at the new breakpoints, all five pages), `docs/network/architecture.md` (§5 computed fields, §10.1 row 03, §12.1), this
+file.
+
+**Routes and fields.** No new route. `GET /api/network/agents` also takes `kind` (`profile`|`agentProfile`, the "role")
+and `provider` (`claude`|`codex`|`gemini`|`agy`) and answers `facets: { capabilities }`. Agent views add
+`providerCapabilities` (`{ provider, known, jobTools, toolEvents, waitingEvents, readOnly, webSearch, sessionId, usage,
+dockerSandbox, liveVerified }`, values `yes|partial|no|unknown`), `base.instructions` (`{ summary ≤280 redacted, chars }`)
+and `base.usedBy` (count). Decisions (role = Base kind, Open in Base through the existing `openResource` seam, sidebar
+section links, conflict handling, top-bar breakpoints): architecture.md §12.1.
+
+**Tests** (temporary data folders, no CLI, no network beyond the local test server):
+
+- `tests/network-ui.test.mjs` 6 tests (jsdom, real server): (1) five nav links, only `#network-view` shown, title,
+  `aria-current`, skip link, sidebar label and panel, tablist state; every other page opens (Base loads, Compose works);
+  back/forward through Kanban, Base, Graph and an agent profile; (2) start page Network only without an explicit route;
+  (3) the rows are the server's registration IDs; Role, Provider, Capability (from `facets`), Status and search each
+  narrow the list and are sent to the server; filtered empty state and Clear filters; a registration made elsewhere
+  appears on the next visit; (4) empty state → Register (only Base agents and agent profiles offered) → stored fields,
+  focus on the new profile; Edit identity (Base agent not changeable, focus back on Edit); disable and enable (focus
+  stays on the switch); Base revision and every resource unchanged; Open in Base lands on Base's editor for `lead`;
+  Back returns; the request log holds only GETs plus `POST/PATCH /api/network/agents*`, no generate/run/job/research
+  URL, zero runner calls, zero runs; (5) damaged `agents.json` + backup → error with Retry; disabled and deleted Base
+  agents show Stale with their reason, Open in Base disabled with the reason when the resource is gone, capabilities
+  unknown; a conflicting change → switch reverted, message, Reload; the same in the edit dialog without overwriting;
+  (6) section and profile tablists with ArrowRight/Left, Home, End (wrap); unavailable panels hold no controls; every
+  input/select is labelled and every button named, tabs and panels reference each other; Escape closes the dialog and
+  returns focus; every visible enabled button in the list and profile views changes the route, view, focus or a dialog
+  (a disabled one carries a reason).
+- `tests/network-browser.test.mjs` 1 test (Chrome): light and dark; at 1440 px the list and profile sit side by side
+  with no sideways scroll; at 390 px the list and toolbar only, a real tap shows the profile only (focus on its
+  heading), Back returns focus to the row; theme colours differ; ArrowRight/Left with a visible focus ring; Enter opens
+  Register, Escape returns focus; Open in Base and Back in a real browser; no exception or CSP message. With
+  `PB_NETWORK_SCREENSHOTS=<folder>` it saves its screenshots.
+- `tests/network-registry.test.mjs` +1: role and provider filters (an agent profile counts as its primary agent's
+  provider), invalid filter values refused, facets ignore filters, the capability matrix per provider and all-unknown
+  for no provider (not shared with callers), the instructions preview (agent's then profile's text, 280 characters,
+  a credential masked), Base use count, a deleted resource.
+- Existing tests changed only where they pinned four nav links (`ui-3`, `browser`, `origin-browser`) or the old top-bar
+  breakpoints (`app-fixes-browser` now checks 320–735 px on all five pages and the theme toggle at 735 px).
+- Mutation check (`$TMPDIR/network-logs/task-03-mutations.log`): removing the nav link, the route, the start-page value,
+  the kind/provider filter or query keys, the facets, the capability matrix, the preview redaction, the conflict Reload,
+  the stale note, Escape, focus return, tab arrows, the `openBase` seam, the asset registration, the phone or
+  side-by-side CSS, or either top-bar breakpoint change, or making the edit dialog send a Base field (refused by the
+  server), each makes its test fail (20/20).
+- Runs: `npm run check` pass; new tests twice: 23/23 non-browser and 1/1 browser, both times
+  (`$TMPDIR/network-logs/task-03-new-twice.log`); touched files `ui`, `ui-2`, `ui-3`, `project-explorer-ui`,
+  `remote-access`, `sandbox-ui`, `base-*`, `server` 281/281 (`task-03-touched.log`) and `app-fixes-browser`, `browser`,
+  `origin-browser`, `remote-access-browser`, `sidebar-resize-browser`, `base-profiles-browser`, `network-browser` 33/33
+  (`task-03-touched-browser.log`); `compose-operation`, `kanban-audit` 11/11.
+- Full `npm test` (log `$TMPDIR/network-logs/task-03-suite.log`, 2026-10-26 05:02–05:30): non-browser 1,529 tests,
+  1,528 pass, 0 fail, 1 skipped (the win32-only `editors.test.mjs` test); browser 147 tests, 146 pass, 0 fail,
+  1 cancelled: `kanban-focus-browser` "delayed usage dialog close events preserve subsequent project settings focus"
+  hit its 60 s limit (load average about 4.7 during the run). Run alone it passed 3 times out of 3 and once more with
+  `PB_CPU_THROTTLE=6` (`task-03-rerun.log`); it touches no Network code (Kanban project settings and the Usage dialog at 1280/390 px, where
+  this task changed nothing but the fifth nav link). Exit 1 for that one test. Baseline 1,522 + 7 new = 1,529;
+  146 + 1 = 147.
+- Isolated instance on port 4903 (temporary data folder, fake detector and catalog, no runner) for the screenshots and
+  the top-bar measurements (every width from 320 to 940 px fits); stopped and its folder removed each time.
+
+**Acceptance criteria and evidence** (screenshots in `$TMPDIR/network-logs/task-03-screens/`, all looked at):
+
+- *Network opens as a first-class tab; existing pages still work:* network-ui tests 1–2; the touched and full suites;
+  `1440-light-detail.png`, `1440-dark-detail.png`, `390-light-list.png`, `390-dark-list.png`.
+- *The UI can register and edit the Network identity of a Base agent, then navigate to the real Base resource:*
+  network-ui test 4, network-browser (Open in Base, Back); `1440-light-register.png`, `1440-dark-register.png`.
+- *Server data, not mocked static content, drives the directory:* network-ui test 3 (row IDs are the server's; a later
+  registration appears; every filter goes to the server).
+- *Keyboard/mobile/empty/error states are usable; no execution or network side effects from opening/editing:*
+  network-ui tests 4–6, network-browser; `1440-light-empty.png`, `1440-dark-empty.png`, `1440-light-conflict.png`,
+  `1440-light-stale.png`, `1440-dark-stale.png`, `1440-*-graph.png`, `390-*-detail.png`, `390-*-detail-lower.png`,
+  `1440-*-detail-lower.png`; `browser-test/network-{1440,390}-{light,dark}-*.png`.
+- acceptance.md Task 03 rows 1–8: rows 1–2 tests 1–2; row 3 test 3 + the registry test; row 4 test 4 + browser; row 5
+  test 5 (+ test 4 empty state); row 6 test 6 + browser keyboard; row 7 browser; row 8 test 4's request log.
+
+**Known limits.** Base's own "Used by" panel still does not list Network registrations (open question 1); Network shows
+only Base's count. A Posts tab (Task 04), quick job submission (Task 06+) and real Tasks/Activity/Memory content wait
+for their tasks. The Capability select lists capabilities of all registrations (facets), not of the current page only.
+One page of the list is 200 rows; "Show more" adds the next 200. Network names on a profile are read per agent with
+`?agentId=` (one request, at most 200 networks shown by name). The directory is read again each time the page is
+opened, not pushed live; a change elsewhere while the page is open shows after Reload or the next visit. README is not
+updated yet (release notes and README are Task 14). Paid CLI runs: 0.
+
+**Next task: 04.**
 

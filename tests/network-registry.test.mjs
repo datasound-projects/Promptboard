@@ -340,3 +340,41 @@ test('lists filter and page; reading never creates the network folder', async t 
   assert.deepEqual((await registry.listNetworks({ limit: 1 })).next, 1);
   for (const query of [{ limit: 0 }, { limit: 201 }, { offset: -1 }, { limit: Number.NaN }, { status: 'busy' }]) await assert.rejects(registry.listAgents(query), { code: 'INVALID_INPUT' }, JSON.stringify(query));
 });
+
+test('the directory view: role and provider filters, capability facets, provider capabilities (unknown where unknown), an instructions preview and Base use', async t => {
+  const { base, registry } = await fixture(t);
+  const secret = 'api_key=sk-live-0123456789abcdef';
+  await base.create({ id: 'writer', kind: 'profile', name: 'Writer', configuration: { agent: { provider: 'gemini', instructions: `${secret}\n${'Write clearly. '.repeat(40)}` } } });
+  await base.create({ id: 'plain', kind: 'profile', name: 'Plain', configuration: { agent: {} } });
+  await base.update('team', { configuration: { agents: [{ resourceId: 'lead', role: 'primary' }], instructions: 'Report to the owner.' } }, { expectedRevision: 1 });
+  const lead = await register(registry, 'lead', 0, { capabilities: ['research', 'web'] }), team = await register(registry, 'team', 1, { capabilities: ['review'] });
+  const reviewer = await register(registry, 'reviewer', 2), writer = await register(registry, 'writer', 3), plain = await register(registry, 'plain', 4);
+  const ids = query => registry.listAgents(query).then(result => result.agents.map(agent => agent.id));
+  assert.deepEqual(await ids({ kind: 'agentProfile' }), [team.id], 'role = the Base kind');
+  assert.deepEqual(await ids({ kind: 'profile' }), [lead.id, reviewer.id, writer.id, plain.id]);
+  assert.deepEqual(await ids({ provider: 'claude' }), [lead.id, team.id], 'an agent profile runs as its primary agent');
+  assert.deepEqual(await ids({ provider: 'codex', kind: 'profile' }), [reviewer.id]);
+  assert.deepEqual(await ids({ provider: 'agy' }), []);
+  for (const query of [{ kind: 'knowledge' }, { provider: 'openai' }]) await assert.rejects(registry.listAgents(query), { code: 'INVALID_INPUT' }, JSON.stringify(query));
+  assert.deepEqual((await registry.listAgents({ status: 'disabled' })).facets, { capabilities: ['research', 'review', 'web'] }, 'facets ignore the filters');
+
+  const view = id => registry.agent(id).then(result => result.agent);
+  const claude = (await view(lead.id)).providerCapabilities;
+  assert.deepEqual(claude, { provider: 'claude', known: true, jobTools: ['none', 'web'], toolEvents: 'yes', waitingEvents: 'yes', readOnly: 'yes', webSearch: 'yes', sessionId: 'yes', usage: 'unknown', dockerSandbox: 'yes', liveVerified: 'yes' });
+  assert.deepEqual([(await view(reviewer.id)).providerCapabilities.waitingEvents, (await view(writer.id)).providerCapabilities.jobTools], ['no', ['none']]);
+  const unknown = (await view(plain.id)).providerCapabilities;
+  assert.deepEqual([unknown.provider, unknown.known, unknown.jobTools], [null, false, null]);
+  assert.ok(Object.entries(unknown).filter(([key]) => !['provider', 'known', 'jobTools'].includes(key)).every(([, value]) => value === 'unknown'), 'no evidence: every capability unknown');
+  claude.jobTools.push('write');
+  assert.deepEqual((await view(lead.id)).providerCapabilities.jobTools, ['none', 'web'], 'the matrix is not shared with callers');
+
+  assert.deepEqual((await view(lead.id)).base.instructions, { summary: 'Lead the research.', chars: 18 });
+  assert.deepEqual((await view(team.id)).base.instructions, { summary: 'Lead the research.\n\nReport to the owner.', chars: 40 }, 'the agent’s own, then the profile’s');
+  const long = (await view(writer.id)).base.instructions;
+  assert.ok(long.summary.length <= 280 && long.summary.startsWith('api_key=[redacted]\nWrite clearly.') && long.summary.endsWith('…') && long.chars > 600, JSON.stringify(long));
+  assert.doesNotMatch(JSON.stringify(await registry.listAgents()), /sk-live/, 'a credential never reaches the preview');
+  assert.deepEqual((await view(plain.id)).base.instructions, { summary: '', chars: 0 });
+  assert.equal((await view(lead.id)).base.usedBy, 1, 'Base counts the agent profile that uses it');
+  await base.remove('plain', { expectedRevision: 1 });
+  assert.deepEqual([(await view(plain.id)).base.instructions, (await view(plain.id)).base.usedBy, (await view(plain.id)).providerCapabilities.known], [{ summary: '', chars: 0 }, 0, false]);
+});

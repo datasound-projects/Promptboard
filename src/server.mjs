@@ -79,6 +79,7 @@ const assets = new Map([
   ['/project-explorer.js', ['project-explorer.js', 'text/javascript; charset=utf-8']],
   ['/lessons.js', ['lessons.js', 'text/javascript; charset=utf-8']],
   ['/sandbox.js', ['sandbox.js', 'text/javascript; charset=utf-8']],
+  ['/network.js', ['network.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal assets, served from the installed packages by exact path only (no CDN,
 // no directory browsing). Missing files (no npm install) return 404 and the dock falls back.

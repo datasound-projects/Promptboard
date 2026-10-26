@@ -983,10 +983,10 @@ test('Usage says when older sessions are still being read instead of calling the
   assert.doesNotMatch(ctx.$('#usage-providers').textContent, /a little low/);
 });
 
-test('Base is the fourth global page, preserves Compose and project state, and supports direct links and browser history', async t => {
+test('Base is a global page, preserves Compose and project state, and supports direct links and browser history', async t => {
   const ctx = await setup(t, { hash: '#/base' }); const { $, win } = ctx;
   await ctx.idle();
-  assert.deepEqual([...win.document.querySelectorAll('.page-nav a')].map(link => link.textContent), ['Origin', 'Compose', 'Kanban', 'Base']);
+  assert.deepEqual([...win.document.querySelectorAll('.page-nav a')].map(link => link.textContent), ['Origin', 'Compose', 'Kanban', 'Base', 'Network']);
   assert.equal($('#base-view').hidden, false); assert.equal($('#prompt-view').hidden, true); assert.equal($('#kanban-view').hidden, true);
   assert.equal(win.document.title, 'Base · Promptboard');
   assert.equal($('.page-nav [aria-current="page"]').getAttribute('href'), '#/base');

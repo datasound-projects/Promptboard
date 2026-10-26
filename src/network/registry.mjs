@@ -11,6 +11,7 @@
  */
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { ADAPTERS } from '../agents.mjs';
 import { primaryAgent } from '../base-resolver.mjs';
 import { redactLocal } from '../compose-local.mjs';
 import { serial } from '../durable.mjs';
@@ -140,18 +141,38 @@ async function containmentCycle(rootId, nodes, versionOf) {
   return walk(nodes, [rootId]);
 }
 
+/**
+ * What each CLI can do for Network, from the provider capability matrix (docs/network/architecture.md §8): 'yes',
+ * 'partial', 'no' or 'unknown'; `jobTools` lists the Network job tool modes ([] = refused). A provider that is unset or
+ * not in the matrix is unknown throughout, never assumed capable.
+ */
+const MATRIX = Object.freeze({
+  claude: { jobTools: ['none', 'web'], toolEvents: 'yes', waitingEvents: 'yes', readOnly: 'yes', webSearch: 'yes', sessionId: 'yes', usage: 'unknown', dockerSandbox: 'yes', liveVerified: 'yes' },
+  codex: { jobTools: ['none', 'web'], toolEvents: 'partial', waitingEvents: 'no', readOnly: 'yes', webSearch: 'yes', sessionId: 'yes', usage: 'unknown', dockerSandbox: 'yes', liveVerified: 'yes' },
+  gemini: { jobTools: ['none'], toolEvents: 'partial', waitingEvents: 'yes', readOnly: 'yes', webSearch: 'no', sessionId: 'partial', usage: 'no', dockerSandbox: 'no', liveVerified: 'no' },
+  agy: { jobTools: [], toolEvents: 'no', waitingEvents: 'no', readOnly: 'no', webSearch: 'no', sessionId: 'unknown', usage: 'no', dockerSandbox: 'no', liveVerified: 'partial' },
+});
+const UNKNOWN = Object.fromEntries(Object.keys(MATRIX.claude).map(key => [key, key === 'jobTools' ? null : 'unknown']));
+const providerCapabilities = provider => ({ provider, known: Object.hasOwn(MATRIX, provider ?? ''), ...structuredClone(MATRIX[provider] || UNKNOWN) });
+const SUMMARY = 280;
+
 const unusable = resource => resource.enabled === false ? 'disabled' : resource.trust !== 'trusted' ? (resource.trust === 'revoked' ? 'revoked' : 'untrusted') : null;
 /** What a registration shows of its Base agent, read now and never stored: a Base edit shows at once. */
 function baseSummary(resources, id) {
   const resource = resources.get(id);
-  if (!resource) return { kind: null, name: null, enabled: false, trust: null, revision: null, provider: null, model: null, effort: null, stale: true, staleReason: 'missing' };
+  if (!resource) return { kind: null, name: null, enabled: false, trust: null, revision: null, provider: null, model: null, effort: null, stale: true, staleReason: 'missing', instructions: { summary: '', chars: 0 }, usedBy: 0 };
   // An agent profile runs as its primary agent (as profileDefaults reads it), so that agent must be usable too.
   const agent = resource.kind === 'agentProfile' ? primaryAgent(resources, resource) : resource;
   const settings = agent?.kind === 'profile' ? agent.configuration?.agent || {} : {};
   const primary = resource.kind !== 'agentProfile' ? null : agent?.kind !== 'profile' ? 'no-primary-agent' : unusable(agent) && `primary-agent-${unusable(agent)}`;
   const reason = AGENT_KINDS.includes(resource.kind) ? unusable(resource) || primary || null : 'wrong-kind';
+  // The instructions a run would get (profileDefaults order: the agent's own, then the profile's), as a short preview.
+  const instructions = [settings.instructions, resource.kind === 'agentProfile' ? resource.configuration?.instructions : ''].filter(value => typeof value === 'string' && value.trim()).join('\n\n').trim();
   return { kind: resource.kind, name: resource.name, enabled: resource.enabled !== false, trust: resource.trust, revision: resource.revision,
-    provider: settings.provider || null, model: settings.model || null, effort: settings.effort || null, stale: Boolean(reason), staleReason: reason };
+    provider: settings.provider || null, model: settings.model || null, effort: settings.effort || null, stale: Boolean(reason), staleReason: reason,
+    instructions: { summary: redactLocal(instructions.length > SUMMARY ? `${instructions.slice(0, SUMMARY - 1).trimEnd()}…` : instructions), chars: instructions.length },
+    // Base's own "Used by" places (assignments, resources, active runs); Base lists them, Network only counts them.
+    usedBy: (resource.usedBy || []).filter(use => !use.historical).length };
 }
 function page(items, offset = 0, limit = 50, key) {
   if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > LIMITS.page) fail(`Choose an offset of 0 or more and a limit of 1 to ${LIMITS.page}.`);
@@ -269,7 +290,7 @@ export class NetworkRegistry {
   async #views(rows) {
     const resources = await this.#resources(), projects = new Set(await this.projects()), memberOf = new Map();
     for (const draft of (await this.#loadDrafts()).values()) for (const node of draft.nodes || []) if (node.type === 'agent') memberOf.set(node.agentId, [...(memberOf.get(node.agentId) || []), draft.id]);
-    return rows.map(row => ({ ...row, base: baseSummary(resources, row.baseResourceId), networks: memberOf.get(row.id) || [], missingProjects: row.projectAllowlist.filter(id => !projects.has(id)) }));
+    return rows.map(row => { const base = baseSummary(resources, row.baseResourceId); return { ...row, base, providerCapabilities: providerCapabilities(base.provider), networks: memberOf.get(row.id) || [], missingProjects: row.projectAllowlist.filter(id => !projects.has(id)) }; });
   }
   #row(agents, id) {
     const row = typeof id === 'string' && AGENT_ID.test(id) && agents.rows.find(item => item.id === id);
@@ -312,16 +333,21 @@ export class NetworkRegistry {
     fail(`A network cannot contain itself: ${names.join(' → ')}.`, 'NETWORK_CYCLE', 400, { path });
   }
 
-  async listAgents({ q, tag, capability, status, baseResourceId, projectId, networkId, offset, limit } = {}) {
+  /** `kind` is the role in Base (an Agent or an Agent profile); `facets` lists every declared capability, unfiltered. */
+  async listAgents({ q, tag, capability, status, kind, provider, baseResourceId, projectId, networkId, offset, limit } = {}) {
     if (status !== undefined && !['enabled', 'disabled', 'stale'].includes(status)) fail('Filter the status by enabled, disabled or stale.');
+    if (kind !== undefined && !AGENT_KINDS.includes(kind)) fail('Filter the role by profile or agentProfile.');
+    if (provider !== undefined && !Object.hasOwn(ADAPTERS, provider)) fail(`Filter the provider by ${Object.keys(ADAPTERS).join(', ')}.`);
     const query = search(q);
     return this.#serial(async () => {
       const agents = await this.#loadAgents(), views = await this.#views(agents.rows);
       const items = views.filter(view => (!query || [view.displayName, view.base.name, ...view.tags, ...view.capabilities].some(value => value?.toLocaleLowerCase().includes(query)))
         && (!tag || view.tags.includes(tag)) && (!capability || view.capabilities.includes(capability))
         && (!status || (status === 'stale' ? view.base.stale : view.enabled === (status === 'enabled')))
+        && (!kind || view.base.kind === kind) && (!provider || view.base.provider === provider)
         && (!baseResourceId || view.baseResourceId === baseResourceId) && (!projectId || view.projectAllowlist.includes(projectId)) && (!networkId || view.networks.includes(networkId)));
-      return { revision: agents.revision, ...page(items, offset, limit, 'agents') };
+      const capabilities = [...new Set(views.flatMap(view => view.capabilities))].sort((a, b) => a.localeCompare(b));
+      return { revision: agents.revision, ...page(items, offset, limit, 'agents'), facets: { capabilities } };
     });
   }
   async agent(id) {

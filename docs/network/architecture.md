@@ -251,8 +251,11 @@ AgentRegistration = { id: 'agt_…', baseResourceId, displayName: string|null /*
   capabilities: string[] /* owner-declared capability tags, ≤20×40; not provider capabilities */,
   enabled: boolean, visibility: 'private', projectAllowlist: string[] /* board project IDs; [] = no project data */,
   createdAt, updatedAt, revision }
-// Computed on read, never stored: base: { kind, name, enabled, trust, revision, provider, model, effort, stale: boolean },
-// networks: [ids containing it], providerCapabilities (from ADAPTERS + §8).
+// Computed on read, never stored: base: { kind, name, enabled, trust, revision, provider, model, effort, stale: boolean,
+//   staleReason, instructions: { summary /* ≤280, redacted */, chars }, usedBy /* count of Base's own non-historical "Used by" */ },
+// networks: [ids containing it], missingProjects, providerCapabilities: { provider, known, jobTools: string[] | null,
+//   toolEvents, waitingEvents, readOnly, webSearch, sessionId, usage, dockerSandbox, liveVerified /* 'yes'|'partial'|'no'|'unknown' */ }
+// (the §8 matrix; Task 03, see §12.1).
 
 // network/networks/<id>.json
 NetworkDraft = { schema, version: 1, id: 'net_…', name /* ≤80, unique case-insensitive */, description /* ≤2000 */,
@@ -543,6 +546,7 @@ The token, Host, Origin, proxy and fetch-site checks before it (`:470-489`) stay
 | Task | Routes |
 |---|---|
 | 02 | `GET/POST /api/network/agents`, `GET/PATCH /api/network/agents/:id`; `GET/POST /api/network/networks`, `GET/PATCH /api/network/networks/:id`, `POST /api/network/networks/:id/publish`, `GET /api/network/networks/:id/versions/:n`; `GET /api/network/export`, `POST /api/network/import` |
+| 03 | no new route: `GET /api/network/agents` also takes `kind` (`profile`/`agentProfile`) and `provider`, and answers `facets.capabilities`; agent views gain the computed fields of §5 |
 | 04 | `GET/POST /api/network/agents/:id/memory` (list, `?q=` search, propose), `PATCH/DELETE /api/network/agents/:id/memory/:mid`, `POST /api/network/agents/:id/memory/:mid/approve`, `GET /api/network/agents/:id/memory/preview`; the same under `/api/network/networks/:id/memory`; `GET/POST /api/network/agents/:id/posts`, `PATCH/DELETE /api/network/agents/:id/posts/:pid` |
 | 05 | `DELETE /api/network/networks/:id`, `POST /api/network/networks/:id/duplicate` |
 | 06 | `GET/PATCH /api/network/settings`; `POST/GET /api/network/jobs`, `GET /api/network/jobs/:id`, `POST /api/network/jobs/:id/cancel`, `POST /api/network/jobs/:id/approve`, `POST /api/network/jobs/:id/retry`, `POST /api/network/jobs/:id/close`, `DELETE /api/network/jobs/:id` (terminal only) |
@@ -728,6 +732,40 @@ an explicit route (`:6314`); the select is `public/index.html:424`. Feature modu
   canvas.
 - Rendering: `public/dom.js` helpers and DOM text only; the existing CSS variables, light/dark tokens and hairline
   styles; no new framework.
+
+### 12.1 Settled in Task 03
+
+Refinements of the plan above made while building `public/network.js`; none changes a binding rule.
+
+1. **Role filter = the Base kind** (`kind=profile` for an Agent, `kind=agentProfile` for an Agent profile); Base has no
+   other "role" field on a resource. **Provider filter** = the provider the agent would run with (an agent profile's
+   primary agent). Both are server-side because the list is paged; `facets.capabilities` lists every declared
+   capability of every registration (unfiltered) for the Capability select.
+2. **Derived fields live in the registry view** (§5): `providerCapabilities` comes from the §8 matrix in
+   `src/network/registry.mjs` (an unset or unknown provider is `known: false` with every value `unknown` and
+   `jobTools: null`, never assumed capable); `base.instructions` is a 280-character preview masked with `redactLocal`
+   plus the full length; `base.usedBy` counts Base's own non-historical "Used by" entries. Base's "Used by" panel still
+   does not list Network registrations (open question 1 unchanged); "Open in Base" shows Base's own list.
+3. **Open in Base** uses the existing seam `baseView.openResource(id)` after `location.hash = '#/base'`; no new deep link
+   was needed in `base.js` and the Base URL stays `#/base`, so Back returns to `#/network/agents/<id>`. A registration
+   whose Base resource is missing shows "Open in Base" disabled, described by its stale note.
+4. **Unavailable sections and profile tabs** (Graph, Pipelines, Activity, Library, Federation; Tasks, Activity, Memory)
+   are selectable, marked "soon", and show "Not available yet." plus one sentence on what they will do, with no
+   controls. Their sub-routes exist (`#/network/graph` …), so back and forward work now. "Register agent" shows on the
+   Agents section only.
+5. **Sidebar:** `#network-sidebar-panel` lists the same six sections as links (the phone drawer and keyboard reach
+   them); the in-page tablist is the primary control.
+6. **Scrolling:** `showPage()` keeps the scroll position while moving between Network sub-routes; every other page change
+   still scrolls to the top. On a phone (≤ 730 px) choosing an agent shows the profile instead of the list and toolbar
+   and focuses its heading; "Back to agents" returns focus to that row.
+7. **Revision conflicts:** the switch shows the server's message with **Reload** (reads the list again, nothing is
+   retried); an edit dialog's **Reload** closes the dialog and shows the current version (the edit is never re-sent over
+   someone else's change); a register dialog's **Reload** only refreshes the collection revision and keeps the form.
+8. **Edit identity** keeps listed projects that are no longer on the board as ticked "(not on this board)" entries, so
+   saving never drops them silently.
+9. **Top bar with five links** (measured in Chrome from 320 to 940 px): the links wrap onto their own row at ≤ 479 px
+   (was 430), the actions compact at ≤ 540 px (was 500), the links tighten at ≤ 610 px (was 560), and link padding is
+   9 px at ≤ 820 px. `tests/app-fixes-browser.test.mjs` checks the widths just above each step on all five pages.
 
 ## 13. Dependencies (checked 2026-10-26 with `npm view`; nothing installed)
 
