@@ -24,7 +24,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 | Task | File | Status | Commit |
 |---:|---|---|---|
 | 01 | 01-audit-and-contracts.md | done | 27646ef |
-| 02 | 02-registry-and-storage.md | pending | |
+| 02 | 02-registry-and-storage.md | done | (this commit) |
 | 03 | 03-network-page-and-agent-profiles.md | pending | |
 | 04 | 04-agent-memory-and-feed.md | pending | |
 | 05 | 05-graph-designer-and-subnetworks.md | pending | |
@@ -38,7 +38,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 | 13 | 13-a2a-federation.md | pending | |
 | 14 | 14-verification-and-release.md | pending | |
 
-**Next task:** 02
+**Next task:** 03
 
 ## Live provider runs
 
@@ -120,3 +120,87 @@ whether the board backup should later embed the Network export; headless usage f
 Task 07 opt-in smoke.
 
 **Next task: 02.**
+
+### Task 02 — Durable agent and network registry (2026-10-26)
+
+**What was done.** Agent registrations that reference Base `profile`/`agentProfile` resources by ID only, networks
+(agent and sub-network nodes with positions, `message`/`delegate`/`share_result` relations) as a draft plus immutable
+published versions, owner routes under `/api/network/*`, and a Network-only export/import. Base is read through
+`board.base.list()` only; `state.json`, Base and the board backup format are untouched. No UI, no jobs, nothing that
+starts a process.
+
+**Files.** New: `src/network/storage.mjs` (NetworkError, IDs, versioned/immutable file discipline over
+`durable.mjs`), `src/network/registry.mjs` (model validation, registry, cycle check, export/import),
+`src/network/http.mjs` (routes), `tests/network-registry.test.mjs`, `tests/network-http.test.mjs`. Changed:
+`src/server.mjs` (registry created in `startServer` with the server's data folder and Board's Base and project list;
+route branch after the Coordinator; `NetworkError` in `EXPOSED`), `tests/remote-access.test.mjs` (every Task 02 route
+in `ALLOWED`, `network/http.mjs` scanned), `docs/network/architecture.md` (§4.6 decisions), this file.
+
+**Data layout** (created on the first save; reading creates nothing): `<data>/network/agents.json`
+(`promptboard.network-agents` v1, `{ revision, rows }` + `.bak`), `network/networks/<escapeId(id)>.json`
+(`promptboard.network-draft` v1 + `.bak`), `network/networks/<escapeId(id)>/v<n>-<sha256>.json`
+(`promptboard.network-version` v1, written once, hash of the exact bytes checked on every read, never deleted).
+
+**Routes** (all behind `handle()`; all allowed from a paired device per §10.2, none local-only, so `localOnly()` is
+unchanged): `GET/POST /api/network/agents`, `GET/PATCH /api/network/agents/:id`, `GET/POST /api/network/networks`,
+`GET/PATCH /api/network/networks/:id`, `POST /api/network/networks/:id/publish`,
+`GET /api/network/networks/:id/versions/:n`, `GET /api/network/export`, `POST /api/network/import`. Lists take
+`offset`/`limit` (1–200, default 50) and filters (`q`, `tag`, `capability`, `status`, `baseResourceId`, `projectId`,
+`networkId` for agents; `q`, `agentId` for networks) and answer `{ total, offset, limit, next, … }`.
+
+**Decisions** (architecture.md §4.6): body limits per route (a draft may be 8 MiB, so the 1 MiB default of §4.2 rule 8
+does not apply to network and import bodies); disabled/untrusted Base agents can be registered and show as stale;
+`POST /networks` takes no revision (no collection file); cycles are checked by network ID through pinned published
+versions; a stored file that is not exactly what the registry writes counts as damaged; export refuses while a draft
+is unreadable; import writes registrations, then versions, then drafts.
+
+**Tests** (all with temporary data folders, no CLI, no network):
+
+- `tests/network-registry.test.mjs` 13 tests: reference-only registration with `state.json` and Base revision
+  unchanged; Base edit shown, `agents.json` unchanged; missing/wrong-kind refused, disabled/untrusted/deleted stale
+  and kept; concurrent row and collection CAS; draft → v1 → edit → v2 with v1 bytes unchanged; cycles self, A→B→A,
+  A→B→C→A and through an old pinned version; strict content; restart; damaged `agents.json` with good and bad
+  backup, newer version; unreadable and hand-edited drafts; tampered version hash; export/import identical, remapped,
+  and refused whole (unknown or non-agent Base ID, tampered hash, missing reference, cycle, newer file, extra field,
+  wrong kind of file); filters, paging, no folder on read.
+- `tests/network-http.test.mjs` 3 tests: missing token, wrong Host, foreign Origin, cross-site, proxy header all 403;
+  413, 415, 400, 404; a full owner flow over HTTP, then a new `startServer` on the same folder showing the same IDs,
+  revisions, scopes, drafts and versions; every file outside `network/` (state.json, its backup, Base revisions,
+  Origin project), the board backup, Base and Origin byte-identical before/after; a `child_process` recorder (proven
+  to see processes started inside `src/`) records zero processes; a paired device calls every Task 02 route.
+- `tests/remote-access.test.mjs`: route table now includes all 12 Task 02 rows and scans `network/http.mjs`; removing
+  a row makes it fail (checked).
+- Mutation check: patching out the cycle check, row CAS, disabled-on-import, agent remap, unresolved-Base refusal,
+  set-aside, damaged refusal, newer refusal, hash check, kind check or the version file name each makes a test fail.
+- Runs: `npm run check` pass; new tests twice 16/16 and 16/16; touched modules (`server`, `base-avatar`, `base-backup`,
+  `base-delivery`, `base-fixes`, `base-profiles`, `base-registry`, `base-server`, `base-ui`, `remote-access`,
+  `durable`) 157/157 (log `$TMPDIR/network-logs/task-02-touched.log`).
+- Full `npm test` (log `$TMPDIR/network-logs/task-02-suite.log`, 2026-10-26 03:53–04:19): non-browser 1,522 tests,
+  1,521 pass, 0 fail, 0 cancelled, 1 skipped (the same win32-only `editors.test.mjs` test as the baseline); browser
+  146/146. Exit 0, no reruns. Baseline 1,506 + the 16 new tests = 1,522.
+- Isolated smoke on port 4902 (temporary data and projects folders, PATH holding only a `node` symlink): `GET
+  /api/network/agents` answered an empty page, no token 403, an unknown Base ID `BASE_PROFILE_INVALID`, a created
+  network appeared as `network/networks/net__….json`; instance stopped and folder removed.
+
+**Acceptance criteria and evidence:**
+
+- *Register existing Base Agent without copying or changing Base definition:* registry test 1 (stored row keys are
+  exactly the Network fields, no Base text in `agents.json`, `state.json` bytes and Base revision unchanged); HTTP
+  test 2 (every non-Network file byte-identical).
+- *Stable `agentId` survives restart; edit of Base is reflected as a reference, never cloned:* registry tests 2 and
+  "a restart"; HTTP test 2 (new `startServer`, same responses).
+- *Save draft vs published revisions; existing published versions remain unchanged:* registry "a draft saves and
+  publishes" (v1 bytes and hash identical after edit and v2) and "a published version whose bytes no longer match".
+- *Cyclic subnetwork composition is rejected; no save starts a worker:* registry cycle test; HTTP test 2 (self-cycle
+  over HTTP, zero recorded processes across save, publish and import; no job code exists).
+- *Legacy boards, Base records, backups and projects load unchanged:* HTTP test 2 (board created before Network,
+  board export, Base and Origin answers and file hashes equal before, after and after a restart).
+
+**Known limits.** `providerCapabilities` and Base "Used by" for registrations are not computed (Task 03 / open question
+1). One queue serializes the whole registry, and the first read loads every draft sequentially (`ponytail:` notes).
+Import body ceiling 32 MiB. A crash during an import's writes can leave disabled registrations or unreferenced
+version files (nothing runs). No delete routes yet (Task 05 adds network delete; registrations are disabled instead).
+Paid CLI runs: 0. The only app instance outside the tests was the port 4902 smoke above.
+
+**Next task: 03.**
+

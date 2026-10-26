@@ -200,6 +200,47 @@ reading new backups. A board restore never starts Network work because jobs are 
 - Events: segment rotation only (§4.3).
 - Memory and posts: never deleted automatically.
 
+### 4.6 Registry details settled in Task 02
+
+Refinements of §4–§5 made while building `src/network/{storage,registry,http}.mjs`. Only the first changes a rule
+above; the others fill in what it left open.
+
+1. **Body limits (changes §4.2 rule 8 for these routes).** A draft may reach 8 MiB, which a 1 MiB body cannot carry:
+   agent routes and publish take 64 KiB, network create/update 8 MiB + 64 KiB, import 32 MiB (one export with every
+   draft and version; split it past that). Job bodies (Task 06) keep the limits of rule 8.
+2. **Registrations.** A missing Base ID or a kind other than `profile`/`agentProfile` is refused
+   (`BASE_PROFILE_INVALID`). A disabled, untrusted or revoked Base agent can be registered (nothing runs) and shows as
+   stale. One Base resource may back several registrations (different scopes). `baseResourceId` never changes; any
+   field Network does not own (`model`, `provider`, `instructions`, …) is refused. The computed view adds
+   `base.staleReason` (`missing`, `wrong-kind`, `disabled`, `untrusted`, `revoked`, `no-primary-agent`,
+   `primary-agent-<reason>`) and `missingProjects`; `networks` lists drafts that contain the agent. Owner text (display
+   name, network name, description, labels) is masked with `redactLocal` before it is saved. `providerCapabilities` is
+   left to Task 03.
+3. **Revisions.** `POST /agents` and `POST /import` take the `agents.json` collection revision; `PATCH /agents/:id` the
+   row revision (each row change also bumps the collection). `POST /networks` takes none: networks have no collection
+   file, and creation cannot overwrite anything (names stay unique inside the queue). Every network update and publish
+   takes the draft revision.
+4. **Graph rules.** Each registration and each network appears at most once in a network; a relation joins two
+   different nodes and appears once per `(from, to, relation)`; changing `nodes` re-checks every edge. A sub-network
+   node always pins an existing published version.
+5. **Cycles.** Pins name published versions only, so the check walks from the network being saved through the pinned
+   versions (each once) and refuses when it reaches that network's ID again, whatever version (`NETWORK_CYCLE`,
+   `details.path` = IDs, names in the message). Drafts of other networks are never containment. An import checks every
+   draft and every version as a root, which also catches crafted cycles that do not involve a saved network.
+6. **Loading.** A stored row or draft must be exactly what the registry writes (strict node/edge check, hash-shaped
+   version entries); anything else is damaged. `agents.json` with no usable copy refuses the agent routes
+   (`NETWORK_DATA_DAMAGED`). A draft with no usable copy, or a newer version, is listed under `unavailable` and refused
+   on its own; the other networks keep working. Export refuses while any draft is unavailable, rather than writing an
+   incomplete file.
+7. **Publish order.** The version file is written before the draft names it; a crash between leaves an unreferenced
+   version file (harmless, never deleted), and the next publish takes the same number with a new hash.
+8. **Import.** Validation is all-or-nothing and happens before any write. Writes go registrations (disabled), then
+   version files, then drafts, so a saved draft never names a missing agent or file; a crash in between can leave
+   disabled registrations or unreferenced version files, never a run. A version whose network and references keep
+   their IDs keeps its bytes and hash; a remapped one is re-hashed. Project IDs that are not on this board are dropped
+   from `projectAllowlist` with a warning. A network name already in use gets ` (2)`, ` (3)`…. Importing the same file
+   twice adds copies.
+
 ## 5. Data shapes
 
 Field names are binding; tasks may add optional fields.

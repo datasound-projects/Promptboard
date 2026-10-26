@@ -47,6 +47,9 @@ import { Schedules, scheduleRoute } from './schedules.mjs';
 import { projectInsights } from './insights.mjs';
 import { Lessons, LessonsError, lessonsRoute } from './lessons.mjs';
 import { Sandbox, sandboxRoute } from './sandbox.mjs';
+import { NetworkRegistry } from './network/registry.mjs';
+import { networkRoute } from './network/http.mjs';
+import { NetworkError } from './network/storage.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -122,7 +125,7 @@ export async function generate(request, { runner = runProvider, signal, catalogR
 // Map internal codes to HTTP statuses. Message text always comes from fixed strings.
 const STATUS = { ABORTED: 499, TIMEOUT: 504, BUSY: 409, AUTH_IN_PROGRESS: 409, NOT_INSTALLED: 409, UNSUPPORTED: 400, INVALID_PROVIDER: 400, INVALID_MODEL: 400, INVALID_EFFORT: 400, INVALID_INPUT: 400 };
 // Domain errors whose messages are fixed, user-facing strings.
-const EXPOSED = [AgentError, BatchError, BaseDeliveryError, BaseError, BoardError, CoordinatorError, DeliveryError, GitError, GitHubError, LessonsError, NotificationError, OriginError, RepositoryPipelineError, ResearchError, StoreError, WorkspaceFileError];
+const EXPOSED = [AgentError, BatchError, BaseDeliveryError, BaseError, BoardError, CoordinatorError, DeliveryError, GitError, GitHubError, LessonsError, NetworkError, NotificationError, OriginError, RepositoryPipelineError, ResearchError, StoreError, WorkspaceFileError];
 /** The one error-to-HTTP mapping. Unexpected errors get the route's fallback text, never internal details. */
 function failureBody(error, fallback, unknown = { status: 502, code: 'UNKNOWN' }) {
   if (EXPOSED.some(Type => error instanceof Type)) return { status: error.status || 500, body: { error: error.message, code: error.code || 'INVALID_REQUEST' } };
@@ -448,6 +451,8 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const research = new ResearchStore(dataDir); // Creates nothing on disk until a chat is saved.
   const prompts = new PromptStore(dataDir);
   const coordinator = new Coordinator({ dataDir, board, origin });
+  // Network registrations and networks live in <dataDir>/network/ (created on the first save); Base is only read.
+  const network = new NetworkRegistry({ dataDir, base: board.base, projects: async () => (await board.state()).projects.map(project => project.id) });
   // Project memory: a merged card queues one lessons job (Board.completeTask); the worker starts once the app listens.
   const lessons = new Lessons({ dataDir, board, claim, runner: call => track(runner(call)) });
   board.lessons = lessons;
@@ -519,6 +524,10 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     if (/^\/api\/coordinator(?:\/|$)/.test(pathname)) {
       try { return await coordinatorRoute({ coordinator, runner, track, claim, req, res, pathname, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The Coordinator request failed. Project data is unchanged.', { status: 500, code: 'COORDINATOR_FAILED' }); }
+    }
+    if (/^\/api\/network(?:\/|$)/.test(pathname)) {
+      try { return await networkRoute({ network, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
+      catch (error) { return sendFailure(res, error, 'The Network request failed. Nothing was changed.', { status: 500, code: 'NETWORK_FAILED' }); }
     }
     if (/^\/api\/sandbox(?:\/|$)/.test(pathname)) {
       try { return await sandboxRoute({ sandbox, req, res, pathname, jsonBody, send }); }
