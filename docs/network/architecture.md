@@ -150,7 +150,10 @@ Kanban write. Adding fields would also force `STATE_VERSION` 15, after which an 
    message.
 9. No secret is ever written: credential values, the owner token, the paired-device cookie, machine tokens (only their
    SHA-256), provider tokens, raw stderr. Text that leaves the app (events, prompts, exports) passes through
-   `redactLocal(noPaths(text))` as `src/lessons.mjs:35` does.
+   `redactLocal(noPaths(text))` as `src/lessons.mjs:35` does. Owner text that is stored and exported as is (registry
+   names, descriptions, display names, labels; memory; reports) gets it **when it is saved and when it is imported**, not
+   at export: a published version's exact bytes carry its hash, so an export must hold what was saved (Phase-1 review,
+   P1-7).
 
 ### 4.3 Per-entity notes
 
@@ -215,7 +218,8 @@ above; the others fill in what it left open.
    field Network does not own (`model`, `provider`, `instructions`, …) is refused. The computed view adds
    `base.staleReason` (`missing`, `wrong-kind`, `disabled`, `untrusted`, `revoked`, `no-primary-agent`,
    `primary-agent-<reason>`) and `missingProjects`; `networks` lists drafts that contain the agent. Owner text (display
-   name, network name, description, labels) is masked with `redactLocal` before it is saved. `providerCapabilities` is
+   name, network name, description, labels) is cut with `noPaths` and masked with `redactLocal` before it is saved
+   (`noPaths` since the Phase-1 review, P1-7). `providerCapabilities` is
    left to Task 03. *(Phase-1 review, P1-1)* Names, display names, tags, capabilities, report source references and job
    idempotency keys are one line: a line break (`\r`, `\n`, U+0085, U+2028, U+2029) or tab inside them is refused at save
    and at import (`LINE_BREAK`, `src/network/storage.mjs`); only descriptions, memory text, reports and job input or

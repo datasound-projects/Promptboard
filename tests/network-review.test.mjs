@@ -1,9 +1,9 @@
 // Phase-1 review fixes (docs/network/implementation-progress.md, "Phase-1 review fixes"): one-line owner text and a
-// memory block nothing can close or forge (P1-1). Real Base, Store, registry and job engine on temporary data folders;
-// nothing here starts a process.
+// memory block nothing can close or forge (P1-1), local folders cut from registry text (P1-7). Real Base, Store,
+// registry and job engine on temporary data folders; nothing here starts a process.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Base } from '../src/base.mjs';
@@ -112,5 +112,28 @@ test('P1-1: job input text and instructions keep their lines as data; indent() k
     const lines = indent(text).split(/\r\n?|[\n\u0085\u2028\u2029]/);
     assert.equal(lines.length, 7);
     for (const line of lines) assert.match(line, /^ {2}/, `indented: ${JSON.stringify(line)}`);
+  }
+});
+
+test('P1-7: local folders in names, descriptions, display names and labels are cut when saved and when imported, so an export never carries them', async t => {
+  const { registry, lead, base, file } = await fixture(t);
+  const net = (await registry.createNetwork({ name: 'Notes /Users/ann/clients/acme', description: 'Built from /Users/ann/clients/acme/plan.md and C:\\Users\\Ann\\Desktop\\acme', nodes: [agentNode(1, lead.id)] })).network;
+  assert.deepEqual([net.name, net.description], ['Notes …/acme', 'Built from …/plan.md and …/acme']);
+  const agent = (await registry.updateAgent(lead.id, { expectedRevision: 1, displayName: 'Lead /Users/ann/agents', tags: ['/Users/ann/x'], capabilities: ['reads /home/ann/src'] })).agent;
+  assert.deepEqual([agent.displayName, agent.tags, agent.capabilities], ['Lead …/agents', ['…/x'], ['reads …/src']]);
+  assert.equal((await registry.updateNetwork(net.id, { expectedRevision: 1, name: 'Renamed /Users/ann/y' })).network.name, 'Renamed …/y');
+  await registry.publishNetwork(net.id, { expectedRevision: 2 });
+  const exported = JSON.stringify(await registry.export());
+  assert.doesNotMatch(exported, /\/Users\/ann|\\\\Users|\/home\/ann/, 'the export carries no local folder');
+  for (const name of ['agents.json', join('networks', `${net.id.replace('_', '__')}.json`)]) assert.doesNotMatch(await readFile(file(name), 'utf8'), /\/Users\/ann|\/home\/ann/);
+  // A crafted file with a folder in a draft name, a label and a description: imported without it.
+  const data = JSON.parse(exported);
+  Object.assign(data.networks[0], { name: 'Crafted /Users/bob/secret', description: 'See /Users/bob/secret/notes' });
+  data.agents[0].tags = ['/Users/bob/tag'];
+  const other = await mkdtemp(join(tmpdir(), 'pb-network-review-paths-')); t.after(() => rm(other, { recursive: true, force: true }));
+  await new NetworkRegistry({ dataDir: other, base, projects: async () => [] }).import({ data, expectedRevision: 0 });
+  for (const name of ['agents.json', 'networks']) {
+    const files = name === 'networks' ? (await readdir(join(other, 'network', 'networks'), { recursive: true })).filter(item => item.endsWith('.json')).map(item => join('networks', item)) : [name];
+    for (const item of files) assert.doesNotMatch(await readFile(join(other, 'network', item), 'utf8'), /\/Users\/bob/, item);
   }
 });

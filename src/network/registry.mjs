@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { ADAPTERS } from '../agents.mjs';
 import { primaryAgent } from '../base-resolver.mjs';
 import { redactLocal } from '../compose-local.mjs';
+import { noPaths } from '../coordinator.mjs';
 import { serial, syncDir } from '../durable.mjs';
 import { escapeId } from '../origin.mjs';
 import { NetworkMemory } from './memory.mjs';
@@ -32,15 +33,16 @@ const EXTERNAL_ID = /^[A-Za-z0-9_-]{1,100}$/, SHA = /^[0-9a-f]{64}$/, CONTROL = 
 const invalidFile = () => fail('This is not a valid Promptboard Network export. Nothing was imported.', 'NETWORK_IMPORT_INVALID');
 const byCreated = (a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1);
 /**
- * Owner text, trimmed; a credential typed into it is masked before it is saved. Names and labels are one line (they reach
- * prompts as a line of their own, see memory.mjs), so a line break or tab inside them is refused; only `multiline` text
- * (a description) keeps them.
+ * Owner text, trimmed; a local folder in it is cut to its last name and a credential masked before it is saved, as
+ * architecture §4.2 rule 9 asks of text that leaves the app (an export carries it as saved). Names and labels are one
+ * line (they reach prompts as a line of their own, see memory.mjs), so a line break or tab inside them is refused; only
+ * `multiline` text (a description) keeps them.
  */
 function text(value, max, label, { required = false, nullable = false, multiline = false } = {}) {
   if (!required && (value === undefined || value === null || value === '')) return nullable ? null : '';
   if (typeof value !== 'string' || CONTROL.test(value)) fail(`${label} must be text.`);
   if (!multiline && LINE_BREAK.test(value.trim())) fail(`${label} must be one line, without line breaks or tabs.`);
-  const clean = redactLocal(value.trim());
+  const clean = redactLocal(noPaths(value.trim()));
   if ((required && !clean) || clean.length > max) fail(`${label} must contain ${required ? 1 : 0} to ${max} characters.`);
   return clean || (nullable ? null : '');
 }
