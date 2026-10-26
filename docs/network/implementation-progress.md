@@ -41,15 +41,14 @@ branch from the same verified base, merged by the coordinator in order, then int
 | 07 | 07-local-worker-runtime.md | done (merged, wave A) | a6aab88 |
 | 08 | 08-live-activity-and-observability.md | done (merged, wave A) | 4d275e7 |
 | 09 | 09-pipeline-dag-engine.md | done (merged, wave A) | 018a2fd |
-| 10 | 10-pipeline-designer-and-network-run-ui.md | done (lane; in `feat/network-wave-b` 96987d8, merge here pending) | 6bc96d1 |
-| 11 | 11-private-api-and-mcp.md | done (lane; in `feat/network-wave-b`, merge here pending) | a1d6642 |
-| 12 | 12-delegation-and-triggers.md | in progress (lane `feat/network-12`) | |
+| 10 | 10-pipeline-designer-and-network-run-ui.md | done (merged) | 6bc96d1 |
+| 11 | 11-private-api-and-mcp.md | done (merged) | a1d6642 |
+| 12 | 12-delegation-and-triggers.md | done (merged) | 7d3adb5 |
 | 13 | 13-a2a-federation.md | in progress (lane `feat/network-13`) | |
 | 14 | 14-verification-and-release.md | pending | |
 
-**Next:** Wave A integrated (730c862, cd8f5f6; full suite clean twice). Running: Task 12 and Task 13 lanes and the
-Phase-2 review fixes (Tasks 06–11, 1 P2 + 10 P3) on `feat/network-wave-b`; then wave-b → 12 → 13 merge here, an
-integration pass, the full suite, and Task 14.
+**Next:** Wave A integrated (730c862, cd8f5f6) and wave B integrated (Tasks 10–12 merged at f3c5e19 and 5aceacb, then the
+wave B integration pass; see its section). Then: the Task 13 merge, the Task 12 review fixes, and Task 14.
 
 ## Live provider runs
 
@@ -1977,3 +1976,103 @@ restored from HEAD (`git stash` never used): 25 of 25 mutations fail (`review2-f
 **Known limits.** When a run ends, its view stops following at the first read that sees the end; jobs the runner stops
 after saving that end (a failed step halting the run) can show their last status in the step details until the view is
 opened again, as with polling before. The journal keeps at most two parsed segments in memory. Paid CLI runs: 0.
+
+### Wave B integration (2026-10-26, after the merge of Tasks 10, 11 and 12)
+
+**What was done.** Tasks 10, 11 and 12 were built in parallel lanes; this pass connected them on `feat/network` (from
+5aceacb) and brought the full suite to green. A pipeline step whose agent job asks a question or delegates is now proven end
+to end on the real worker and shown in the run view; the Schedules editor makes pipeline schedules; the MCP bridge has Task
+12's tools; and five smaller seams a user would hit are closed. Isolated app only (port 4932 for the screenshot smoke,
+temporary folders, `PATH` holding a `node` symlink, plus `/usr/bin:/bin:/usr/sbin:/sbin` for the test runs). Paid CLI runs: 0.
+
+**Browser tests and the full suite before any change** (5aceacb). Every `tests/network-*browser*.test.mjs` (7 files): 12/12
+(`$TMPDIR/network-logs/wave-b-browser-run1.log`). Full `npm run check` + `npm test` on a `git archive` export of 5aceacb with
+this worktree's `node_modules` (`wave-b-baseline-suite.log`): check pass; non-browser 1,685 tests, 1,684 pass, 0 fail, 0
+cancelled, 1 skipped (the win32-only `editors.test.mjs` test); browser 158/158; exit 0. Nothing failed, so nothing needed a fix
+there. The touched-module run later found one load flake that is ours: `network-delegation-http` polls the machine listener every
+few ms and passed its 60 requests a minute under load (`RATE_LIMITED` instead of `JOB_STATE`, `wave-b-touched.log`); it now
+raises the ceiling it does not test, as `network-mcp` did in 3d3a79a (d9447df).
+
+**Cross-lane gaps** (each with a test that fails without it; mutation check below).
+
+- *a. Pipeline step jobs and handoffs (Tasks 09/10 × 12).* The runner already treated a step job in `waiting_for_input` as an
+  open job, so no runner change was needed; `tests/network-pipeline-handoff-e2e.test.mjs` (real `LocalJobWorker`, fake Claude
+  and Codex only; the fake CLI gained `[[ask]]` beside `[[delegate:<id>]]`) proves it: run 1 delegates — while the parent waits
+  for its sub-job (which waits for approval) the step stays `running`, `pausedAt` stays null, one step job, one CLI run after
+  2.5 s; after the approval the sub-job runs on Codex, the parent's second attempt completes the step (`result.attemptId` is
+  the second attempt), the report holds "Final answer from claude, with what came back.", 3 CLI runs; run 2 asks — the
+  question goes to the owner, the answer completes the step; run 3 is cancelled while the parent waits — run, step, parent and
+  sub-job cancelled ("…the job that delegated it was cancelled"), no further CLI run; run 4 passes its deadline (the runner's
+  clock, through the new `startServer({ networkPipelineOptions })`) — `failed DEADLINE`, step `RUN_STOPPED`, parent and
+  sub-job cancelled. **Decisions:** the deadline keeps counting while a step's job waits for an answer or its sub-jobs (only
+  approval and blocked steps pause it; §20 item 11; Run's facts now say so); sub-jobs carry no `pipelineRunId` (only the runner
+  links a job to a run, and every reader takes the link to mean "a step job of this run"); instead the step job's `job.handoff`
+  and `job.message` events carry `pipelineRunId`/`nodeId`, so the run's event filter shows that the step asked, delegated and
+  went on (§20 item 14, §23 item 12). Run view: a running step whose job waits reads "Waiting for your answer" (amber, double
+  border) or "Waiting for sub-jobs" (blue, double border) in the list, on the canvas, in the summary and in its details, with
+  the question or the waiting message and "Answer in the job’s record" / "Open its sub-jobs" (`openJob` → the Activity record
+  with the answer form and the sub-job tree); the agent's Tasks tab gets the same link ("Answer…"), which it lacked (a Task 07
+  × 12 seam). Commits 1bd3407, 4c53a6f.
+- *b. Pipeline schedules in the UI (Task 12 × 10).* The editor's "It runs" offers a job or a run of a published pipeline
+  version (only published versions are listed, every page of pipelines is read; the server checks again), an optional run
+  input, and Task 10's run facts for the chosen version. Those facts are now one function, `runFacts` in
+  `network-pipeline.js` (exported), used by Run and by the schedules. Switch on… and Run now of a pipeline schedule show the
+  facts first and stay disabled while the version cannot start; Run now no longer starts a pipeline run without that
+  confirmation (Task 10: starting is never implicit). "Last run" opens the run view. Rules unchanged: created off, only the
+  local-only confirm switches on; an edit of the version switches it off (tested). Commit 4c53a6f.
+- *c. MCP parity for Task 12 (Task 11 × 12).* `src/network/mcp.mjs` gains `jobs_delegate` (`POST /machine/v1/jobs/:id/children`,
+  `idempotencyKey` → the header), `jobs_answer`, `messages_list` (whole messages in windows within the 60 KB answer,
+  `offset`/`nextOffset`), `messages_post` and `messages_mark_read`, each strict zod, each one route, so the listener applies
+  the same permissions and scope; the token rules are untouched; `jobs_get` names `waiting_for_input`. Test 4 of
+  `tests/network-mcp.test.mjs` (real MCP client; `POLLING` kept): a sub-job through the policy (waits for approval), the same key
+  the same sub-job, the client's own job; a question listed, marked read (only listed IDs, then all), answered, completed, a late
+  answer `JOB_STATE`; notes; a 7-message thread of about 90 KB read back in two or more windows, each within the limit;
+  refusals as tool errors (outside the scope `DELEGATION_NOT_ALLOWED`, another principal's job `NOT_FOUND`, a forged kind,
+  extra keys, bad IDs, `PERMISSION_DENIED` for a `read_job_result`-only client on delegate, answer and post); no refused call
+  made a sub-job; no token in any answer or log. Commits a0bc6e0, 720989f.
+- *d. Other seams, fixed:* a scheduled pipeline run was recorded as started by the owner — `startRun(…, { by })`, schedules
+  pass `schedule` (history, `pipeline.run` event; the run view says "Started … by a schedule"); the timeline showed
+  `job.recovered` (Phase-2 P2-8) as a raw type under Other — now "Job …: read from its backup copy · <status>" under Job status;
+  the step job's handoff and message events (above); the Tasks tab link (above). Commit 4c53a6f.
+- *d. Other seams, listed (not changed here):* (1) delegation from a pipeline step reads the network's **current draft**
+  relations (§23 item 4), not the run's pinned network version (§20 item 3), so a relation drawn after publishing can reach an
+  agent outside the pinned version (still behind the opt-in policy and, by default, owner approval) — an owner decision for the
+  Task 12 review; (2) a pipeline schedule's slot is skipped while any run of that pipeline is open, also one started by hand
+  (`#openWork`); (3) a machine client cannot read sub-jobs its own job's agent delegated (requester `job`), only the parent's
+  waiting message and the results in its messages; (4) for a moment after a delegation the parent is saved waiting before its
+  sub-jobs are written (one queue turn), so a read can see "Waiting for 1 of its 1" with no child yet (tests wait for the
+  child); (5) a collapsed sub-pipeline group whose step waits for an answer reads "Running" until expanded; (6) Run now of a
+  job schedule still starts at once (one explicit job, as Task 12 decided).
+
+**Tests.** New: `tests/network-pipeline-handoff-e2e.test.mjs` (1 test, about 12 s), `tests/network-wave-b-ui.test.mjs` (3 jsdom
+tests: the run view and Tasks for a question and for sub-jobs, then answered and approved from the record; pipeline schedules —
+published versions only, facts, saved off, Switch on…, Run now confirmation, `by: schedule`, Last run, edit, a version that
+cannot start; `job.recovered` words and filter), test 4 of `tests/network-mcp.test.mjs` (the `TOOLS` list now has 11). Changed:
+`tests/fixtures/fake-headless-cli.mjs` (`[[ask]]`), `tests/network-delegation-http.test.mjs` (ceiling).
+
+**Mutation check** (`$TMPDIR/network-logs/wave-b-mutations.log`, script `wave-b-tools/mutate.py` outside the repo; each edit
+applied alone, its test run, the file restored with `git checkout` and the tree checked): 26 mutations, 25 killed at first; the
+survivor (`messages_mark_read` dropping `ids`) led to a stronger test (720989f) and is killed now
+(`wave-b-mutations-m9.log`): **26 of 26**.
+
+**Runs.** `npm run check` pass. New and changed tests twice: 9/9 and 9/9 (`wave-b-new-run{1,2}.log`), MCP 4/4 twice after the
+last test change (`wave-b-mcp-final{1,2}.log`). Touched modules (every non-browser `network-*` file plus `remote-access`,
+`server`, `schedules`, `schedules-ui`, `ui`, `ui-2`, `ui-3`, `cli`, `project-explorer-ui`, `sandbox-ui`; 40 files, concurrency 4):
+377/378 with the flake above (`wave-b-touched.log`), then 378/378 (`wave-b-touched-final.log`). Browser on the changes: 12/12
+(`wave-b-browser-run2.log`). Screenshot smoke on port 4932 (`wave-b-port-4932.log`, `wave-b-screens/`, all looked at): the run
+view with a step waiting for an answer, the editor with a pipeline target and its facts, the Switch on… confirmation, light and
+dark at 1440 and 390 px, nothing sideways, the dialogs inside the screen; app stopped and folder removed.
+
+**For the Task 13 merge** (its branch is cut from 96987d8, before Task 12): `src/server.mjs` — the `startServer` signature
+(here `networkScheduleOptions` and `networkPipelineOptions`, there `a2aOptions`: keep all) and the `new PipelineRunner(…)` line
+(here `...networkPipelineOptions`), next to its `networkJobs`/`machine` hunk; `src/network/jobs.mjs` — the `tags` helper after
+`later` (its `storedJob` hunk is beside it; a peer job's `agentId` is null and `tags` passes it through, where the journal drops
+it) and Task 12's handoff code it has not seen; `src/network/pipeline-runner.mjs` — `startRun`'s signature, history and start
+event here, `#submit`/`#begin`/`#step`/`#follow` there (no shared lines expected); `public/network-pipeline.js` (`STEP_STATES`,
+the canvas style rows, `runFacts`, the run view) if it adds a federated step's look; `public/styles.css` (one line inside the
+Task 12 block, not at the end); `docs/network/architecture.md` §19–§23 edited in place (its §24 is new); this file's end. A
+`federated` step's job can ask or delegate only through the same checks (§23 item 17); the run view's waiting state reads the
+step's job, so it applies to it unchanged.
+
+**Commits** (local `feat/network`, never pushed or merged): 1bd3407, a0bc6e0, 4c53a6f, d9447df, 8651ae4, 720989f, then this
+entry with architecture §19 item 8, §20 items 11, 14 and 16, §21 items 10 and 11, §22 item 11 and §23 items 8, 12, 14 and 16.

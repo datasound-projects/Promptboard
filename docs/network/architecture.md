@@ -1311,6 +1311,7 @@ statuses, Kanban runs) and `public/network-activity.js` (the UI). None changes a
    that never answers cannot hold up or undo a saved transition (tested). Every job read from its `.bak` (acceptance §6
    row 7) adds one `job.recovered` event (`errorCode: RESTORED_FROM_BACKUP`, `by: app`, the status after the restore,
    a message that later saves may be lost) and is saved one revision past the lost copy, so no revision is ever reused.
+   The timeline reads it as "Job …: read from its backup copy · <status>" under the Job status filter (wave B integration).
 9. **Authority.** Events are never read to decide anything: job and pipeline state come only from `job.json`/`run.json`,
    no route appends an event, and a forged `job.status completed` changes no job (tested). "Only trusted source events
    may influence completion" therefore holds trivially: none may.
@@ -1444,6 +1445,12 @@ fill in what §5, §6.3 and §9 left open.
     time limits are the job's `timeoutMs` (the engine enforces it). Tokens and cost are not enforceable mid-run (§7.4).
     **Cancel** (`POST …/cancel`): the run and its open steps are saved `cancelled` first, then its jobs are cancelled;
     blocked steps keep their reason (their job still needs the owner's decision).
+    **Handoffs (wave B integration, Task 12):** a step whose job asked a question or waits for the sub-jobs it delegated is
+    `running` for the runner (`waiting_for_input` is an open job status): nothing is submitted again, the step completes with
+    the job's final result (its later attempt, through the same receipt), and the deadline **keeps counting** — the pause is
+    for the run's own approval and blocked steps; a question inside a step belongs to that step's job, and its sub-jobs are
+    compute. Cancelling the run or passing the deadline cancels the step's job, whose cancellation cascades to its open
+    sub-jobs (§23 item 7). Tested end to end on the real worker (`tests/network-pipeline-handoff-e2e.test.mjs`).
 12. **Approvals.** Only `POST /api/network/pipeline-runs/:id/nodes/:nodeId/approve { decision }` decides (owner
     routes; a paired device has the owner's control); the step must be `waiting_for_approval` in a moving run
     (`STEP_STATE` otherwise). No revision is needed: what the owner approves (the prompt and the frozen inputs) cannot
@@ -1461,6 +1468,12 @@ fill in what §5, §6.3 and §9 left open.
     `request.json.pipeline` (absent without a link, so older requests and hashes are unchanged); `list({ pipelineRunId })`
     and `GET /jobs?pipelineRunId=` filter. `jobs.holds(job)` (set by the runner) is true while the job's run is not ended
     (or not loaded yet): the retention sweep keeps its logs and `DELETE` answers `JOB_IN_USE` (§4.5, §4.9 item 14).
+    **Sub-jobs carry no link (decision, wave B integration).** `pipelineRunId` means "a step job of this run": the runner's
+    receipt and cancel, `holds`, the run view and its job list all read it that way, and only the runner may create it. A
+    sub-job that a step's job delegates is reached through its parent instead: the run view's "Open its sub-jobs" and
+    Activity's sub-job tree show it, the parent's cancellation reaches it, and retention keeps it while its parent is open.
+    The step job's own `job.handoff` and `job.message` events do carry `pipelineRunId` and `nodeId`, so the run's event filter
+    shows when the step asked, delegated and went on; a sub-job's own events stay under the sub-job.
 15. **Events** (optional `events.append`, §17 item 1; the server passes `networkJobs.events`, so Task 08's journal is
     used once merged): `pipeline.run` `{ pipelineRunId, networkId, status, from, by, errorCode, message }` on start and every
     run status change; `pipeline.node` `{ pipelineRunId, nodeId, networkId, agentId?, jobId?, status, from, by, errorCode,
@@ -1473,6 +1486,8 @@ fill in what §5, §6.3 and §9 left open.
     `GET /api/network/pipeline-runs` (`?pipelineId status offset limit`, step counts), `GET /api/network/pipeline-runs/:id`
     (`{ run, plan }`), `POST …/:id/cancel` (`{}`), `POST …/:id/nodes/:nodeId/approve`. Starting is never implicit: no save,
     validate or publish starts anything, and there is no start idempotency key (a repeated start is a second run).
+    `startRun(id, input, { by })` (server code only) records who started it: the route is the owner's, and a schedule the
+    owner switched on passes `by: 'schedule'` (the run's first history entry and its `pipeline.run` event; wave B integration).
 17. **Not built here:** the UI (Task 10), pipeline export/import, machine/A2A starts (Tasks 11/13), schedules of
     pipelines (Task 12), and the fake-CLI end-to-end through the real worker (`tests/network-pipeline-e2e.test.mjs`, after
     Task 07 is merged; the live smoke is Task 14).
@@ -1535,7 +1550,9 @@ Nothing here starts a run except the confirmed Run; saving, validating and publi
     (`min(maxParallel, maxConcurrentJobs)`), permissions (each step its own read-only Network job in an empty folder, no
     project files or lessons, only the agent's approved memory), tools per top-level agent step, deadline and failure
     policy, and cost “Not enforced, and unknown before it runs”; a missing worker is said. A version that cannot start is
-    refused there with its reason. A run started while the draft has unsaved changes does not leave the designer.
+    refused there with its reason. A run started while the draft has unsaved changes does not leave the designer. These facts
+    are one module function, `runFacts` (exported on `PromptboardNetworkPipeline`), which pipeline schedules show too (§23
+    item 14); the time row says that time a step's agent waits for your answer or for its sub-jobs counts (§20 item 11).
 11. **Run view and live states.** It shows only the run's `plan` and `run` (never the draft) and says so. While the run
     moves it reads `GET /pipeline-runs/:id` and `GET /jobs?pipelineRunId=` once a second and stops when it ends; that is
     one function, `pollRun(runId, changed) → stop`, replaced by `host.followRun` when given. **Wired (Phase-2 review):**
@@ -1545,7 +1562,11 @@ Nothing here starts a run except the confirmed Run; saving, validating and publi
     `activity.streaming()` is false (connecting, refused, dropped), and stops when `changed()` answers false. `app.js`
     passes `openJob(jobId)`, which opens the Activity job record (`#/network/activity/<jobId>`); that record's “Open run”
     leads back to the run view. Without them, “Open job” shows the job record as JSON from `GET /jobs/:id` and the view
-    polls. Per step: status,
+    polls. **Handoffs (wave B integration):** a running step whose job waits shows “Waiting for your answer” (amber, double
+    border) or “Waiting for sub-jobs” (blue, double border) in the list, on the canvas, in the summary (“… waits for your
+    answer”) and in its details, with the question or the job's waiting message and “Answer in the job’s record” / “Open its
+    sub-jobs” (`openJob`: the Activity record holds the answer form and the sub-job tree with Approve/Reject); the agent's
+    Tasks tab offers the same link. The header says “Started … by a schedule” for a scheduled run. Per step: status,
     reason and code, agent with provider and model (as registered now), tools, try `n` of `retries + 1` and every job ID,
     the job's status and waiting message, the worker's process, the frozen inputs, result references, a condition's
     decision with each rule's evidence, an approval's prompt with Approve/Reject (only while it waits and the run moves),
@@ -1629,7 +1650,12 @@ gateway), `src/network/mcp.mjs` (the stdio MCP server behind `node bin/ste.mjs -
     `http://127.0.0.1:4330`, refused unless it is a loopback `http` origin without credentials or a path). Tools:
     `agents_list`, `agents_get`, `jobs_submit` (answers `{ jobId, status, deduplicated }` at once; `idempotencyKey`
     becomes the header), `jobs_get`, `jobs_cancel`, `artifacts_get` (`offset`, `maxChars`; windows within 60,000 bytes
-    whole, never splitting a surrogate pair; the result's json only with the first window when ≤ 16 KB). Every answer is
+    whole, never splitting a surrogate pair; the result's json only with the first window when ≤ 16 KB); and, since the wave
+    B integration, one tool per Task 12 machine route (§23 item 8): `jobs_delegate` (`POST /jobs/:id/children`, its
+    `idempotencyKey` becomes the header), `jobs_answer` (`POST …/answer`), `messages_list` (`GET …/messages`, whole messages in
+    windows within the answer limit, `offset`/`nextOffset`), `messages_post` (`POST …/messages`, review or request) and
+    `messages_mark_read` (`POST …/messages/read`). The listener decides each with the route's permission (`submit_jobs` for
+    delegate, answer and post; `read_job_result` for list and read marks) and the client's scope. Every answer is
     JSON text within 60,000 bytes; refusals are tool errors with the server's message and code, never the token.
     Annotations are hints only. A 15-second timeout per call; redirects are refused.
 12. **No deadlock with the same provider.** A submit returns once the job is saved; status is read with `jobs_get`.
@@ -1732,7 +1758,8 @@ fill in what §6.1, §9, §11.4 and §14 item 7 left open.
    counts as a submit, `Idempotency-Key` header; the same policy and the client's own scope; the parent does not wait for it;
    a finished parent is `JOB_FINISHED`), `GET …/messages` and `POST …/messages/read` (`read_job_result`), `POST …/messages` and
    `POST …/answer` (`submit_jobs`). Messages are returned without `attemptId`. The client's sub-job is its own job
-   (`requester: machine`, `delegation.by: 'machine'`). The stdio MCP server is not extended in this task.
+   (`requester: machine`, `delegation.by: 'machine'`). The stdio MCP server gained one tool per route in the wave B
+   integration (§22 item 11).
 9. **Schedules** (`network/schedules.json`, `promptboard.network-schedules` v1 + `.bak`, ≤ 100): §11.4's `Schedule` as `{ id:
    'sch_…', name, target, cadence, timeZone, enabled, confirmedAt, lastSlot, lastJobId, lastRunId, lastFiredAt, lastSkip: null
    | { at, slot, code, reason }, createdAt, updatedAt, revision }`. `target` is a job submission (`agentId, input, instructions,
@@ -1763,7 +1790,8 @@ fill in what §6.1, §9, §11.4 and §14 item 7 left open.
 12. **Events** (§19, IDs and short server text only, never a question, task, answer or result): `job.message` (`kind` = the
     message kind; "request from agent … to agent …"), `job.handoff` (`status` waiting | refused | continued, `kind` delegate |
     needs_input, `errorCode`), `schedule.run` (`status` started | skipped | failed, `scheduleId` — a field added to the
-    journal's list — `jobId` or `pipelineRunId`, `errorCode`).
+    journal's list — `jobId` or `pipelineRunId`, `errorCode`). A pipeline step job's `job.message` and `job.handoff` events also
+    carry its `pipelineRunId` and `nodeId` (wave B integration, §20 item 14).
 13. **Routes and paired devices (§10.1 row 12, §10.2).** Owner: `GET/POST /api/network/jobs/:id/messages`, `POST
     …/messages/read`, `POST …/answer`, `GET/PATCH /api/network/delegation`, `GET/POST /api/network/schedules`, `PATCH/DELETE
     /api/network/schedules/:id`, `POST …/confirm`, `POST …/run`. **Local-only:** `PATCH /api/network/delegation` (switching
@@ -1777,7 +1805,12 @@ fill in what §6.1, §9, §11.4 and §14 item 7 left open.
     redraws), the sub-job tree (four levels, 50 rows, each with its status, how it was made and Approve/Reject), and the
     handoff messages with Unread marks, "Mark … as read" and a folded note form. Activity's side column gains **Schedules**
     (the computer's zone, each schedule's state, repeat, next time, last skip; Switch on… with a confirmation, Switch off, Run
-    now, Last job, Edit, Delete; an editor dialog). Settings gains **Handoffs** (the two switches, approval, depth, fan-out and
+    now, Last job, Edit, Delete; an editor dialog; since the wave B integration the editor's “It runs” makes a job or a run of
+    a published pipeline version — only published versions are listed, the server checks again — with an optional run input
+    and Task 10's run facts (`runFacts`) for the chosen version; Switch on… and Run now of a pipeline schedule show those facts
+    first and stay disabled while the version cannot start, while Run now of a job schedule starts at once as before; Last run
+    opens the run view; the rules are unchanged: created off, only the local-only confirm switches it on, an edit of what it
+    runs switches it off). Settings gains **Handoffs** (the two switches, approval, depth, fan-out and
     time budget). The timeline names handoff, message and schedule events and filters them. No feed: messages exist only in
     their job's record.
 15. **Webhook triggers: deferred.** No delivery path exists that is both private and verifiable: the app listener is
@@ -1789,9 +1822,8 @@ fill in what §6.1, §9, §11.4 and §14 item 7 left open.
 16. **Known limits.** One delegation policy for all networks. A parent restored from its backup while waiting becomes
     `interrupted`; its sub-jobs still run, but their results are recorded for it only if it is waiting again. Questions and
     sub-tasks go to the CLI as data in the next attempt's prompt (that is their purpose); they are not encrypted at rest, like
-    every job input. The REST gateway's sub-job and answer routes have no MCP tools yet. Pipeline schedules can be made through
-    the API; the Schedules editor makes job schedules (a pipeline schedule shows and can be renamed, repeated, run, switched
-    on or off and deleted there).
+    every job input. (Wave B integration: the MCP tools for sub-jobs, messages and answers, §22 item 11, and the editor's
+    pipeline targets, item 14, now exist.)
 17. **For Task 13.** A2A-started chains are refused delegation (`DELEGATION_NOT_ALLOWED` in `#rootClient`) until the A2A
     principal is defined; an inbound A2A job is `requester: { kind: 'a2a', id }`, and a question from such a job goes to the
     owner (`#requesterParty`). Inbound A2A that wants delegation should extend `#rootClient` with that principal's scope, never
