@@ -16,6 +16,9 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { bridgeConfig, MCP_LIMITS } from '../src/network/mcp.mjs';
 import { fakeWorker } from './helpers/network-worker.mjs';
 import { fixture, until } from './helpers/network-machine.mjs';
+// These tests poll jobs_get every few ms; under a loaded suite that passes 60 requests a minute, so the request ceiling
+// is raised here (network-machine.test.mjs tests the ceiling itself).
+const POLLING = { limits: { requestsPerMinute: 10_000 } };
 
 const STE = fileURLToPath(new URL('../bin/ste.mjs', import.meta.url));
 const TOOLS = ['agents_get', 'agents_list', 'artifacts_get', 'jobs_cancel', 'jobs_get', 'jobs_submit'];
@@ -42,7 +45,7 @@ const run = (args, extraEnv) => new Promise(resolve => {
 
 test('a real MCP client over stdio lists the tools and the allowed agent, submits (jobId at once), polls until completed, reads the result in bounded windows and cancels its own job; an unauthorized agent is refused', async t => {
   const long = 'Ünïcode line of the long report.\n'.repeat(5000); // About 170 KB, with two-byte characters.
-  const ctx = await fixture(t, { worker: fakeWorker({ text: job => (job.request.input.text === 'Write the long report.' ? long : `Report for: ${job.request.input.text}`) }) });
+  const ctx = await fixture(t, { machineOptions: POLLING, worker: fakeWorker({ text: job => (job.request.input.text === 'Write the long report.' ? long : `Report for: ${job.request.input.text}`) }) });
   const lead = await ctx.register('lead'), scout = await ctx.register('scout');
   await ctx.on();
   const { token } = await ctx.client({ agents: [lead.id] });
@@ -101,7 +104,7 @@ test('a real MCP client over stdio lists the tools and the allowed agent, submit
 
 test('same-provider nesting: an MCP submit while a job of the same provider runs answers at once and queues; nothing blocks; it runs when the slot frees', async t => {
   const worker = fakeWorker({ mode: 'manual' });
-  const ctx = await fixture(t, { worker });
+  const ctx = await fixture(t, { worker, machineOptions: POLLING });
   const lead = await ctx.register('lead');
   await ctx.owner('/api/network/settings', 'PATCH', { expectedRevision: 0, maxConcurrentJobs: 1 });
   await ctx.on();
