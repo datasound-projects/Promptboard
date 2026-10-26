@@ -655,7 +655,9 @@ window.PromptboardNetwork = (() => {
       if (problem) { jobFormError.replaceChildren(el('span', '', problem)); jobFormError.hidden = false; (text ? jobTimeout : jobInput).focus(); return; }
       const ask = jobAsk(), project = context.projects().find(item => item.id === ask.projectId)?.name, network = jobNetwork.selectedOptions[0]?.textContent;
       const body = { agentId: agent.id, input: { text: jobInput.value }, tools: jobTools.value, permissions: { memory: ask.memory, projectLessons: ask.projectLessons }, limits: { timeoutMs: minutes * 60000 },
-        ...(ask.projectId ? { projectId: ask.projectId } : {}), ...(ask.networkId ? { networkId: ask.networkId } : {}), idempotencyKey: `ui-${crypto.randomUUID()}` }; // Sent twice (a lost answer), it is one job.
+        ...(ask.projectId ? { projectId: ask.projectId } : {}), ...(ask.networkId ? { networkId: ask.networkId } : {}),
+        // Sent twice (a lost answer), it is one job. getRandomValues also works over a paired device's plain HTTP.
+        idempotencyKey: `ui-${[...crypto.getRandomValues(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, '0')).join('')}` };
       const summary = facts([
         ['Agent', nameOf(agent)],
         ['CLI', [PROVIDER_NAMES[agent.base.provider] || agent.base.provider, agent.base.model || 'CLI default model', agent.base.effort].filter(Boolean).join(' · ')],
@@ -736,7 +738,7 @@ window.PromptboardNetwork = (() => {
       if (attempt?.usage?.reported) lines.push(`Reported by the CLI: ${[['inputTokens', 'input'], ['outputTokens', 'output'], ['cachedTokens', 'cached']].filter(([key]) => attempt.usage[key] !== undefined).map(([key, label]) => `${attempt.usage[key].toLocaleString('en-US')} ${label} tokens`).concat(attempt.usage.costUsd !== undefined ? [`$${attempt.usage.costUsd.toFixed(4)}`] : []).join(' · ')}.`);
       else if (attempt && !JOB_OPEN.has(job.status) && attempt.launchingAt) lines.push('Usage: not reported by the CLI.');
       for (const line of lines) item.append(note(line, 'note network-job-line'));
-      if (job.reason && !['completed'].includes(job.status) || (job.status === 'completed' && job.reason)) {
+      if (job.reason) {
         const why = note(`${job.reason}${job.errorCode ? ` (${job.errorCode})` : ''}`, `note network-job-reason${['failed', 'unknown', 'interrupted'].includes(job.status) ? ' is-problem' : ''}`); why.id = `network-job-${job.id}-reason`; item.append(why);
       }
       const actions = el('div', 'network-record-actions');

@@ -1,7 +1,7 @@
 // A stand-in for the headless Claude Code, Codex and Gemini CLIs (named by the file it is installed as): it prints their
 // documented machine-readable output and records each run, so Network job tests never start a real CLI. Markers in the
 // prompt choose a scenario: [[hang]] (starts a helper process in its own group, then waits for ever), [[noresult]] (exit 0
-// without the structured final answer), [[rate]] (a structured rate limit), [[crash]] (exit 3), [[big]] (output over the
+// without the structured final answer), [[rate]] (a structured rate limit), [[auth]] (signed out), [[crash]] (exit 3), [[big]] (output over the
 // limit), [[usage]] (token counts and cost), [[nosession]] (no session or thread ID), [[json]] (a fenced json block),
 // [[slow:<ms>]] (a pause before answering). FAKE_HEADLESS_LOG names a folder for one <pid>.json per run and <pid>.end.
 import { spawn } from 'node:child_process';
@@ -28,6 +28,7 @@ const hang = async () => { await new Promise(() => setInterval(() => {}, 1000));
 if (cli === 'claude') {
   if (has('rate')) { out({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1900000000 } }); out({ type: 'result', is_error: true, result: '' }); await end(1); }
   if (has('crash')) { process.stderr.write('unexpected failure'); await end(3); }
+  if (has('auth')) { out({ type: 'assistant', error: 'authentication_failed', message: { content: [] } }); out({ type: 'result', is_error: true, result: 'Not logged in' }); await end(1); }
   if (!has('nosession')) out({ type: 'system', subtype: 'init', session_id: 'claude-session-1' });
   if (args[args.indexOf('--tools') + 1].includes('WebSearch')) out({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'WebSearch', input: { query: 'release notes /Users/someone/private' } }] } });
   if (has('hang')) await hang();

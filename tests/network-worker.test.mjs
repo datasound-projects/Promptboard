@@ -251,6 +251,7 @@ test('completion needs the structured final answer and exit 0: no answer is unkn
     ['lead', 'claude [[noresult]]', {}, ['unknown', 'INVALID_OUTPUT', 0, 'uncertain']],
     ['lead', 'claude [[rate]]', {}, ['failed', 'RATE_LIMITED', 1, 'failed']],
     ['lead', 'claude [[crash]]', {}, ['failed', 'CLI_FAILED', 3, 'failed']],
+    ['lead', 'claude [[auth]]', {}, ['failed', 'AUTH_REQUIRED', 1, 'failed']],
     ['lead', 'claude [[big]]', {}, ['failed', 'OUTPUT_LIMIT', null, 'failed']],
     ['coder', 'codex [[noresult]]', {}, ['unknown', 'INVALID_OUTPUT', 0, 'uncertain']],
     ['coder', 'codex [[rate]]', {}, ['failed', 'RATE_LIMITED', 1, 'failed']],
@@ -270,6 +271,20 @@ test('completion needs the structured final answer and exit 0: no answer is unkn
   for (const job of jobs.slice(1)) assert.equal(job.result, null, `${job.errorCode}: no result is kept`);
   const hung = await ctx.runOf('timeout');
   await until(() => !alive(hung.pid) && !alive(hung.helper), 'the timed-out CLI and its helper are gone');
+});
+
+test('a CLI whose start cannot be put on the record is stopped at once and reports nothing', { skip }, async t => {
+  const ctx = await fixture(t, { start: false });
+  const id = await ctx.submit('lead', 'Unrecorded [[hang]]'), { job, request } = await ctx.jobs.read(id);
+  const worker = new LocalJobWorker({ dataDir: ctx.dataDir, registry: ctx.registry }), controller = new AbortController(), reports = [], pids = [];
+  const own = { jobId: id, attemptId: 'att_11111111111111111111', signal: controller.signal, launching: async () => ({ applied: true }), activity: () => ({ applied: true }),
+    spawned: async ({ pid }) => { pids.push(pid); throw Object.assign(new Error('Network data could not be saved.'), { code: 'NETWORK_WRITE_FAILED' }); }, finish: async report => { reports.push(report); return { applied: true }; } };
+  await worker.claim({ ...job, request }, own);
+  const started = Date.now();
+  await worker.start({ ...job, request }, own); // Returns once the stopped CLI has ended.
+  assert.equal(pids.length, 1);
+  assert.ok(!alive(pids[0]) && Date.now() - started < 5000, 'the CLI was stopped at once, not left to hang');
+  assert.deepEqual([reports, worker.getStatus(own)], [[], { process: 'none' }], 'no report: the engine settles the attempt');
 });
 
 test('a CLI killed from outside fails the job (never completed) and its helper processes end with it', { skip }, async t => {

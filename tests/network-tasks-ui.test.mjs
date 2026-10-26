@@ -69,7 +69,7 @@ test('Tasks: run a job after a confirmation that says what it may use; the list 
   await until(() => !$('#network-dialog').open && $('#network-job-list .network-job'), 'job listed');
   const [, url, body] = sent.at(-1);
   assert.equal(url, '/api/network/jobs');
-  assert.match(body.idempotencyKey, /^ui-[0-9a-f-]{36}$/); delete body.idempotencyKey;
+  assert.match(body.idempotencyKey, /^ui-[0-9a-f]{32}$/); delete body.idempotencyKey;
   assert.deepEqual(body, { agentId: lead.id, input: { text: 'Summarise the release notes.\nKeep it short.' }, tools: 'web', permissions: { memory: 'agent', projectLessons: true }, limits: { timeoutMs: 300000 }, projectId: site.id });
   assert.equal($('#network-job-input').value, '', 'the form is ready for the next job');
   const [job] = await jobs(ctx, lead);
