@@ -1011,3 +1011,180 @@ tab there pauses and retries every 15 s. A page read loads whole segment files (
 text is not shown.
 
 **Commits.** 4d275e7 (code and tests), then the tests for the three first-round survivors and this log entry.
+
+### Task 11 — Private REST and MCP for external clients (2026-10-26, parallel wave B)
+
+**What was done.** Apps and MCP hosts on this computer can reuse registered agents through Network jobs without owner
+access. The owner turns on a separate machine listener (off by default, 127.0.0.1 only), creates scope-limited clients
+(agents, networks, projects, permissions) whose bearer token is shown once and stored only as its SHA-256, and revokes or
+rotates them. The REST gateway serves only `/machine/v1/*`: scoped agents, submit (202 with a `jobId` at once), the
+client's own jobs, cancel, the result and an event page and NDJSON stream of its own jobs. `node bin/ste.mjs --mcp` is a
+stdio MCP server (official `@modelcontextprotocol/server` 2.3.1) that calls that gateway with one token from its
+environment. Network → Settings holds the listener, the clients and setup snippets for Claude Code, Codex, other MCP hosts
+and REST. Built in parallel with Tasks 07 and 10; decisions in architecture §22. The progress status table is left to the
+coordinator.
+
+**Files.** New: `src/network/machine-auth.mjs` (clients, tokens, listener settings), `src/network/rest.mjs` (listener and
+gateway), `src/network/mcp.mjs` (stdio MCP server), `public/network-clients.js` (Settings UI), `tests/network-machine.test.mjs`,
+`tests/network-mcp.test.mjs`, `tests/network-clients-ui.test.mjs`, `tests/network-clients-browser.test.mjs`,
+`tests/helpers/network-machine.mjs`. Changed: `src/network/http.mjs` (6 routes, `machine` in the route context),
+`src/network/jobs.mjs` (`result(id)` byte-identical to Task 07's; `cancel(id, input, { by })`), `src/network/events.mjs`
+(a server-only `view` option on `read` and `stream`), `src/server.mjs` (`MachineListener` created, started after listening,
+closed at shutdown; `machineOptions`; `machine` on the returned handle; `Bearer pbm_…` refused on owner routes;
+`/network-clients.js` asset), `src/remote-access.mjs` (`localOnly`: create, rotate, listener), `bin/ste.mjs` (`--mcp`;
+a `pbm_` value is never repeated in an option error), `public/network.js` (Settings section), `public/index.html`,
+`public/styles.css`, `tests/helpers/ui-harness.mjs` (evaluates `network-clients.js`), `tests/network-ui.test.mjs` (the
+seventh tab), `tests/remote-access.test.mjs` (6 rows), `package.json`, `package-lock.json`, `THIRD_PARTY_NOTICES.md`,
+`docs/network/architecture.md` (§22), this file.
+
+**Dependency.** `@modelcontextprotocol/server` 2.3.1 (Apache-2.0, published 2026-10-05; the same release as the installed
+client and core 2.3.1; dependencies `zod ^4.2.0` and core 2.3.1; 2.4.0 of 2026-10-23 is too new) and `zod` 4.6.7 (MIT,
+2026-10-12, already installed by the SDKs, now a direct dependency because `mcp.mjs` imports it), both `--save-exact`.
+`npm audit`: 0 vulnerabilities. The server LICENSE equals the client's; the notice heading lists it.
+
+**Data layout.** `<data>/network/clients.json` (`promptboard.network-clients` v1 + `.bak`, 0600), created on the first
+client or listener change: `{ revision, listener: { enabled, port }, clients: [{ id: cli_…, kind: 'api', name, tokenSha256,
+tokenHint, createdAt, lastUsedAt, expiresAt, revokedAt, rotatedAt, revision, scopes: { agents, networks, projects,
+permissions } }] }`. Jobs of a client are ordinary jobs with `source: 'machine'`, `requester: { kind: 'machine', id }`.
+
+**Auth model.** Token `pbm_<cli_id>_<43 base64url>` (32 random bytes), shown once (create, rotate), stored as SHA-256,
+compared in constant time; revoke final; rotate keeps the client, its jobs and keys; optional expiry 1–365 days. Order of
+checks on the listener: Host (`127.0.0.1:<port>`/`localhost:<port>`), Origin (its own only), cross-site, proxy headers,
+owner token or `pb_remote` cookie (`403 MACHINE_CREDENTIAL_REQUIRED`), `/machine/v1/` only, bearer (`401
+MACHINE_UNAUTHORIZED`), 60 requests/min per client (`429`), the route's permission (`403 PERMISSION_DENIED`), then scopes
+(`AGENT_NOT_ALLOWED`, `PROJECT_NOT_ALLOWED`, `NETWORK_NOT_ALLOWED`, `MEMORY_NOT_ALLOWED`), 10 submits/min, JSON ≤ 256 KiB.
+No CORS header ever. The owner app refuses `Authorization: Bearer pbm_…` (`403 MACHINE_TOKEN_REFUSED`).
+
+**REST endpoints** (`/machine/v1`): `GET /agents`, `GET /agents/:id` (`read_agents`); `POST /jobs` (`submit_jobs`,
+`Idempotency-Key` header, 202/200); `GET /jobs`, `GET /jobs/:id` (own only); `POST /jobs/:id/cancel` (`cancel_own_jobs`);
+`GET /jobs/:id/result` (`read_job_result`); `GET /events?after&limit`, `GET /events/stream?after` (own jobs, narrow fields).
+
+**MCP tools** (`node bin/ste.mjs --mcp`; `PROMPTBOARD_MACHINE_TOKEN` or `PROMPTBOARD_MACHINE_TOKEN_FILE`,
+`PROMPTBOARD_MACHINE_URL` loopback only): `agents_list`, `agents_get`, `jobs_submit` (jobId at once), `jobs_get`,
+`jobs_cancel`, `artifacts_get` (windows ≤ 60,000 bytes); strict zod schemas; no write beyond queueing a read-only job or
+cancelling an own one.
+
+**Owner routes.** `GET /api/network/clients` (allowed from a paired device), `POST /api/network/clients` (local-only),
+`DELETE /api/network/clients/:id` (allowed: revoking only removes access), `POST /api/network/clients/:id/rotate`
+(local-only), `GET /api/network/listener` (allowed), `PATCH /api/network/listener` (local-only). All six are in
+`NETWORK_ROUTES` with their rows.
+
+**UI.** Network → Settings (`#/network/settings`, seventh tab and sidebar link): "Machine listener" (switch, port, status
+line: off / on at its URL / its error), "Clients" (create with name, agents, permissions with memory off by default,
+projects, networks, expiry; each client's scopes, `pbm_…` hint, created, last used, expiry; Rotate token and Revoke with
+confirmation; active first), "Connect an MCP host" (Claude Code / Codex / Other MCP hosts / REST snippets with the
+variable name only; Copy snippet). The token shows once in the module's own dialog with "Copy it now: Promptboard will not
+show this token again", reaches the clipboard only on Copy, and leaves the page when the dialog closes.
+
+**Tests** (temporary data folders, the fake worker or none, no CLI; the MCP host is the real
+`@modelcontextprotocol/client` 2.3.1 starting `node bin/ste.mjs --mcp`):
+
+- `tests/network-machine.test.mjs` 10 tests: (1) off by default: every Network read opens no port and writes no file;
+  refused listener changes write nothing; on: 127.0.0.1 only (another address of this computer is refused), the app port
+  refused; off closes the port; (2) clients: refusals (no agent, unknown agent/project/network, bad permission, two-line
+  name, bad expiry, extra fields), the token once, only its hash on disk, never in a list; rotate (revision, new token,
+  same client, old token 401, its job still its own); expiry (injected clock); revoke final and idempotent; malformed and
+  forged tokens 401; (3) REST: only scoped agents with public fields and no Base content, 403 for others (also unknown
+  IDs), submit 202 at once, poll, result 404 before completion then text and json, another client's and the owner's jobs
+  404 on read, result and cancel, own list, cancel while queued (`by: machine`) and while running (the worker stopped),
+  the event page only own jobs with narrow fields; (4) denials: agent, project, network, memory, lessons outside the scope
+  403; owner-only fields 400; memory `none` by default, `agent` and lessons with `read_scoped_memory`; each permission;
+  no admin route on the listener; a machine token on owner routes 403 (`MACHINE_TOKEN_REFUSED` even beside the owner
+  token); the owner token and a `pb_remote` cookie on the listener 403; (5) Host (six rebinding names), Origin (four),
+  cross-site, six proxy headers, no CORS header on any answer (a preflight too), 415, 400, 413, 10 submits then 429, the
+  61st request 429 with `Retry-After`, another client unaffected; (6) idempotency: same key same job (200), changed body
+  409, another client's key its own job, a lost answer and its retry one job, revoked token replays 401; (7) the stream:
+  own events only, replay from 0 each once, 4 per client, 5 machine streams in the test (8 by default), rotation and
+  revocation end the streams at once, the freed places reused; (8) no token or secret in any `network/` file, event,
+  answer after creation, console or stderr; the export holds no client; (9) restart: clients and the listener setting
+  persist, the listener comes back, a queued job without a worker says so, a worker after a restart runs it and the client
+  reads the result; (10) paired device: lists and revokes, `REMOTE_LOCAL_ONLY` for create, rotate and listener, its
+  listener never reaches the machine listener, a machine token there is refused, its cookie is refused on the machine
+  listener.
+- `tests/network-mcp.test.mjs` 3 tests: (1) a real MCP client: six strict tools, `agents_list` only the allowed agent,
+  `jobs_submit` answers at once, `jobs_get` until completed, `artifacts_get`, a retried key the same job, a ~170 KB result
+  in three or more windows each ≤ 60,000 bytes that read back whole, `jobs_cancel` of an own waiting job, refusals as
+  tool errors (agent outside the scope, memory, unknown job, extra or malformed arguments, no result yet), no refused call
+  makes a job, no token in any answer or the bridge's stderr; (2) same-provider nesting: with one slot held by a running
+  Claude job, an MCP `jobs_submit` for the same provider answers in well under 3 s as `queued`, five polls stay queued
+  behind it, the outer job keeps running, then the nested job runs and its result is read; (3) the bridge: `--mcp` with
+  any other option or a token in argv exits 1 without repeating it; missing, malformed or unreadable tokens and
+  non-loopback, https, credentialed or path URLs exit 1 with nothing on stdout; a token file works; revoked → tool error
+  `MACHINE_UNAUTHORIZED`; the listener off → a clear tool error; no token anywhere.
+- `tests/network-clients-ui.test.mjs` 1 test (jsdom): opening Network and Settings writes nothing and opens no port; the
+  snippets name the variable before and after; Create without agents explains; Escape returns focus; port saved, listener
+  on, the app port and a low port refused; the form's labels and default permissions; validation; the token once (focus on
+  it), nothing on the clipboard until Copy, the token works, Done removes it from the page and returns focus; the list shows
+  only the hint; every snippet copied holds no token; rotate (confirm, new token, old 401, Escape removes it); revoke
+  (confirm, revoked without actions, 401, status line); off; leaving the section closes the dialog.
+- `tests/network-clients-browser.test.mjs` 1 test (Chrome): light and dark at 1440 px (listener and setup beside the
+  clients) and 390 px (one column, nothing sideways, the snippet wraps), the create and token dialogs at both widths, the
+  token gone after Done, Tab to Create with a visible ring, Enter opens with the name focused, Tab to the agents, Escape
+  returns focus, Tab to the switch with a visible ring and Space turns it off, no exception or CSP message.
+- Changed: `tests/network-ui.test.mjs` (the seventh tab and End/Home/arrow order), `tests/remote-access.test.mjs` (3
+  local-only and 3 allowed rows).
+- Mutation check (`$TMPDIR/network-logs/task-11-mutations.log`, each source restored after its run): 52 of 52 plus 3 for the
+  paired-device test make a test fail (owner-route refusal, Host, Origin, fetch-site, proxy, owner credential, agent scope
+  on submit, read and list, project, network, memory refusal and default, own jobs, per-route permission, both rate limits,
+  JSON only, revoke teardown, the machine stream cap and its release, both event filters, the narrow agent and job, the
+  idempotency header, loopback bind, reserved ports, off by default, hash compare, revoked and expired refusal, rotation
+  replacing the hash, the hidden hash, the token not stored, agents checked at creation, revoke notification, local-only
+  routes, cancel by machine, the journal's stream view, MCP submit not waiting, MCP loopback only, strict schemas, result
+  windows, the CLI's token masking and lone `--mcp`, the listener's start and shutdown, the token leaving the page, no
+  automatic clipboard, the dialog closing on leave, the Settings tab). Two (the stream cap, shutdown) fail by timing out.
+
+**Runs.** `npm run check` pass. New and changed tests twice on the final code: 40/40 and 40/40 (`network-machine`,
+`network-mcp`, `network-clients-ui`, `network-ui`, `remote-access`) plus the Chrome test 1/1 twice
+(`$TMPDIR/network-logs/task-11-new-twice.log`). Touched modules: see `task-11-touched-final.log` (every `network-*`
+non-browser file, `remote-access`, `server`, `cli`, `compose-mcp`, `base-server`, `ui`, `ui-2`, `ui-3`,
+`project-explorer-ui`, `sandbox-ui`) and `task-11-touched-browser.log` (`network-browser`, `network-graph-browser`,
+`network-review-browser`, `network-activity-browser`, `network-clients-browser`, `remote-access-browser`: 8/8). The first
+touched run found the release-metadata test needing the new package in `THIRD_PARTY_NOTICES.md` (fixed); the final one
+(`task-11-touched-final.log`): 299 tests, 298 pass, 1 fail: `network-jobs` "job routes over HTTP" with a client-side
+`ECONNRESET` on its 1.1 MiB 413 request (Task 08's known flake); alone it failed 3 of 4 runs here and also 3 of 4 on an
+exported copy of the base commit 9a2f693, so it is not caused by this task (the owner `jsonBody` is unchanged). The full
+`npm test` is left to the coordinator (parallel wave rule). Isolated app on port 4921 (`$TMPDIR/network-logs/task-11-port-4921.log`;
+temporary data, projects and home folders, PATH holding only a `node` symlink, no worker in this base): listener off and no
+`network/` folder before; a client created; listener on at 4922; a real MCP host over `bin/ste.mjs --mcp` listed six
+tools and the one allowed agent, `jobs_submit` answered `queued` in 39 ms with "No job worker is available…", another
+agent refused (`AGENT_NOT_ALLOWED`), owner route with the machine token 403, machine route with the owner token 403,
+`jobs_cancel` cancelled, the bridge's stderr empty; listener off; `clients.json` holds no `pbm_`; Ctrl+C (SIGINT) stopped
+the app and its listener; folder removed. Paid CLI runs: 0.
+
+**Acceptance criteria and evidence** (screenshots in `$TMPDIR/network-logs/task-11-screens/`, all looked at:
+`settings-{1440,390}-{light,dark}.png`, `settings-390-{light,dark}-setup.png`, `settings-create-1440-{light,dark}.png`,
+`settings-token-{1440,390}-{light,dark}.png`):
+
+- *An outside compatible MCP client lists an allowed agent, submits a job, receives `jobId`, polls, and retrieves its
+  result:* `network-mcp` test 1 (real client and `bin/ste.mjs --mcp`), the port-4921 smoke; REST: `network-machine` test 3.
+- *Unauthorized agent/project/memory access returns denied; no admin action through a machine token:* `network-machine`
+  tests 3, 4 (and 10), `network-mcp` test 1.
+- *No new public interface appears on installation or by simply visiting Network:* `network-machine` test 1,
+  `network-clients-ui` (no folder, no port after visiting Network and Settings), the port-4921 smoke; the listener is
+  127.0.0.1 only.
+- *Existing paired-device remote access remains separate and secure:* `network-machine` test 10, `remote-access` route
+  table (create, rotate and listener local-only), `network-machine` test 4.
+- acceptance.md Task 11 rows: 1 → machine 1, 10, `remote-access`; 2 → machine 2; 3 → machine 3; 4 → machine 4, 7 (stream
+  closes); 5 → machine 5; 6 → machine 6; 7 → mcp 1; 8 → mcp 2; 9 → machine 8, mcp 1, 3; 10 → machine 9. Failure matrix
+  rows 1, 27, 29, 30 → machine 6, 7, 5, 4.
+- Task prompt extras: replay → machine 6; missing worker, cancellation, restart → machine 9, 3; tokens refused both ways →
+  machine 4, 10; UI both themes, 390/1440, keyboard → the Chrome test; snippets with a placeholder only → UI test.
+
+**For Tasks 12 and 13.** Inbound A2A belongs on this listener: rows in `MACHINE_ROUTES`, an exception before the
+`/machine/v1/` check for `/.well-known/agent-card.json`, clients of `kind: 'a2a'` (only `'api'` validates now), the same
+`onRevoke` teardown. A client's jobs are `requester: { kind: 'machine', id }`; Task 12 messages from a client are
+`{ clientId }`. Expected merge overlaps: `src/network/jobs.mjs` (`result()` is identical to Task 07's; `cancel` and
+`#stop` lines), `src/network/http.mjs` (route table end and the context line), `src/server.mjs` (import, `startServer`
+options, after `NetworkJobs`, the start and close lines, the return), `public/network.js` (`SECTIONS`, `panelOf`, the
+`view.append` line, `render`, `leave`), `public/index.html`, `public/styles.css` (appended block),
+`tests/helpers/ui-harness.mjs`, `tests/network-ui.test.mjs` (line 74 and the End/Home block; Task 10 changes the
+Pipelines entry on the same line), `tests/remote-access.test.mjs`; all additive.
+
+**Known limits.** Loopback only: no Tailscale/Twingate address or TLS for the machine listener yet. Listing a client's
+jobs and building its event filter scan the whole job index (`ponytail:` note). Rate limits are per client and in memory
+(a restart resets them); unauthenticated requests are not rate limited (loopback, 256-bit tokens). A machine job's input
+is bounded by the 256 KiB body. Revoking does not cancel the client's jobs. Scopes cannot be edited (create a new client and
+revoke the old one). No Streamable HTTP MCP endpoint. Until Task 07 is merged, jobs submitted through the real app stay
+queued (no worker), as the smoke shows; with it, they run like owner jobs. Port 0 shows as "0" in the port field.
+
+**Commits.** a1d6642 (code, tests, dependency, architecture §22), then this log entry.
