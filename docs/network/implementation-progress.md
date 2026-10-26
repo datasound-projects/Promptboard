@@ -850,3 +850,154 @@ Paid CLI runs: 0.
 a5e709e (P1-4, P1-5, P1-9, P1-10), 62fb4bb (unconfirmed points), then this log entry.
 
 **Next task: 07.**
+
+### Task 09 — Pipeline compiler and runner (2026-10-26, wave A, branch `feat/network-09`)
+
+**What was done.** Network pipelines: execution DAGs that belong to one network and pin one published version of it, kept as
+a draft plus immutable published versions; a compiler that turns a published version into a pinned plan (nested
+sub-pipelines expanded and version-pinned, agents checked against their registrations and network membership, scope,
+typed ports and artifacts, bounded expansion); and a runner that executes the plan step by step as real Network jobs through
+the job engine, with true parallel branches up to the caps, joins, typed conditions, owner approvals that survive restarts,
+outputs saved as reports, bounded retries, step and run time limits, cancel, and restart reconciliation that counts only
+proven results. Saving, validating and publishing start nothing; a run starts only with an explicit, confirmed start. No UI
+(Task 10). The decisions, and the two deviations (retries are new jobs; `reports/<name>.md`), are in architecture.md §20.
+
+**Files.** New: `src/network/pipeline-model.mjs` (drafts, versions, strict schema, validate/publish), `src/network/pipeline-compiler.mjs`
+(`compilePipeline`, `order`, `decide`), `src/network/pipeline-runner.mjs` (`PipelineRunner`), `tests/network-pipeline.test.mjs`,
+`tests/network-pipeline-http.test.mjs`. Changed: `src/network/jobs.mjs` (the §17 item 4 link and the `holds` guard),
+`src/network/http.mjs` (13 routes, `pipelineRunId` job filter), `src/server.mjs` (pipelines and runner created after the job
+engine, passed to the routes, `start()` after listening, `close()` before the job engine closes), `tests/remote-access.test.mjs`
+(13 rows), `docs/network/architecture.md` (§20 at the end), this section. `acceptance.md` and the status table are unchanged
+(wave rules).
+
+**Data model** (created on the first save or start): `network/pipelines/<pip>.json` (`promptboard.pipeline-draft` v1 + `.bak`:
+`id, networkId, networkVersion, name, description, settings { maxParallel 1–4, deadlineMs 1 min–24 h, failurePolicy },
+nodes [{ id, type, label, position, config }], edges [{ id, from, to, fromPort, toPort }], publishedVersions [{ version,
+sha256, publishedAt, networkVersion }], revision, createdAt, updatedAt`), `network/pipelines/<pip>/v<n>-<sha256>.json`
+(`promptboard.pipeline-version` v1, immutable), `network/pipeline-runs/<run>/plan.json` (`promptboard.network-plan` v1,
+immutable, hash in run.json), `run.json` (`promptboard.network-run` v1 + `.bak`: status, input, deadlineAt, pausedAt, step
+states with `attempt, jobId, jobIds, inputs, result, decision, approval, errorCode, reason`, history ≤ 200) and
+`reports/<name>.md`. Step results stay in their jobs' files, referenced by job, attempt and SHA-256.
+
+**jobs.mjs edits** (small, for the merge with Tasks 07/08): `submit` accepts `pipeline: { runId, nodeId }` (validated
+`RUN_ID`/`PLAN_NODE_ID`, exported) only from requester `{ kind: 'pipeline', id: runId }` (`PIPELINE_LINK_REFUSED` 403
+otherwise), stores it as `job.pipelineRunId`/`nodeId` and `request.json.pipeline` (only when present: submission hashes and
+earlier requests unchanged); `list({ pipelineRunId })`; a public `holds = null` field that the runner sets: the retention
+sweep skips held jobs and `remove` answers `JOB_IN_USE` for them. Nothing else in the engine changed.
+
+**Routes** (behind `handle()`, all allowed from a paired device, `localOnly()` unchanged): `GET/POST /api/network/pipelines`,
+`GET/PATCH/DELETE /api/network/pipelines/:id`, `POST …/:id/validate`, `POST …/:id/publish`, `GET …/:id/versions/:n`,
+`POST …/:id/runs` (`{ version, confirm: true, input? }` → 202), `GET /api/network/pipeline-runs`, `GET
+/api/network/pipeline-runs/:id`, `POST …/:id/cancel`, `POST …/:id/nodes/:nodeId/approve` (`{ decision }`, nodeId may be
+`<sub>/<step>`); `GET /api/network/jobs` also takes `pipelineRunId`.
+
+**Tests** (temporary data folders, the deterministic fake worker of Task 06, no process, CLI or network):
+
+- `tests/network-pipeline.test.mjs` 16 tests: (1) drafts and versions: execution edges stored apart from the network file
+  (byte-identical, no relation in the pipeline file), strict schema (unknown config key, wrong ports, an edge out of an output,
+  another toPort, self edge, loop with path, dangling include, mistyped rule value, code in a rule path, unpublished network
+  version, maxParallel 5), publish v1 → edit → v2 with v1's bytes and hash unchanged, topological order, revision conflict,
+  delete refused when published and allowed when not, a tampered version refused after a restart, no job and only the expected
+  folders; (2) compiler refusals: missing agent, agent not in the network version, switched off, tools the provider cannot
+  use, condition on a text port (and valid on its json port), output including a step that does not reach it, no output,
+  duplicate output names, a crafted loop refused by the compiler itself, recursion, scope (a stranger network's pipeline,
+  an unpublished version, an agent outside the network), 4 levels compile and 5 are refused (`PIPELINE_DEPTH` at the fifth),
+  4 × 450 steps compile and 5 × 450 are refused; publish refused with the same code; (3) the MVP demo: both research jobs
+  running at the same time (the fake's `active` = 2, both jobs `running`), the join and reviewer waiting for the second
+  branch, the reviewer's input holding the run input and both results indented, approval waiting with no report, approve →
+  `reports/report.md` exactly, run history, three linked jobs with keys and request links, `pipeline.run`/`pipeline.node`
+  events with no result text; (4) condition true and false paths with skipped branches, decision evidence and inputs, the
+  report noting a step that did not run, and the interpreter (no prototype keys, no `length`, missing matches nothing);
+  (5) approval: still waiting after a restart and 3 hours, wrong answers refused, approve → completed with the deadline moved
+  by the wait, reject → cancelled (stop and continue_independent); (6) cancel: open steps and both jobs cancelled, the worker
+  told to stop both, nothing starts afterwards; (7) restart: an interrupted step job blocks with its reason, nothing
+  resubmitted, the owner's retry resumes and completes it; a submit whose answer is lost is found by its key (one job) and
+  a new runner after a restart completes it; (8) nested pinning: the plan's groups and pins, edits and republishes of the
+  child pipeline, the parent and a network during the run leave plan.json byte-identical and the job instructions at v1,
+  the nested report, a later run of v1 still v1 and of v2 v2; (9) revocation mid-run: the running step finishes, the next
+  submit is refused, the run fails with the reason, a new start is refused; (10) a step over `timeoutMs` 1 s fails
+  `TIMEOUT`; a run past its deadline fails `DEADLINE` with its job cancelled; (11) retries: 3 tries then failed, a flaky step
+  recovering on its second job, `unknown` never retried, no retries by default; (12) receipts: forged lease and forged
+  attempt ignored by the engine, a record naming another attempt's file (same bytes) blocked, a job of another run blocked,
+  a changed result file blocked, an upstream result changed before the next step's submit blocks it (`ARTIFACT_INVALID`);
+  (13) the job link: refused for the owner and a mismatched run, invalid IDs, stored and filtered, unlinked jobs unchanged,
+  delete refused while the run is open, logs kept by the sweep while it is open and removed after; (14) caps: maxParallel 1
+  runs one step at a time; with one job slot two runs submit one step in all; (15) continue_independent lets the other branch
+  finish, a join of any goes on with the first branch, a Graph relation carries no data even when its source finished first;
+  (16) damaged files: a run.json read from its backup becomes `interrupted` and never moves, a changed plan.json is
+  unavailable, a pass that cannot be saved shows `passError` and recovers.
+- `tests/network-pipeline-http.test.mjs` 1 test (real server, fake worker): token and Origin 403, 413 body, 404s, create,
+  list, rename, conflict, validate, publish, version, delete refused, zero jobs and runs before the start,
+  `CONFIRMATION_REQUIRED`, 202 start, list with step counts, approval waiting across a **server restart**, approve, completed
+  with plan and linked jobs, `RUN_FINISHED`, cancel while waiting, approve after cancel refused, and the run input's secret in
+  no file under `network/`.
+- `tests/remote-access.test.mjs`: 13 new rows (every pipeline route exactly once).
+- Mutation check (`$TMPDIR/network-logs/task-09-mutations.log`, final code): 53 of 53 mutations make a test fail (every
+  compiler refusal, the interpreter's missing-value and own-key rules, strict config, ports, both loop checks, publish
+  compiling, version hashes, join any, condition branches, both caps, the receipt's attempt, hash and link checks, the
+  artifact hash, retry bound and eligibility, unknown blocking, approvals waiting, reject, deadline and its pause, cancelling
+  jobs on halt and cancel, the idempotency key, scoped inputs, the stop policy, backup → interrupted, the pass error, holds,
+  report order, events, the frozen version, the link refusal, filter, sweep guard and request field, the approve route row,
+  the server's runner start, run-input cleaning). Five survived the first round and led to stronger tests (decoy file for the
+  attempt check, the rejected step's status and a continue_independent rejection, a result finished elsewhere before the step
+  is ready, a v1 run after the edits, a settled-state wait in the pool-ceiling check).
+- Runs: `npm run check` pass. New and touched tests twice (`task-09-new-run1.log`, `task-09-new-run2.log`:
+  `network-pipeline`, `network-pipeline-http`, `remote-access`, `network-jobs`): 52/52, then 51/52 — the failure is Task 06's
+  `network-jobs` "job routes over HTTP" (`read ECONNRESET` on the 1,100 KiB body that gets 413: the server closes while the
+  client still writes). It is **pre-existing**: the same test on base `db73249` (a `git archive` export, no worktree) failed
+  4 of 12 times with the same error, and 1 of 6 on this branch alone; Task 09 does not touch that path. Every non-browser
+  `network-*` test plus `remote-access` and `server`: 130/130 (`task-09-touched.log`); `network-browser`,
+  `network-graph-browser`, `network-review-browser`, `remote-access-browser`: 6/6 (`task-09-touched-browser.log`). The full
+  `npm test` was not run (wave rule: the coordinator runs it after merging).
+- Isolated smoke on port 4919 (temporary data and projects folders, PATH holding only a `node` symlink, `node bin/ste.mjs
+  --gui --no-open --port 4919`, no worker): register, network, pipeline create 200, publish 200 with zero jobs, start 202;
+  the step's job `queued` waiting for a worker; stopped with SIGINT and started again: the same run `running`, the same single
+  job still queued; stopped; folder removed. Paid CLI runs: 0.
+
+**Acceptance criteria and evidence:**
+
+- *Two branches → join → reviewer → approval → final output works with simulated and at least one actual CLI path:* simulated:
+  `network-pipeline` test 3 and the HTTP test. The actual CLI path needs Task 07's worker, built in parallel: not run here
+  (Task 14's live smoke after the merge; `tests/network-pipeline-e2e.test.mjs` with fake CLIs through the real worker also
+  waits for Task 07).
+- *A pipeline cannot run an untrusted graph connection merely because one was drawn:* test 15 (a `share_result` relation moves
+  no data), test 1 (pipeline edges stored apart; the network file untouched), test 2 (membership and scope), runs need an
+  explicit confirmed start (test 3, HTTP test).
+- *Active runs keep their exact published version even after editing:* test 8 (plan.json byte-identical, v1 instructions,
+  a later v1 run still v1), HTTP test (plan pins).
+- *A failed/unknown parent job prevents unsafe dependent execution and is diagnosable:* tests 7, 11, 12 (blocked with the
+  job's code and a reason naming it; descendants pending; nothing resubmitted), 9 and 15 (failed parent → descendants
+  cancelled `UPSTREAM_FAILED`), 16 (`passError`).
+- acceptance.md Task 09 rows: 1 → test 2 (+ test 1 for unknown config keys); 2 → tests 3, 4, 15; 3 → test 5 and the HTTP
+  test (only the owner route approves); 4 → test 8; 5 → test 7; 6 → test 7; 7 → test 6 and the HTTP test; 8 → tests 10, 11
+  (retries are new jobs, architecture §20 item 9); 9 → tests 3, 4, 8; 10 → test 12. Failure matrix rows 22–26 → tests 7, 5,
+  8, 7, 12.
+
+**What Tasks 07, 08 and 10 must know.**
+
+- **Task 07:** pipeline step jobs are ordinary jobs with `source: 'pipeline'`, `requester { kind: 'pipeline', id: runId }`,
+  `pipelineRunId`, `nodeId` and `request.json.pipeline`; their `input.text` already holds indented upstream results (put it
+  through `indent()` inside the job-input section as §7.2 says), `input.json` may hold `{ run?, steps: { <stepId>: json } }`,
+  `networkId` is the step's network and memory the default `agent`. The runner trusts only `job.result` of the current
+  attempt with the recorded SHA-256 (`result.md`, optional `result.json`), so the worker must report results through
+  `finish` as Task 06 defined. A worker that sets `sideEffects: 'external_unknown'` makes a failed step not retried.
+- **Task 08:** `server.mjs` passes `events: networkJobs.events ?? null` to the runner, so once `NetworkJobs` keeps
+  `this.events` the runner appends `pipeline.run` and `pipeline.node` events (§20 item 15) with no other change. Their
+  `message` is a one-line reason ≤ 500 characters; filter by `pipelineRunId`.
+- **Task 10:** everything is JSON over the routes above. `GET /api/network/pipelines/:id` is the draft; `POST …/validate`
+  answers `{ valid, summary: { steps, agentSteps, groups, order, pins } }` or `{ valid: false, error: { code, message,
+  details: { nodeId, edgeId, path, … } } }` to mark a step or edge; `GET /api/network/pipeline-runs/:id` is `{ run, plan }`
+  (plan `groups` give the nested hierarchy, `run.nodes[stepId]` the state, decision, approval and result refs, `passError`
+  a failing save). The designer must send whole `nodes`/`edges` with `expectedRevision`, n_/e_ IDs and the ports of §20
+  item 2. The report is `reports/<name>.md` in the run folder; there is no report route yet (add one, or read it through
+  the step's `result.text.ref`).
+
+**Known limits.** The runner polls (`pollMs` 1 s in the app), so a step starts up to a second after its inputs complete. One
+queue serializes every run change and rewrites `run.json` whole (`ponytail:` note): fine for hundreds of steps, not for
+thousands at a high rate. A step job queued without a worker shows the step `running` (its job says it waits for a worker).
+A run whose step is blocked on a completed job with a broken receipt stays blocked until the owner cancels it. Tokens and
+cost are not enforced. No pipeline export/import, no start idempotency key, no report download route, no UI. A sub-pipeline's
+own settings are ignored. Pipeline jobs never carry a project (no project lessons). The fake-CLI end-to-end and the live
+smoke wait for Task 07. Task 06's ECONNRESET flake above is pre-existing and was not changed here.
+
+**Commits.** See `git log feat/network-09` (Task 09 code and tests, then this log entry).
