@@ -100,6 +100,32 @@ test('P2-3: retention removes the old logs of a finished run’s step job, as it
   assert.equal((await again.owner(`/api/network/pipeline-runs/${runId}`)).json.run.status, 'completed');
 });
 
+test('P2-5: a replay from 0 parses each journal segment about once, not once per page; appends and backward pages still read right', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-review2-journal-')), dir = join(dataDir, 'network', 'events');
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  await mkdir(dir, { recursive: true });
+  const SEGMENTS = 2, PER = 3000; // Written in the journal's own format: a header, then one event per line.
+  let seq = 1;
+  for (let s = 0; s < SEGMENTS; s++) {
+    const first = seq, lines = [JSON.stringify({ schema: 'promptboard.network-events', version: 1, first })];
+    for (let i = 0; i < PER; i++, seq++) lines.push(JSON.stringify({ seq, id: `evt_${seq.toString(16).padStart(20, '0')}`, at: 1_790_000_000_000 + seq, type: 'job.status', jobId: 'job_0123456789abcdef0123', status: 'running', message: 'x'.repeat(120) }));
+    await writeFile(join(dir, `${String(first).padStart(16, '0')}.jsonl`), `${lines.join('\n')}\n`);
+  }
+  const events = new NetworkEvents({ dataDir }), total = SEGMENTS * PER;
+  const parse = JSON.parse; let parses = 0, pages = 0, sent = 0, last = 0;
+  JSON.parse = function (...args) { parses++; return parse.apply(this, args); };
+  try { for (let more = true; more; pages++) { const page = await events.read({ after: last, limit: 200 }); sent += page.events.length; last = page.next; more = page.more; } }
+  finally { JSON.parse = parse; }
+  assert.equal(sent, total);
+  assert.ok(parses < 3 * total, `${parses} lines parsed for a replay of ${total} events in ${pages} pages`);
+  // The newest segment grows: the next read sees the new event. Reading backward twice answers the same pages in order.
+  assert.ok(await events.append({ type: 'job.status', jobId: 'job_0123456789abcdef0123', status: 'completed' }));
+  assert.deepEqual((await events.read({ after: total, limit: 10 })).events.map(event => event.seq), [total + 1]);
+  for (let i = 0; i < 2; i++) assert.deepEqual((await events.read({ limit: 3 })).events.map(event => event.seq), [total - 1, total, total + 1]);
+  assert.deepEqual((await events.read({ before: PER + 2, limit: 3 })).events.map(event => event.seq), [PER - 1, PER, PER + 1], 'across the segment boundary');
+  assert.deepEqual((await events.read({ after: total - 2, limit: 10 })).events.map(event => event.seq), [total - 1, total, total + 1], 'forward after backward reads');
+});
+
 test('P2-9: a machine client’s open stream ends at its expiry and delivers nothing after it', async t => {
   let skew = 0;
   const ctx = await fixture(t, { worker: fakeWorker({ mode: 'manual' }), machineOptions: { now: () => Date.now() + skew } });
