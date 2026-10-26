@@ -2849,7 +2849,8 @@ button.origin-context-badge { cursor: pointer; }
 .network-soon { margin-left: 6px; font: 600 9.5px var(--mono); letter-spacing: .6px; text-transform: uppercase; color: var(--subtle); }
 .network-sections a { align-items: center; text-decoration: none; }
 .network-sections a[aria-current="page"] { background: var(--surface); border-color: var(--line); color: var(--ink); }
-.network-status:empty { display: none; }
+/* The line is kept when empty, so a message never moves the toolbar or the canvas under the pointer. */
+.network-status { min-height: 1.55em; margin: 6px 0 10px; }
 .network-alert { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .network-alert .secondary-button, .network-form .inline-error .secondary-button { margin-left: auto; }
 .network-toolbar { display: grid; grid-template-columns: minmax(200px, 2fr) repeat(4, minmax(120px, 1fr)); gap: 10px; align-items: end; margin: 14px 0 16px; }

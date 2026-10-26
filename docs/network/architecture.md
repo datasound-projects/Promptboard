@@ -1025,6 +1025,13 @@ Refinements of the plan above made while building `public/network.js`; none chan
    `window.confirm` as Base does; "keep editing" brings the editor's address back. Closing the tab asks through
    `beforeunload`. A save over a newer draft (`REVISION_CONFLICT`) overwrites nothing and offers "Load the saved draft"
    (drops the edits) or "Save mine as a new network" (`<name> (my changes)`).
+8. **Phase-1 review (P1-4, P1-5, P1-9, P1-10).** A publish refused by a newer save, or refused with node `details`, closes
+   its dialog and shows the same alert and choices in the editor; Save and Publish stay disabled (with the reason) until
+   the owner picks one. A new node is placed where it keeps clear of every other node (centres at least 190 × 70 apart).
+   An expanded sub-network shows a one-line label inside its box, below the border where relations arrive, on its own
+   background; relations inside it are drawn above its nodes (`z-compound-depth: top`). The page's status line keeps its
+   height when empty, and Connect mode's instructions use it instead of a notice above the canvas, so no message moves the
+   canvas under the pointer.
 
 ## 13. Dependencies (checked 2026-10-26 with `npm view`; nothing installed)
 

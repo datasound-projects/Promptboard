@@ -423,7 +423,8 @@ window.PromptboardNetworkGraph = (() => {
       let at;
       if (cy) { const box = cy.extent(); at = { x: Math.round((box.x1 + box.x2) / 2), y: Math.round((box.y1 + box.y2) / 2) }; }
       else at = { x: 0, y: ed.nodes.length ? Math.max(...ed.nodes.map(node => node.position.y)) + 90 : 0 };
-      for (let tries = 0; tries < 200 && ed.nodes.some(node => Math.abs(node.position.x - at.x) < 120 && Math.abs(node.position.y - at.y) < 50); tries++) at = { x: at.x + 30, y: at.y + 60 };
+      // Free means no overlap with a gap: nodes are 168 × 46 (a sub-network 168 × 56), so centres 190 apart across or 70 down.
+      for (let tries = 0; tries < 200 && ed.nodes.some(node => Math.abs(node.position.x - at.x) < 190 && Math.abs(node.position.y - at.y) < 70); tries++) at = { x: at.x + 30, y: at.y + 60 };
       return at;
     }
     function addAgentNode(agent) {
@@ -522,11 +523,16 @@ window.PromptboardNetworkGraph = (() => {
       const next = (ed.draft.publishedVersions.at(-1)?.version || 0) + 1;
       ask(`Publish version ${next}?`, [note(`Version ${next} of “${ed.draft.name}” is saved exactly as the draft is${ed.dirty ? ' after your unsaved changes are saved' : ''}. A published version never changes and is never deleted; a sub-network or a later run pins its number, never the draft.`), note(INERT)], `Publish version ${next}`, async () => {
         if (ed.dirty && !(await save())) { host.closeDialog(); return; }
-        const data = await request(`/api/network/networks/${ed.id}/publish`, { method: 'POST', body: { expectedRevision: ed.draft.revision } });
+        let data;
+        try { data = await request(`/api/network/networks/${ed.id}/publish`, { method: 'POST', body: { expectedRevision: ed.draft.revision } }); } catch (failure) {
+          // A conflict, or a refusal that names nodes, belongs in the editor's alert with its choices; anything else stays here.
+          if (failure.code !== 'REVISION_CONFLICT' && !failure.details) throw failure;
+          host.closeDialog(); Object.assign(ed, { error: failure, problems: new Set(problemNodes(failure)) }); syncCanvas(); renderEditor(); return;
+        }
         applyDetail(data); host.closeDialog();
         say(`Published version ${data.published.version} of “${data.network.name}”. It never changes. Nothing started.`);
         syncCanvas(); renderEditor();
-      }, { extra: error => (error.code === 'REVISION_CONFLICT' ? [button('Close', host.closeDialog, 'secondary-button')] : []) });
+      });
     }
     function discardDialog() {
       ask('Discard unsaved changes?', [note(`The draft goes back to revision ${ed.draft.revision} as it is saved. This cannot be undone.`)], 'Discard changes', async () => {
@@ -605,7 +611,10 @@ window.PromptboardNetworkGraph = (() => {
         { selector: 'node', style: { shape: 'round-rectangle', width: 168, height: 46, 'background-color': surface, 'border-width': 1.5, 'border-color': line, label: 'data(label)', color: ink, 'font-size': 12,
           'font-family': css('--sans', 'sans-serif'), 'text-valign': 'center', 'text-halign': 'center', 'text-wrap': 'wrap', 'text-max-width': 156, 'min-zoomed-font-size': 7 } },
         { selector: 'node[type = "subnetwork"]', style: { height: 56, 'border-width': 4, 'border-style': 'double', 'background-color': raised } },
-        { selector: 'node.expanded', style: { 'text-valign': 'top', 'text-margin-y': -6, padding: 22, 'background-opacity': 0.4, 'border-style': 'dashed', 'border-width': 2 } },
+        // An expanded sub-network's one-line label sits inside its box, below the border where relations arrive, on its
+        // own background; relations inside it are drawn above its nodes, so a short one still shows its name.
+        { selector: 'node.expanded', style: { 'text-valign': 'top', 'text-margin-y': 24, padding: 32, 'background-opacity': 0.4, 'border-style': 'dashed', 'border-width': 2,
+          'text-wrap': 'ellipsis', 'text-max-width': 320, 'text-background-color': raised, 'text-background-opacity': 1, 'text-background-padding': 3, 'text-background-shape': 'roundrectangle' } },
         { selector: 'node.inner', style: { 'border-style': 'dotted', 'background-color': raised } },
         { selector: 'node.disabled', style: { 'border-style': 'dashed', opacity: 0.62 } },
         { selector: 'node.stale, node.missing, node.unavailable', style: { 'border-color': warn, 'border-width': 3 } },
@@ -619,7 +628,7 @@ window.PromptboardNetworkGraph = (() => {
         { selector: 'edge[relation = "delegate"]', style: { 'line-color': colors.delegate, 'target-arrow-color': colors.delegate, 'target-arrow-shape': 'triangle-tee' } },
         { selector: 'edge[relation = "share_result"]', style: { 'line-color': colors.share_result, 'target-arrow-color': colors.share_result, 'target-arrow-shape': 'circle' } },
         { selector: 'edge:selected', style: { width: 3.5, 'overlay-opacity': 0 } },
-        { selector: 'edge.inner', style: { width: 1.2, opacity: 0.7 } },
+        { selector: 'edge.inner', style: { width: 1.2, opacity: 0.85, 'z-compound-depth': 'top' } },
         { selector: '.faded', style: { opacity: 0.16 } },
         { selector: 'edge.hidden-relation', style: { display: 'none' } },
       ];
@@ -627,7 +636,7 @@ window.PromptboardNetworkGraph = (() => {
     function labelOf(node, cyId, refs = ed.refs) {
       if (node.type === 'agent') { const state = stateOf(node, refs); return `${clip(nodeName(node, refs), 40)}${state !== 'ok' ? `\n${STATE_NAMES[state]}` : ''}`; }
       const ref = refs.networks[node.networkId] || {};
-      return `${ed.expanded.has(cyId) ? '▾' : '▸'} ${clip(nodeName(node, refs), 36)}\nversion ${node.version}${ref.pinned ? ` · ${plural(ref.pinned.nodes, 'node')}` : ''}`;
+      return `${ed.expanded.has(cyId) ? '▾' : '▸'} ${clip(nodeName(node, refs), 36)}${ed.expanded.has(cyId) ? ' · ' : '\n'}version ${node.version}${ref.pinned ? ` · ${plural(ref.pinned.nodes, 'node')}` : ''}`;
     }
     function classesOf(node) {
       return [stateOf(node) !== 'ok' ? stateOf(node) : '', ed.expanded.has(node.id) ? 'expanded' : '', ed.problems.has(node.id) ? 'problem' : '', ed.q && !matches(node) ? 'faded' : '', ed.connect?.from === node.id ? 'source' : ''].filter(Boolean).join(' ');
@@ -694,18 +703,19 @@ window.PromptboardNetworkGraph = (() => {
     function onTap(id) {
       if (!ed.connect) { selectItem(id); return; }
       if (!byId(id)) { say(ed.edges.some(edge => edge.id === id) ? 'Choose a node, not a relation.' : 'Relations join nodes of this network itself. Open a sub-network to change its own relations.'); return; }
-      if (!ed.connect.from) { ed.connect.from = id; ed.notice = `Connecting from “${nodeName(byId(id))}”: now choose the node it relates to. Escape stops.`; syncCanvas(); renderNotice(); return; }
-      if (addRelation(ed.connect.from, id, ed.connect.relation)) stopConnect();
+      if (!ed.connect.from) { ed.connect.from = id; say(`Connecting from “${nodeName(byId(id))}”: now choose the node it relates to. Escape stops.`); syncCanvas(); return; }
+      if (addRelation(ed.connect.from, id, ed.connect.relation)) stopConnect(''); // addRelation said what was added.
     }
     function toggleConnect() {
       if (!ed || ed.readOnly) return;
       if (ed.connect) { stopConnect(); return; }
       const from = byId(ed.selected) ? ed.selected : null;
       ed.connect = { relation: gRelation.value, from };
-      ed.notice = from ? `Connecting from “${nodeName(byId(from))}” (${RELATION_NAMES[ed.connect.relation]}): choose the node it relates to. Escape stops.` : `Connect (${RELATION_NAMES[ed.connect.relation]}): choose the node it starts from, then the node it relates to. Escape stops.`;
+      // On the status line, which keeps its place: a notice above the canvas would move it just before the taps.
+      say(from ? `Connecting from “${nodeName(byId(from))}” (${RELATION_NAMES[ed.connect.relation]}): choose the node it relates to. Escape stops.` : `Connect (${RELATION_NAMES[ed.connect.relation]}): choose the node it starts from, then the node it relates to. Escape stops.`);
       syncCanvas(); renderEditor(); canvas.focus();
     }
-    function stopConnect() { if (!ed?.connect) return; ed.connect = null; ed.notice = ''; syncCanvas(); renderEditor(); }
+    function stopConnect(message = 'Stopped connecting.') { if (!ed?.connect) return; ed.connect = null; if (message) say(message); syncCanvas(); renderEditor(); }
     canvas.addEventListener('keydown', event => {
       if (!ed || ed.loading) return;
       const step = event.shiftKey ? 5 * NUDGE : NUDGE, move = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[event.key], node = byId(ed.selected);
@@ -805,8 +815,10 @@ window.PromptboardNetworkGraph = (() => {
       gEditDraft.hidden = !ed.readOnly || !ready; gLibrary.hidden = !ready;
       if (!ready || ed.readOnly) return;
       const next = (draft.publishedVersions.at(-1)?.version || 0) + 1;
-      gSave.disabled = !ed.dirty || ed.saving; gSave.title = ed.dirty ? '' : 'No unsaved changes'; gSave.textContent = ed.saving ? 'Saving…' : 'Save draft';
-      gPublish.textContent = ed.dirty ? `Save and publish version ${next}` : `Publish version ${next}`; gPublish.disabled = ed.saving;
+      // After a revision conflict both would only conflict again: the alert's choices come first.
+      const conflict = ed.error?.code === 'REVISION_CONFLICT' ? 'This draft was saved elsewhere: load the saved draft, or save yours as a new network, first.' : '';
+      gSave.disabled = !ed.dirty || ed.saving || Boolean(conflict); gSave.title = conflict || (ed.dirty ? '' : 'No unsaved changes'); gSave.textContent = ed.saving ? 'Saving…' : 'Save draft';
+      gPublish.textContent = ed.dirty ? `Save and publish version ${next}` : `Publish version ${next}`; gPublish.disabled = ed.saving || Boolean(conflict); gPublish.title = conflict;
       gUndo.disabled = !ed.undo.length; gUndo.title = ed.undo.length ? '' : 'Nothing to undo';
       gDiscard.disabled = !ed.dirty; gDiscard.title = ed.dirty ? '' : 'No unsaved changes';
     }
@@ -818,11 +830,12 @@ window.PromptboardNetworkGraph = (() => {
       if (failure.code === 'REVISION_CONFLICT') {
         const theirs = button('Load the saved draft', () => void reloadTheirs(), 'secondary-button network-reload'); theirs.id = 'network-graph-reload';
         const mine = button('Save mine as a new network', () => void saveAsNew(), 'secondary-button'); mine.id = 'network-graph-save-new';
-        gAlert.append(note('Someone saved this draft elsewhere after you opened it. Nothing was overwritten: load the saved draft (your changes are dropped), or keep your changes as a new network.'), theirs, mine);
+        gAlert.append(note(ed.dirty ? 'Someone saved this draft elsewhere after you opened it. Nothing was overwritten: load the saved draft (your changes are dropped), or keep your changes as a new network.'
+          : 'Someone saved this draft elsewhere after you opened it, so nothing was published. Load the saved draft to see it, or keep what you see here as a new network.'), theirs, mine);
         return;
       }
       for (const id of ed.problems) { const node = byId(id); if (!node) continue; const remove = button(`Remove “${nodeName(node)}”`, () => removeNode(id), 'secondary-button'); remove.dataset.removeNode = id; gAlert.append(remove); }
-      gAlert.append(note('The draft was not saved; your changes are kept.'));
+      gAlert.append(note(ed.dirty ? 'The draft was not saved; your changes are kept.' : 'Nothing was published.'));
     }
     function renderNotice() {
       if (!ed) return;

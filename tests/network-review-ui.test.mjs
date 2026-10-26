@@ -1,6 +1,6 @@
 // Phase-1 review fixes in the Graph and Library pages (public/network-graph.js inside network.js and app.js), in jsdom
-// against the real server: a refused save or publish marks the node that leads to an unreadable version (P1-6). Nothing
-// here starts a job, a run or a model call.
+// against the real server: a refused save or publish marks the node that leads to an unreadable version (P1-6); a publish
+// refused by a newer save offers the conflict choices (P1-5). Nothing here starts a job, a run or a model call.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -50,4 +50,41 @@ test('P1-6: a save that adds a pin leading to an unreadable version names and ma
   assert.deepEqual([problems(ctx), removeButtons(ctx)], [['B'], ['Remove “B”']]);
   $('#network-graph-alert [data-remove-node]').click();
   await until(() => !nodeRows(ctx).length && $('#network-graph-alert').hidden, 'removed');
+});
+
+async function call(ctx, path, method = 'GET', body) {
+  const response = await fetch(`${ctx.app.url}${path}`, { method, headers: { 'X-STE-Token': ctx.win.__pbTest.token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  return response.json();
+}
+const dialogOpen = ctx => Boolean(ctx.$('#network-dialog')?.open);
+async function publish(ctx) {
+  ctx.$('#network-graph-publish').click(); await until(() => ctx.$('#network-confirm'), 'publish dialog');
+  ctx.$('#network-confirm').click();
+}
+
+test('P1-5: a publish refused by a newer save closes the dialog and offers loading the saved draft or keeping this as a new network; Publish waits until then', async t => {
+  const ctx = await setup(t, { hash: '#/' }); const { $ } = ctx;
+  const solo = (await call(ctx, '/api/network/networks', 'POST', { name: 'Solo' })).network;
+  ctx.win.location.hash = `#/network/graph/${solo.id}`; await editorReady(ctx, 'Solo');
+  await call(ctx, `/api/network/networks/${solo.id}`, 'PATCH', { expectedRevision: 1, description: 'Saved in another tab' });
+  await publish(ctx);
+  await until(() => !dialogOpen(ctx) && $('#network-graph-reload') && $('#network-graph-save-new'), 'the conflict choices in the editor');
+  assert.match($('#network-graph-alert').textContent, /changed since you loaded it.*so nothing was published\./);
+  assert.deepEqual([$('#network-graph-publish').disabled, $('#network-graph-save').disabled], [true, true], 'Publish and Save wait for a choice');
+  assert.match($('#network-graph-publish').title, /saved elsewhere: load the saved draft, or save yours as a new network, first/);
+  assert.equal((await call(ctx, `/api/network/networks/${solo.id}`)).network.publishedVersions.length, 0);
+  $('#network-graph-reload').click();
+  await until(() => $('#network-graph-alert').hidden && !$('#network-graph-publish').disabled && $('#network-graph-meta').textContent.includes('revision 2'), 'the saved draft loaded');
+  await publish(ctx);
+  await until(() => $('#network-graph-versions [data-version="1"]')?.textContent === 'v1 · latest', 'published v1');
+});
+
+test('P1-6: a publish refused because a pinned version deep inside cannot be read marks the node that leads to it', async t => {
+  const { dataDir, a } = await damagedChain();
+  const ctx = await appOn(t, dataDir, `#/network/graph/${a.id}`); const { $ } = ctx;
+  await editorReady(ctx, 'A');
+  await publish(ctx);
+  await until(() => !dialogOpen(ctx) && !$('#network-graph-alert').hidden, 'refused in the editor');
+  assert.match($('#network-graph-alert').textContent, /It is reached through the sub-network “B”.*Nothing was published\./);
+  assert.deepEqual([problems(ctx), removeButtons(ctx)], [['B'], ['Remove “B”']]);
 });
