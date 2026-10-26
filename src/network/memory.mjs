@@ -11,6 +11,7 @@
  * lessonsPrompt (read-only), only for a project on the registration's list and only with an explicit permission. Nothing
  * here writes lessons/ or Base.
  */
+import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { serial } from '../durable.mjs';
 import { lessonsPrompt } from '../lessons.mjs';
@@ -122,6 +123,12 @@ export class NetworkMemory {
   #docs = new Map(); // scope key → its document after the first good read; memory always equals disk.
 
   #path(scope) { return join(this.dir, `${escapeId(scopeKey(scope))}.json`); }
+  /** Whether a scope's memory file (or its backup) exists, also when its network was deleted: an import never reuses that ID. */
+  async exists(kind, id) {
+    const path = this.#path(kind === 'agent' ? { kind, agentId: id } : { kind, networkId: id });
+    for (const file of [path, `${path}.bak`]) if (await access(file).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; })) return true;
+    return false;
+  }
   /** The scope, once its agent or network exists (NOT_FOUND otherwise): IDs reach a file name only after that. */
   async #scope(kind, id) {
     if (kind === 'agent') { await this.registry.agent(id); return { kind, agentId: id }; }

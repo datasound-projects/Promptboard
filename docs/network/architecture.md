@@ -257,7 +257,9 @@ above; the others fill in what it left open.
    disabled registrations or unreferenced version files, never a run. A version whose network and references keep
    their IDs keeps its bytes and hash; a remapped one is re-hashed. Project IDs that are not on this board are dropped
    from `projectAllowlist` with a warning. A network name already in use gets ` (2)`, ` (3)`…. Importing the same file
-   twice adds copies.
+   twice adds copies. *(Phase-1 review)* An ID also counts as taken while a set-aside draft (a deleted network) or a
+   memory file still names it, so an old export never brings back a deleted network's notes under its ID; `exportedAt`
+   must be a string of at most 64 characters (it used to accept any JSON value).
 
 ### 4.7 Memory and posts settled in Task 04
 
@@ -1031,7 +1033,9 @@ Refinements of the plan above made while building `public/network.js`; none chan
    An expanded sub-network shows a one-line label inside its box, below the border where relations arrive, on its own
    background; relations inside it are drawn above its nodes (`z-compound-depth: top`). The page's status line keeps its
    height when empty, and Connect mode's instructions use it instead of a notice above the canvas, so no message moves the
-   canvas under the pointer.
+   canvas under the pointer. Also from the review: Add sub-network searches on the server past the first 200 networks;
+   a read-only version's heading shows the name it was published with; declining the unsaved-changes question restores
+   the editor's address with `history.replaceState`, so Back never leads to the declined page.
 
 ## 13. Dependencies (checked 2026-10-26 with `npm view`; nothing installed)
 

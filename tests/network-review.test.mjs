@@ -248,3 +248,32 @@ test('P1-6: a damaged version deep inside a pinned sub-network blocks neither re
   const f = (await fresh.createNetwork({ name: 'F', nodes: [sub(1, e.id)] })).network; await fresh.publishNetwork(f.id, { expectedRevision: 1 });
   await assert.rejects(fresh.updateNetwork(e.id, { expectedRevision: 2, nodes: [sub(1, f.id)] }), { code: 'NETWORK_CYCLE' });
 });
+
+test('Unconfirmed: exportedAt is a short time text or absent; an import never reuses the ID of a network deleted here, so its memory stays out', async t => {
+  const { registry, lead, file } = await fixture(t);
+  const kept = (await registry.createNetwork({ name: 'Kept', nodes: [agentNode(1, lead.id)] })).network;
+  const gone = (await registry.createNetwork({ name: 'Gone', nodes: [agentNode(1, lead.id)] })).network;
+  const bare = (await registry.createNetwork({ name: 'Bare' })).network; // Deleted too, never had memory.
+  const { record } = await registry.memory.propose('network', gone.id, { expectedRevision: 0, kind: 'fact', text: 'Private to the deleted network.' });
+  await registry.memory.decide('network', gone.id, record.id, { expectedRevision: 1, decision: 'approve' });
+  const exported = await registry.export();
+  // Anything but a short text in exportedAt is refused (it used to carry any JSON, any depth, up to the body limit).
+  for (const exportedAt of [JSON.parse(`${'['.repeat(10_000)}${']'.repeat(10_000)}`), 'x'.repeat(65), 1, null, { at: 1 }]) {
+    await assert.rejects(registry.import({ data: { ...structuredClone(exported), exportedAt }, expectedRevision: 1 }), { code: 'NETWORK_IMPORT_INVALID' });
+  }
+  const { exportedAt, ...without } = structuredClone(exported);
+  assert.equal(typeof exportedAt, 'string');
+  // Delete "Gone" and "Bare" (never published, unused): their drafts are set aside, Gone's memory file stays. The owner
+  // then clears Gone's set-aside copies by hand. Importing the old export brings both back under new IDs.
+  await registry.deleteNetwork(gone.id, { expectedRevision: 1 }); await registry.deleteNetwork(bare.id, { expectedRevision: 1 });
+  for (const name of await readdir(file('networks'))) if (name.startsWith(gone.id.replace('_', '__'))) await rm(file('networks', name));
+  const memoryFile = file('memory', `network-${gone.id.replace('_', '__')}.json`), before = await readFile(memoryFile);
+  const result = await registry.import({ data: without, expectedRevision: 1 });
+  assert.ok(result.remapped.networks[gone.id] && result.remapped.networks[gone.id] !== gone.id, 'a new ID');
+  assert.ok(result.remapped.networks[kept.id], 'an ID in use is remapped as before');
+  assert.ok(result.remapped.networks[bare.id], 'the ID of a deleted network without memory is not reused either');
+  const back = result.remapped.networks[gone.id];
+  assert.deepEqual([(await registry.memory.list('network', back)).total, (await registry.network(back)).network.name], [0, 'Gone']);
+  assert.deepEqual(await readFile(memoryFile), before, 'the deleted network’s memory file is untouched');
+  await assert.rejects(registry.memory.list('network', gone.id), { code: 'NOT_FOUND' });
+});

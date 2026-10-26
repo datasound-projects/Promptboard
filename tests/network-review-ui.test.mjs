@@ -88,3 +88,35 @@ test('P1-6: a publish refused because a pinned version deep inside cannot be rea
   assert.match($('#network-graph-alert').textContent, /It is reached through the sub-network “B”.*Nothing was published\./);
   assert.deepEqual([problems(ctx), removeButtons(ctx)], [['B'], ['Remove “B”']]);
 });
+
+test('Unconfirmed: Add sub-network searches past the first 200 networks; a version shows the name it was published with; declining the unsaved question adds no history entry', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-ui-review-'));
+  let clock = 1_800_000_000_000;
+  const registry = new NetworkRegistry({ dataDir, base: new Base({ store: new Store(dataDir) }), now: () => (clock += 1000) });
+  const host = (await registry.createNetwork({ name: 'Host' })).network;
+  for (let n = 0; n < 200; n++) await registry.createNetwork({ name: `Draft ${n}` });
+  const needle = (await registry.createNetwork({ name: 'Needle' })).network;
+  await registry.publishNetwork(needle.id, { expectedRevision: 1 });
+  await registry.updateNetwork(needle.id, { expectedRevision: 2, name: 'Needle renamed' });
+  const ctx = await appOn(t, dataDir, `#/network/graph/${host.id}`); const { $, win } = ctx;
+  await editorReady(ctx, 'Host');
+  // The first page (200 of 202) has no published network; the search finds the 202nd.
+  $('#network-graph-add-subnetwork').click(); await until(() => $('#network-pick-network-search'), 'the dialog with a search');
+  assert.equal($('#network-pick-network-status').textContent, 'The first 200 of 202 networks. Search to find the others.');
+  assert.equal($('#network-pick-add').disabled, true, 'nothing on the first page can be added');
+  const search = $('#network-pick-network-search'); search.value = 'needle'; search.dispatchEvent(new win.Event('input', { bubbles: true }));
+  await until(() => $('#network-pick-network').value === needle.id, 'found by the server search');
+  assert.deepEqual([$('#network-pick-version').value, $('#network-pick-add').disabled, $('#network-pick-network-status').textContent], ['1', false, '']);
+  $('#network-pick-add').click(); await until(() => nodeRows(ctx).includes('Needle renamed'), 'added');
+  // Declining the question: the editor's address comes back in place, so Back never leads to the declined page.
+  const asked = []; win.confirm = text => { asked.push(text); return false; };
+  const length = win.history.length;
+  win.location.hash = '#/network/library';
+  await until(() => win.location.hash === `#/network/graph/${host.id}` && !$('#network-panel-graph').hidden, 'kept editing');
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.deepEqual([asked.length, win.history.length, nodeRows(ctx)], [1, length + 1, ['Needle renamed']], 'only the navigation itself is in the history');
+  win.confirm = () => true;
+  // A published version keeps its own name, whatever the draft is called now.
+  win.location.hash = `#/network/graph/${needle.id}/v1`;
+  await until(() => $('#network-graph-heading')?.textContent === 'Needle · version 1', 'the version under its published name');
+});

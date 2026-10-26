@@ -244,6 +244,7 @@ async function parseBundle(data) {
   if (Number.isSafeInteger(data.version) && data.version > 1) fail('This Network export was made by a newer Promptboard version. Update the app; nothing was imported.', 'NETWORK_VERSION_UNSUPPORTED', 409);
   if (data.version !== 1 || !['agents', 'networks', 'versions'].every(key => Array.isArray(data[key]))) invalidFile();
   only(data, ['application', 'kind', 'version', 'exportedAt', 'agents', 'networks', 'versions'], 'a Network export');
+  if (data.exportedAt !== undefined && (typeof data.exportedAt !== 'string' || data.exportedAt.length > 64)) invalidFile(); // An ISO time, nothing else rides along.
   const unique = (ids, pattern) => { if (ids.some(id => typeof id !== 'string' || !pattern.test(id)) || new Set(ids).size !== ids.length) invalidFile(); };
   const agents = data.agents.map(row => {
     only(row, ['id', 'baseResourceId', ...REGISTRATION_FIELDS, 'createdAt', 'updatedAt', 'revision'], 'an agent registration');
@@ -631,7 +632,12 @@ export class NetworkRegistry {
       if (unresolved.length) fail('Some agents in this file are not Base agents here. Restore the board backup that carries them first, then import again. Nothing was imported.', 'NETWORK_IMPORT_UNRESOLVED', 409, { baseResourceIds: unresolved });
       if (agents.rows.length + bundle.agents.length > LIMITS.agents) fail(`Network holds at most ${LIMITS.agents} agent registrations. Nothing was imported.`, 'NETWORK_LIMIT', 409);
       const taken = new Set(agents.rows.map(row => row.id)), agentIds = new Map(bundle.agents.map(row => [row.id, taken.has(row.id) ? newId('agt') : row.id]));
-      const networkIds = new Map(bundle.networks.map(draft => [draft.id, drafts.has(draft.id) ? newId('net') : draft.id]));
+      // An ID stays taken while anything still names it: a draft, its backup or a set-aside copy (a deleted network), or
+      // its memory file, so an imported network never takes over the notes of a network that was deleted here.
+      let files = [];
+      try { files = await readdir(join(this.dir, 'networks')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const named = new Set(files.map(name => /^net__([0-9a-f]{20})\.json/.exec(name)?.[1]).filter(Boolean).map(hex => `net_${hex}`)), networkIds = new Map();
+      for (const draft of bundle.networks) networkIds.set(draft.id, drafts.has(draft.id) || named.has(draft.id) || await this.memory.exists('network', draft.id) ? newId('net') : draft.id);
       const remap = nodes => nodes.map(node => node.type === 'agent' ? { ...node, agentId: agentIds.get(node.agentId) } : { ...node, networkId: networkIds.get(node.networkId) });
       const projects = new Set(await this.projects()), warnings = [], at = this.now();
       const rows = bundle.agents.map(row => {

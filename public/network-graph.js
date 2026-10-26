@@ -582,22 +582,41 @@ window.PromptboardNetworkGraph = (() => {
     }
     async function addSubnetworkDialog() {
       host.openDialog('Add sub-network', [note('Loading networks…')]);
+      // One read holds the first 200 networks; the search asks the server for the others.
+      const find = async q => { const params = new URLSearchParams({ limit: '200' }); if (q) params.set('q', q); return request(`/api/network/networks?${params}`); };
       let data;
-      try { data = await request('/api/network/networks?limit=200'); } catch (failure) { host.openDialog('Add sub-network', [el('p', 'inline-error', failure.message), closeActions()]); return; }
+      try { data = await find(''); } catch (failure) { host.openDialog('Add sub-network', [el('p', 'inline-error', failure.message), closeActions()]); return; }
       if (!ed) return;
-      const present = new Set(ed.nodes.map(node => node.networkId).filter(Boolean)), others = data.networks.filter(item => item.id !== ed.id);
+      const present = new Set(ed.nodes.map(node => node.networkId).filter(Boolean)), mine = ed.id;
       const usable = item => !present.has(item.id) && item.publishedVersions.length > 0;
-      if (!others.some(usable)) { host.openDialog('Add sub-network', [note('No other network has a published version to add. Publish one first: a sub-network always pins a published version, never a draft.'), closeActions()]); return; }
-      const pick = select(others.map(item => [item.id, `${item.name}${present.has(item.id) ? ' — already here' : !item.publishedVersions.length ? ' — not published yet' : ''}`, !usable(item)])); pick.id = 'network-pick-network';
-      pick.value = others.find(usable).id;
+      if (!data.networks.some(item => item.id !== mine && usable(item)) && data.next === null) { host.openDialog('Add sub-network', [note('No other network has a published version to add. Publish one first: a sub-network always pins a published version, never a draft.'), closeActions()]); return; }
+      const search = Object.assign(el('input'), { type: 'search', placeholder: 'Find a network…', autocomplete: 'off', maxLength: 200 }); search.id = 'network-pick-network-search';
+      const status = note(''); status.id = 'network-pick-network-status'; status.setAttribute('aria-live', 'polite');
+      const pick = el('select'); pick.id = 'network-pick-network';
       const version = el('select'); version.id = 'network-pick-version';
-      const fill = () => { const item = others.find(entry => entry.id === pick.value), last = item.publishedVersions.at(-1); version.replaceChildren(...select([...item.publishedVersions].reverse().map(entry => [String(entry.version), `Version ${entry.version}${entry === last ? ' (latest)' : ''} · published ${ago(entry.publishedAt)}`])).children); };
-      pick.addEventListener('change', fill); fill();
       const add = el('button', 'dialog-done', 'Add sub-network'); add.type = 'button'; add.id = 'network-pick-add';
-      add.addEventListener('click', () => { const item = others.find(entry => entry.id === pick.value); host.closeDialog(); addSubnetworkNode(item, Number(version.value)); });
+      let others = [], loads = 0;
+      const fill = () => {
+        const item = others.find(entry => entry.id === pick.value), last = item?.publishedVersions.at(-1);
+        version.replaceChildren(...(item ? select([...item.publishedVersions].reverse().map(entry => [String(entry.version), `Version ${entry.version}${entry === last ? ' (latest)' : ''} · published ${ago(entry.publishedAt)}`])).children : []));
+        add.disabled = !item || !usable(item);
+      };
+      const show = result => {
+        others = result.networks.filter(item => item.id !== mine);
+        pick.replaceChildren(...select(others.map(item => [item.id, `${item.name}${present.has(item.id) ? ' — already here' : !item.publishedVersions.length ? ' — not published yet' : ''}`, !usable(item)])).children);
+        pick.value = others.find(usable)?.id ?? '';
+        fill();
+        status.textContent = !others.length ? 'No other network matches.' : result.next !== null ? `The first ${result.networks.length} of ${plural(result.total, 'network')}. Search to find the others.` : '';
+      };
+      search.addEventListener('input', debounce(async () => {
+        const turn = ++loads;
+        try { const result = await find(search.value.trim()); if (turn === loads && ed) show(result); } catch (failure) { if (turn === loads) status.textContent = `Could not load networks. ${failure.message}`; }
+      }, 200));
+      pick.addEventListener('change', fill); show(data);
+      add.addEventListener('click', () => { const item = others.find(entry => entry.id === pick.value); if (!item || !usable(item)) return; host.closeDialog(); addSubnetworkNode(item, Number(version.value)); });
       const footer = el('div', 'kanban-dialog-actions'); footer.append(button('Cancel', host.closeDialog, 'secondary-button'), add);
       const form = el('div', 'network-form');
-      form.append(labelled('Network', pick), labelled('Pinned version', version), note('The sub-network is a reference to that version: its agents and relations are not copied, and publishing it again never changes this pin.'), footer);
+      form.append(labelled('Search networks', search), status, labelled('Network', pick), labelled('Pinned version', version), note('The sub-network is a reference to that version: its agents and relations are not copied, and publishing it again never changes this pin.'), footer);
       host.openDialog('Add sub-network', [form]); pick.focus();
     }
 
@@ -795,7 +814,8 @@ window.PromptboardNetworkGraph = (() => {
     function renderHead() {
       if (!ed) return;
       const draft = ed.draft;
-      gHeading.textContent = ed.loadError ? 'Network not available' : !draft ? 'Loading…' : ed.readOnly ? `${draft.name} · version ${ed.versionNumber}` : draft.name;
+      // A version keeps the name it was published with; the draft may have been renamed since.
+      gHeading.textContent = ed.loadError ? 'Network not available' : !draft ? 'Loading…' : ed.readOnly ? `${ed.published.name} · version ${ed.versionNumber}` : draft.name;
       gMeta.replaceChildren();
       if (draft && !ed.loadError) {
         if (ed.readOnly) gMeta.append(chip(`Published ${ago(ed.published.publishedAt)} · read only`, 'off'));
@@ -992,7 +1012,10 @@ window.PromptboardNetworkGraph = (() => {
     function guard(next) {
       if (!ed?.dirty || (next?.section === 'graph' && next.networkId === ed.id && !next.version && !ed.readOnly)) return true;
       if (window.confirm(`Discard your unsaved changes to “${ed.draft.name}”?`)) { ed.dirty = false; return true; }
-      location.hash = editorHash();
+      // Back to the editor's address without a new history entry (Back must not lead to the place just declined); the
+      // app then shows it again as after a hash change, once the navigation being refused has finished.
+      history.replaceState(history.state, '', editorHash());
+      queueMicrotask(() => window.dispatchEvent(new Event('hashchange')));
       return false;
     }
     function show(next) {
