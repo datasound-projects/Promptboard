@@ -50,6 +50,8 @@ import { Sandbox, sandboxRoute } from './sandbox.mjs';
 import { NetworkRegistry } from './network/registry.mjs';
 import { NetworkJobs } from './network/jobs.mjs';
 import { networkRoute } from './network/http.mjs';
+import { NetworkPipelines } from './network/pipeline-model.mjs';
+import { PipelineRunner } from './network/pipeline-runner.mjs';
 import { NetworkError } from './network/storage.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
@@ -460,6 +462,9 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const network = new NetworkRegistry({ dataDir, base: board.base, projects: async () => (await board.state()).projects.map(project => project.id) });
   // Network jobs run only through an injected worker (none yet: they stay queued); their own pool, never the CLI slot above.
   const networkJobs = new NetworkJobs({ dataDir, registry: network, worker: networkWorker, authBusy: () => busy?.kind === 'auth' });
+  // Pipelines (drafts, versions) and their runs; a run's steps are jobs of the engine above, never started by a save.
+  const pipelines = new NetworkPipelines({ dataDir, registry: network });
+  const pipelineRuns = new PipelineRunner({ dataDir, pipelines, jobs: networkJobs, events: networkJobs.events ?? null });
   // Project memory: a merged card queues one lessons job (Board.completeTask); the worker starts once the app listens.
   const lessons = new Lessons({ dataDir, board, claim, runner: call => track(runner(call)) });
   board.lessons = lessons;
@@ -533,7 +538,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       catch (error) { return sendFailure(res, error, 'The Coordinator request failed. Project data is unchanged.', { status: 500, code: 'COORDINATOR_FAILED' }); }
     }
     if (/^\/api\/network(?:\/|$)/.test(pathname)) {
-      try { return await networkRoute({ network, jobs: networkJobs, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
+      try { return await networkRoute({ network, jobs: networkJobs, pipelines, runs: pipelineRuns, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The Network request failed. Nothing was changed.', { status: 500, code: 'NETWORK_FAILED' }); }
     }
     if (/^\/api\/sandbox(?:\/|$)/.test(pathname)) {
@@ -798,6 +803,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   remoteAccess = await new RemoteAccess({ dataDir, localPort: server.address().port, handle: (req, res, who) => handle(req, res, who) }).load();
   lessons.start(); // Queued lessons jobs, also those a restart interrupted, run now (one at a time, through the job slot).
   void networkJobs.start().catch(() => {}); // Reconciles jobs a stop interrupted (never relaunched); queued ones start only with a worker.
+  void pipelineRuns.start().catch(() => {}); // Open runs go on from what was saved and proven; approvals stay pending.
   let closed;
   // Idempotent and bounded: stop accepting, cancel owned work, close sockets, then
   // SIGKILL any owned CLI process group that is still alive.
@@ -808,7 +814,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     notifications.close();
     const listening = new Promise(resolve => server.close(() => resolve()));
     busy?.controller.abort();
-    const batchesClosed = batches.close(), networkJobsClosed = networkJobs.close();
+    const batchesClosed = batches.close(), pipelineRunsClosed = pipelineRuns.close(), networkJobsClosed = networkJobs.close();
     baseRoutes.close();
     if (composeContext) (await composeContext).close();
     catalogAbort.abort();
@@ -822,7 +828,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     board.githubLogin.cancel('The app stopped.');
     board.delivery.stopAllTests();
     board.previews.stopAll();
-    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents, batchesClosed, networkJobsClosed, lessonsClosed].filter(Boolean));
+    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents, batchesClosed, pipelineRunsClosed, networkJobsClosed, lessonsClosed].filter(Boolean));
     // An accepted shutdown must keep Node alive even when a broken adapter has
     // no remaining handles. Observe cleanup or reach this bounded terminal state.
     let cleanupTimer;
