@@ -655,7 +655,7 @@ test('twenty jobs completed by the fake worker change no board file, card, run, 
   assert.deepEqual([await outside(), await board()], before, 'state.json and every file outside network/ are byte-identical; no card, run or session');
   assert.deepEqual(spawned, [], 'no process: no CLI, git branch, worktree, test or merge');
   assert.equal(worker.starts.length, 20, 'one start per job');
-  assert.deepEqual((await readdir(join(dataDir, 'network'))).sort(), ['agents.json', 'jobs']);
+  assert.deepEqual((await readdir(join(dataDir, 'network'))).sort(), ['agents.json', 'events', 'jobs'], 'and the activity journal (Task 08)');
 });
 
 test('sign-in waits for Network jobs: a job queued during a sign-in change starts right after it; sign-in is refused while one runs', async t => {

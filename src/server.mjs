@@ -49,6 +49,7 @@ import { Lessons, LessonsError, lessonsRoute } from './lessons.mjs';
 import { Sandbox, sandboxRoute } from './sandbox.mjs';
 import { NetworkRegistry } from './network/registry.mjs';
 import { NetworkJobs } from './network/jobs.mjs';
+import { NetworkEvents } from './network/events.mjs';
 import { networkRoute } from './network/http.mjs';
 import { NetworkError } from './network/storage.mjs';
 
@@ -82,6 +83,7 @@ const assets = new Map([
   ['/sandbox.js', ['sandbox.js', 'text/javascript; charset=utf-8']],
   ['/network.js', ['network.js', 'text/javascript; charset=utf-8']],
   ['/network-graph.js', ['network-graph.js', 'text/javascript; charset=utf-8']],
+  ['/network-activity.js', ['network-activity.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal and graph assets, served from the installed packages by exact path only (no CDN,
 // no directory browsing). Missing files (no npm install) return 404: the dock and the Network graph fall back.
@@ -363,7 +365,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker = null } = {}) {
+export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker = null, networkEventOptions = {} } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   // One app per data folder; the board itself loads lazily, so starting never reads or writes board files.
   const lock = await lockDataDir(dataDir);
@@ -458,8 +460,11 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const coordinator = new Coordinator({ dataDir, board, origin });
   // Network registrations and networks live in <dataDir>/network/ (created on the first save); Base is only read.
   const network = new NetworkRegistry({ dataDir, base: board.base, projects: async () => (await board.state()).projects.map(project => project.id) });
+  // Network activity: an append-only event journal in <dataDir>/network/events/ (created on the first event); jobs report
+  // every saved status change to it. Observability only: nothing reads it to decide anything.
+  const networkEvents = new NetworkEvents({ dataDir, ...networkEventOptions });
   // Network jobs run only through an injected worker (none yet: they stay queued); their own pool, never the CLI slot above.
-  const networkJobs = new NetworkJobs({ dataDir, registry: network, worker: networkWorker, authBusy: () => busy?.kind === 'auth' });
+  const networkJobs = new NetworkJobs({ dataDir, registry: network, worker: networkWorker, authBusy: () => busy?.kind === 'auth', events: networkEvents });
   // Project memory: a merged card queues one lessons job (Board.completeTask); the worker starts once the app listens.
   const lessons = new Lessons({ dataDir, board, claim, runner: call => track(runner(call)) });
   board.lessons = lessons;
@@ -533,7 +538,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       catch (error) { return sendFailure(res, error, 'The Coordinator request failed. Project data is unchanged.', { status: 500, code: 'COORDINATOR_FAILED' }); }
     }
     if (/^\/api\/network(?:\/|$)/.test(pathname)) {
-      try { return await networkRoute({ network, jobs: networkJobs, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
+      try { return await networkRoute({ network, jobs: networkJobs, events: networkEvents, board: () => board.state(), req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The Network request failed. Nothing was changed.', { status: 500, code: 'NETWORK_FAILED' }); }
     }
     if (/^\/api\/sandbox(?:\/|$)/.test(pathname)) {
@@ -833,5 +838,5 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     await listening;
     await lock.release();
   })();
-  return { server, url: `http://127.0.0.1:${server.address().port}`, close, board };
+  return { server, url: `http://127.0.0.1:${server.address().port}`, close, board, networkEvents };
 }
