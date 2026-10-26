@@ -1120,3 +1120,32 @@ passports, self-writing skills, agent social feed, remote workers on other machi
    in the MVP; revisit in Task 14.
 5. Headless usage field names (R1) must be confirmed against real CLIs in the Task 07 opt-in smoke; until then usage is
    "not reported".
+
+## 17. Parallel wave contracts (binding for Tasks 07, 08 and 09)
+
+From Task 07 on, the owner asked for three agents at a time. Tasks 07, 08 and 09 are built at the same time on separate
+branches from the same base and merged in that order. These interfaces are fixed so the three meet without guessing:
+
+1. **Event sink (Task 08 owns).** `src/network/events.mjs` exports `NetworkEvents` with
+   `append(event) → Promise<{ seq, id }>`, never throwing on a full or damaged journal (it records the failure and
+   returns `null`). Event: `{ type, at?, agentId?, jobId?, attemptId?, pipelineRunId?, nodeId?, networkId?, projectId?,
+   status?, from?, by?, errorCode?, message?, coverage?, artifactRef? }`; the journal adds `seq`, `id` and `at`.
+   Types: `job.status`, `job.activity`, `job.result`, `pipeline.run`, `pipeline.node`, `kanban.run` (read-only, derived).
+   `message` ≤ 500 characters, one line, redacted with `redactLocal(noPaths())`; never prompts, tool inputs or results.
+2. **Job engine hook (Task 08 wires it).** `NetworkJobs` gets an optional constructor option `events` (stored as
+   `this.events`). Every saved status change appends one `job.status` event `{ jobId, attemptId, agentId, projectId,
+   networkId, status, from, by, errorCode, message }` after the save succeeds. Nothing else in the engine changes for
+   Task 08.
+3. **Worker activity (Task 07 owns).** `NetworkJobs.activity(own, item)` validates the ownership like `spawned`,
+   accepts `{ kind: 'turn'|'tool'|'web'|'mcp'|'text'|'status', label }` (label ≤ 160 characters, one line, redacted),
+   keeps only the latest item in memory for the job view (`lastActivity`), never writes `job.json` for it, and calls
+   `this.events?.append({ type: 'job.activity', … })` (a no-op until Task 08 is merged). The worker report gains
+   `usage` (`{ reported: boolean, inputTokens?, outputTokens?, cachedTokens?, costUsd? }`, only reported numbers) and
+   `nativeSessionId` (one line, ≤ 200 characters).
+4. **Pipeline link (Task 09 owns).** `jobs.submit` accepts an optional `pipeline: { runId, nodeId }` (validated IDs),
+   stored on the job and in `request.json`, filterable in `list({ pipelineRunId })`. The pipeline runner follows its
+   node jobs with `jobs.read()` on an injectable timer (no dependency on Task 08 internals) and reports its own
+   transitions through an injected `events` (same `append` contract, optional).
+5. **Shared files.** Each task adds its own rows to `NETWORK_ROUTES` and the paired-device table, its own section at the
+   end of this document and its own "Task NN" section at the end of the progress log; it does not edit the progress
+   status table (the coordinator does, when merging).

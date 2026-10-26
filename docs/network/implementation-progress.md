@@ -19,6 +19,15 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 7. Tests: `tests/network-*.test.mjs` (browser: `*-browser.test.mjs`), every behaviour with a failing-without test, cross-platform rules (path.join, CRLF, no fixed ports, no real CLIs/network/Docker, injectable clocks, no `main` assumption, no exact page width). Run `npm run check`, new tests twice, touched modules' tests, then the full `npm test` (log in `$TMPDIR/network-logs/task-NN-suite.log`).
 8. Update this file (row + "Task NN" section) and commit it with the task's last commit.
 
+## Parallel waves (owner request, 2026-10-26 ~10:50)
+
+The owner asked for three agents at a time. Remaining work runs in dependency-respecting waves, each agent on its own
+branch from the same verified base, merged by the coordinator in order, then integrated and fully tested:
+
+- **Wave A:** 07 (local worker runtime), 08 (events and Activity), 09 (pipeline compiler and runner). Contracts: architecture §17.
+- **Wave B:** 10 (pipeline designer), 11 (private REST and MCP), 12 (delegation, messages, schedules).
+- **Wave C:** 13 (A2A federation) with a review of 06–12; then 14 (final verification and release).
+
 ## Status
 
 | Task | File | Status | Commit |
@@ -38,7 +47,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 | 13 | 13-a2a-federation.md | pending | |
 | 14 | 14-verification-and-release.md | pending | |
 
-**Next task:** 07
+**Next:** Wave A — Tasks 07, 08 and 09 in parallel (see below).
 
 ## Live provider runs
 
