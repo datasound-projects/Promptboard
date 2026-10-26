@@ -45,6 +45,8 @@ function jobRow(job) {
   const attempt = job.attempts.find(item => item.id === job.currentAttemptId) || job.attempts.at(-1) || null;
   return { id: job.id, status: job.status, agentId: job.agentId, projectId: job.projectId, networkId: job.networkId, pipelineRunId: job.pipelineRunId ?? null, nodeId: job.nodeId ?? null,
     createdAt: job.createdAt, updatedAt: job.updatedAt, waiting: job.waiting, outcome: job.outcome, errorCode: job.errorCode, reason: job.reason,
+    // Task 12: where it came from (a schedule, a delegating job, a client) and what it waits for; never the question or the sub-tasks.
+    requester: job.requester, parentJobId: job.parentJobId ?? null, schedule: job.schedule ?? null, delegation: job.delegation ? { by: job.delegation.by, depth: job.delegation.depth } : null, awaiting: job.awaiting ? { kind: job.awaiting.kind } : null,
     attempt: attempt && { id: attempt.id, number: attempt.number, status: attempt.status, provider: attempt.provider, model: attempt.model, coverage: attempt.coverage,
       launchingAt: attempt.launchingAt, spawnedAt: attempt.spawnedAt, endedAt: attempt.endedAt, usage: reported(attempt.usage) }, live: job.live };
 }

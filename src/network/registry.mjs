@@ -244,7 +244,7 @@ async function parseBundle(data) {
   if (!object(data) || data.application !== 'Promptboard' || data.kind !== 'promptboard-network') fail('Choose a Promptboard Network export file. Nothing was imported.', 'NETWORK_IMPORT_INVALID');
   if (Number.isSafeInteger(data.version) && data.version > 1) fail('This Network export was made by a newer Promptboard version. Update the app; nothing was imported.', 'NETWORK_VERSION_UNSUPPORTED', 409);
   if (data.version !== 1 || !['agents', 'networks', 'versions'].every(key => Array.isArray(data[key]))) invalidFile();
-  only(data, ['application', 'kind', 'version', 'exportedAt', 'agents', 'networks', 'versions'], 'a Network export');
+  only(data, ['application', 'kind', 'version', 'exportedAt', 'agents', 'networks', 'versions', 'schedules'], 'a Network export'); // schedules: checked by schedules.mjs (Task 12).
   if (data.exportedAt !== undefined && (typeof data.exportedAt !== 'string' || data.exportedAt.length > 64)) invalidFile(); // An ISO time, nothing else rides along.
   const unique = (ids, pattern) => { if (ids.some(id => typeof id !== 'string' || !pattern.test(id)) || new Set(ids).size !== ids.length) invalidFile(); };
   const agents = data.agents.map(row => {

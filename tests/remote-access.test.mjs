@@ -256,7 +256,11 @@ test('every route from a paired phone: the local-only ones are refused, every ot
   const id = '00000000-0000-4000-8000-000000000000';
   const LOCAL_ONLY = ['GET /api/remote', 'GET /api/remote?refresh=1', 'POST /api/remote/settings', 'POST /api/remote/pairing', 'POST /api/remote/serve', 'DELETE /api/remote/sessions/all', `DELETE /api/remote/sessions/${id}`,
     'GET /api/editors', 'PUT /api/editors', 'POST /api/auth/login', 'POST /api/auth/cancel', 'POST /api/auth/logout', 'POST /api/github/login', 'POST /api/github/login/cancel', 'POST /api/folder/choose', 'POST /api/projects/p1/open', 'POST /api/tasks/t1/preview', 'DELETE /api/tasks/t1/preview',
-    'POST /api/base/mcp/import/preview', 'POST /api/base/mcp/import', 'POST /api/base/markdown/scan', 'POST /api/base/markdown/import', 'PUT /api/sandbox/claude-token', 'DELETE /api/sandbox/claude-token'];
+    'POST /api/base/mcp/import/preview', 'POST /api/base/mcp/import', 'POST /api/base/markdown/scan', 'POST /api/base/markdown/import', 'PUT /api/sandbox/claude-token', 'DELETE /api/sandbox/claude-token',
+    // Network external clients (Task 11): a new machine token is shown, or the machine listener opens.
+    'POST /api/network/clients', `POST /api/network/clients/cli_${'a'.repeat(20)}/rotate`, 'PATCH /api/network/listener',
+    // Task 12: switching handoffs on lets agents and clients ask for work; confirming a schedule switches standing automation on.
+    'PATCH /api/network/delegation', `POST /api/network/schedules/sch_${'a'.repeat(20)}/confirm`];
   const each = (prefix, rows) => rows.map(row => { const [method, action = ''] = row.split(' '); return `${method} ${prefix}${action ? `/${action}` : ''}`; });
   const ALLOWED = ['GET /', 'GET /app.js', 'GET /api/session', 'GET /api/providers', 'GET /api/status', 'GET /api/models', 'GET /api/usage', 'GET /api/auth', 'POST /api/notifications/connect', 'POST /api/notifications/ack',
     'POST /api/compose/cancel', 'GET /api/compose/batches', 'POST /api/compose/prepare', 'POST /api/compose/sources/document', 'DELETE /api/compose/sources/document/d1', 'POST /api/compose/mcp/test', 'POST /api/split', 'POST /api/generate',
@@ -277,6 +281,8 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     // change no trust (a paired device has the owner's control, so it may submit and cancel jobs).
     'GET /api/network/agents', 'POST /api/network/agents', 'GET /api/network/networks', 'POST /api/network/networks', 'GET /api/network/export', 'POST /api/network/import',
     'GET /api/network/settings', 'PATCH /api/network/settings', 'GET /api/network/jobs', 'POST /api/network/jobs',
+    // External clients (Task 11): listing them and the listener shows no secret; revoking only removes access.
+    'GET /api/network/clients', `DELETE /api/network/clients/cli_${'a'.repeat(20)}`, 'GET /api/network/listener',
     // Activity (Task 08) only reads: the journal, its stream (a revoked device's stream ends with its session) and the summary.
     'GET /api/network/events', 'GET /api/network/events/stream', 'GET /api/network/activity',
     ...each(`/api/network/jobs/job_${'a'.repeat(20)}`, ['GET', 'DELETE', 'POST cancel', 'POST approve', 'POST retry', 'POST close', 'GET result']),
@@ -286,7 +292,12 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     // Pipelines and runs (Task 09): starting, cancelling and approving are the owner's control, which a paired device has.
     'GET /api/network/pipelines', 'POST /api/network/pipelines', 'GET /api/network/pipeline-runs',
     ...each(`/api/network/pipelines/pip_${'a'.repeat(20)}`, ['GET', 'PATCH', 'DELETE', 'POST validate', 'POST publish', 'GET versions/1', 'POST runs']),
-    ...each(`/api/network/pipeline-runs/run_${'a'.repeat(20)}`, ['GET', 'POST cancel', `POST nodes/n_${'b'.repeat(12)}/n_${'c'.repeat(12)}/approve`])];
+    ...each(`/api/network/pipeline-runs/run_${'a'.repeat(20)}`, ['GET', 'POST cancel', `POST nodes/n_${'b'.repeat(12)}/n_${'c'.repeat(12)}/approve`]),
+    // Task 12: messages, answers and read receipts are the owner's control over their own jobs; a schedule can be made (switched
+    // off), edited (an edit of an enabled one switches it off), switched off, deleted or run once, never switched on, from a phone.
+    ...each(`/api/network/jobs/job_${'a'.repeat(20)}`, ['GET messages', 'POST messages', 'POST messages/read', 'POST answer']),
+    'GET /api/network/delegation', 'GET /api/network/schedules', 'POST /api/network/schedules',
+    ...each(`/api/network/schedules/sch_${'a'.repeat(20)}`, ['PATCH', 'DELETE', 'POST run'])];
   // The table covers every route the server and Base declare: a new route must be added here, local-only or not.
   const paths = [...LOCAL_ONLY, ...ALLOWED].map(row => row.split(' ')[1].split('?')[0]);
   for (const file of ['server.mjs', 'base-http.mjs', 'sandbox.mjs']) {

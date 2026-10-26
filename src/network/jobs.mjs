@@ -16,6 +16,11 @@
  * result text from a running attempt, saved to result.md before the status. An attempt that may have run and has no
  * trusted receipt ends `interrupted` or `unknown` and waits for the owner (retry with confirmation, or close): nothing is
  * replayed on its own, after a restart, or when job.json had to be read from its backup.
+ *
+ * Task 12 (architecture §23): a completed report whose json is a `promptboard` request is only a request. delegation.mjs
+ * checks it; refused, the job completes and the refusal is recorded; accepted, the job waits (`waiting_for_input`) for an
+ * answer or for sub-jobs created under keys of its own, then runs again as a new attempt that reads its messages
+ * (messages.mjs) as data. Cancelling a job cancels its open sub-jobs; a queued sub-job is checked again at its claim.
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { access, readdir, readFile, rename, rm } from 'node:fs/promises';
@@ -23,7 +28,9 @@ import { join } from 'node:path';
 import { primaryAgent, resolveBase } from '../base-resolver.mjs';
 import { serial } from '../durable.mjs';
 import { escapeId } from '../origin.mjs';
+import { delegationTask, HANDOFF_LIMITS, parseHandoff } from './delegation.mjs';
 import { MEMORY_MODES } from './memory.mjs';
+import { cut, JobMessages, POSTED_KINDS, threadText } from './messages.mjs';
 import { cleanText, conflict, fail, LINE_BREAK, newId, NetworkError, object, oneLine, only, page, readDocument, requireRevision, sha256, writeDocument, writeImmutable } from './storage.mjs';
 
 const SCHEMA = { job: 'promptboard.network-job', request: 'promptboard.network-job-request', settings: 'promptboard.network-settings' };
@@ -75,7 +82,10 @@ const storedAttempt = item => object(item) && ATTEMPT_ID.test(item.id) && Number
 const storedJob = job => JOB_ID.test(job.id) && Number.isSafeInteger(job.revision) && JOB_STATUSES.includes(job.status) && AGENT_ID.test(job.agentId) && SHA.test(job.requestSha256)
   && SHA.test(job.submissionSha256) && object(job.requester) && time(job.createdAt) && nullable(time)(job.queuedAt) && nullable(value => OUTCOMES.includes(value))(job.outcome)
   && Array.isArray(job.attempts) && job.attempts.every(storedAttempt) && (job.currentAttemptId === null || job.attempts.some(item => item.id === job.currentAttemptId))
-  && Array.isArray(job.history) && nullable(id => typeof id === 'string' && JOB_ID.test(id))(job.parentJobId) && nullable(key => typeof key === 'string' && KEY.test(key))(job.idempotencyKey);
+  && Array.isArray(job.history) && nullable(id => typeof id === 'string' && JOB_ID.test(id))(job.parentJobId) && nullable(key => typeof key === 'string' && KEY.test(key))(job.idempotencyKey)
+  // Task 12: what a waiting job waits for (absent on older jobs).
+  && (job.awaiting === undefined || job.awaiting === null || (object(job.awaiting) && ATTEMPT_ID.test(job.awaiting.attemptId) && (job.awaiting.kind === 'input' ? typeof job.awaiting.question === 'string'
+    : job.awaiting.kind === 'children' && Array.isArray(job.awaiting.tasks) && job.awaiting.tasks.every(task => object(task) && Number.isSafeInteger(task.index) && typeof task.key === 'string'))));
 const storedSettings = data => Number.isSafeInteger(data.revision) && Object.entries(SETTING_RANGES).every(([key, [min, max]]) => Number.isSafeInteger(data[key]) && data[key] >= min && data[key] <= max);
 
 /**
@@ -128,6 +138,18 @@ function submission(input) {
   return { agentId, input: { text, ...(json !== undefined ? { json } : {}) }, instructions: cleanText(instructions), tools, permissions: { filesystem, memory, projectLessons },
     timeoutMs, requireApproval, projectId, networkId, parentJobId, idempotencyKey, ...(pipeline ? { pipeline: { runId: pipeline.runId, nodeId: pipeline.nodeId } } : {}) };
 }
+/** The submission check, for definitions that submit later (Task 12 schedules): the same rules, nothing saved. */
+export const jobSubmission = submission;
+/** What recognises a repeated submission under one idempotency key: the cleaned submission without the key. */
+const fingerprint = spec => sha256(JSON.stringify({ ...spec, idempotencyKey: undefined }));
+/** A job's link to what made it (Task 12), stored on job.json and in request.json only when present, so older hashes stay. */
+function linkOf(link) {
+  if (!link) return {};
+  const { delegation, schedule } = link;
+  if (delegation) return { delegation: { by: delegation.by, depth: delegation.depth, index: delegation.index, parentAttemptId: delegation.parentAttemptId, budgetShare: delegation.budgetShare, policyRevision: delegation.policyRevision } };
+  if (schedule) return { schedule: { id: schedule.id, slot: schedule.slot } };
+  return {};
+}
 
 /** What a worker reports at the end of an attempt. A malformed report is refused (400) and changes nothing. */
 function report(input) {
@@ -161,10 +183,13 @@ export class NetworkJobs {
    */
   constructor({ dataDir, registry, worker = null, authBusy = () => false, now = Date.now, prepareTimeoutMs = LIMITS.prepareTimeoutMs, events = null }) {
     Object.assign(this, { dir: join(dataDir, 'network'), registry, worker, authBusy, now, prepareTimeoutMs, events });
+    this.messages = new JobMessages({ dir: this.dir, now, events }); // Task 12: each job's handoff record, in its own folder.
   }
   instance = randomUUID(); // This process: each attempt records it as its workerInstance.
   /** Set by the pipeline runner: `holds(job)` is true while an open run needs the job, so its logs stay and it cannot be deleted. */
   holds = null;
+  /** Set by the server (Task 12, delegation.mjs): the owner's handoff policy. Without it no handoff is offered or accepted. */
+  delegation = null;
   // ponytail: one queue for every job change; per-job queues if many workers ever contend for it.
   #serial = serial();
   #loading = null;
@@ -211,6 +236,8 @@ export class NetworkJobs {
     }
     await this.#serial(async () => {
       for (const { job, restored } of loaded) await this.#reconcile(job, restored).catch(() => {}); // A failed save leaves it for the next start.
+      // A job that stopped after it saved its delegation but before every sub-job was written gets them now, under the same keys.
+      for (const job of [...this.#jobs.values()]) if (job.status === 'waiting_for_input' && job.awaiting?.kind === 'children') await this.#resume(job).catch(() => {});
       await this.#sweep().catch(() => {});
     });
   }
@@ -260,8 +287,30 @@ export class NetworkJobs {
     const next = { ...job, revision: job.revision + 1, updatedAt: this.now() }, before = this.#jobs.get(job.id);
     await writeDocument(join(this.#folder(job.id), 'job.json'), next);
     this.#jobs.set(next.id, next);
-    if (before?.status !== next.status) this.#emit(next, before?.status ?? null);
+    if (before?.status !== next.status) { this.#emit(next, before?.status ?? null); if (TERMINAL.has(next.status)) this.#ended(next); }
     return next;
+  }
+  /**
+   * A job ended (Task 12). Its open sub-jobs are cancelled when it was cancelled, and a parent that waits for its sub-jobs
+   * goes on once all of them ended. Both run after the current change, in the same queue, so they see it saved.
+   */
+  #ended(job) {
+    if (job.status === 'cancelled' && this.#childrenOf(job.id).some(child => !TERMINAL.has(child.status))) Promise.resolve().then(() => this.#cancelChildren(job.id)).catch(() => {});
+    if (job.parentJobId) Promise.resolve().then(() => this.#serial(async () => { const parent = this.#jobs.get(job.parentJobId); if (parent) await this.#continueIfDone(parent); })).catch(() => {});
+  }
+  async #cancelChildren(id) {
+    for (const child of this.#childrenOf(id).filter(other => NEXT[other.status].includes('cancelled'))) {
+      await this.cancel(child.id, {}, { by: 'app', reason: 'Cancelled because the job that delegated it was cancelled.' }).catch(() => {});
+    }
+  }
+  #childrenOf(id) { return [...this.#jobs.values()].filter(other => other.parentJobId === id); }
+  /** The job, its parent, its parent's parent…: at most 16 (delegation depth is at most 4; an owner's links could go further). */
+  #chain(job) { const chain = []; for (let at = job; at && chain.length < 16; at = at.parentJobId ? this.#jobs.get(at.parentJobId) : null) chain.push(at); return chain; }
+  /** Who a job's question goes to: the client that submitted it, otherwise the owner (also for pipeline, schedule and sub-jobs). */
+  #requesterParty(job) { return job.requester.kind === 'machine' ? { clientId: job.requester.id } : { owner: true }; }
+  /** One job.handoff event: IDs, the kind and a short summary, never the question, the sub-tasks or what came back. */
+  #handoffEvent(job, status, kind, message, errorCode) {
+    try { Promise.resolve(this.events?.append({ type: 'job.handoff', jobId: job.id, agentId: job.agentId, networkId: job.networkId, projectId: job.projectId, status, kind, errorCode, message })).catch(() => {}); } catch {}
   }
   /**
    * One job.status event for a saved status change (architecture §17 item 2). Not awaited, and every failure of the sink
@@ -301,6 +350,13 @@ export class NetworkJobs {
   #waiting(job, positions) {
     if (job.status === 'waiting_for_approval') return { for: 'approval', message: 'Waiting for your approval. Nothing runs until you approve it.' };
     if (job.status === 'interrupted' || job.status === 'unknown') return { for: 'decision', message: job.outcome === 'not_started' ? 'Nothing ran. Retry it or close it.' : 'It may have done its work already. Retry it (confirming that) or close it.' };
+    if (job.status === 'waiting_for_input') {
+      if (job.awaiting?.kind === 'children') {
+        const open = job.awaiting.tasks.filter(task => !task.refused && !TERMINAL.has(this.#jobs.get(this.#keys.get(this.#key({ kind: 'job', id: job.id }, task.key)))?.status)).length;
+        return { for: 'children', open, message: open ? `Waiting for ${open} of its ${job.awaiting.tasks.length} delegated sub-jobs. It runs again with their results.` : 'Its sub-jobs ended; it runs again with their results once they are recorded.' };
+      }
+      return { for: 'input', message: job.requester.kind === 'machine' ? 'Waiting for the external client that submitted it to answer its question.' : 'Waiting for your answer to its question.' };
+    }
     if (job.status !== 'queued') return null;
     const position = (positions || this.#positions()).get(job.id) ?? null;
     if (!this.worker) return { for: 'worker', position, message: NO_WORKER };
@@ -343,35 +399,40 @@ export class NetworkJobs {
    * `requireApproval`; never completed. The same idempotency key from the same requester answers the existing job
    * (`deduplicated: true`), or `IDEMPOTENCY_CONFLICT` when the submission differs; keys of other requesters never match.
    */
-  async submit(input, { requester = OWNER } = {}) {
+  async submit(input, { requester = OWNER, link = null } = {}) {
     if (!object(requester) || !Object.hasOwn(SOURCE, requester.kind)) fail('Unknown requester.');
-    const spec = submission(input), submissionSha256 = sha256(JSON.stringify({ ...spec, idempotencyKey: undefined }));
+    const spec = submission(input);
     if (spec.pipeline && (requester.kind !== 'pipeline' || requester.id !== spec.pipeline.runId)) fail('Only the pipeline runner links a job to its run. Nothing was submitted.', 'PIPELINE_LINK_REFUSED', 403);
     await this.#ready();
-    return this.#serial(async () => {
-      const key = this.#key(requester, spec.idempotencyKey), existing = key ? this.#jobs.get(this.#keys.get(key)) : null;
-      if (existing) {
-        if (existing.submissionSha256 !== submissionSha256) fail('This idempotency key was already used for a different job. Nothing was submitted.', 'IDEMPOTENCY_CONFLICT', 409, { jobId: existing.id });
-        return { jobId: existing.id, status: existing.status, deduplicated: true, job: this.#view(existing) };
-      }
-      if (this.#closing) fail('The app is shutting down. Nothing was submitted.', 'SHUTTING_DOWN', 503);
-      const agent = await this.#pin(spec), id = newId('job'), at = this.now(), status = spec.requireApproval ? 'waiting_for_approval' : 'queued';
-      const request = { schema: SCHEMA.request, version: 1, jobId: id, acceptedAt: at, input: spec.input, instructions: spec.instructions, tools: spec.tools, permissions: spec.permissions,
-        limits: { timeoutMs: spec.timeoutMs ?? this.#settings.defaultTimeoutMs, maxOutputBytes: LIMITS.resultBytes }, requireApproval: spec.requireApproval,
-        projectId: spec.projectId, networkId: spec.networkId, parentJobId: spec.parentJobId, ...(spec.pipeline ? { pipeline: spec.pipeline } : {}), agent };
-      const text = `${JSON.stringify(request)}\n`;
-      const job = { schema: SCHEMA.job, version: 1, id, revision: 1, status, source: SOURCE[requester.kind], requester: { kind: requester.kind, id: requester.id ?? null },
-        agentId: spec.agentId, projectId: spec.projectId, networkId: spec.networkId, pipelineRunId: spec.pipeline?.runId ?? null, nodeId: spec.pipeline?.nodeId ?? null, parentJobId: spec.parentJobId,
-        idempotencyKey: spec.idempotencyKey, submissionSha256, requestSha256: sha256(text), createdAt: at, updatedAt: at, acceptedAt: at, queuedAt: status === 'queued' ? this.#stamp() : null,
-        attempts: [], currentAttemptId: null, outcome: null, errorCode: null, reason: '', result: null, history: [{ at, status, by: requester.kind }], outputsRemovedAt: null };
-      try { await writeImmutable(join(this.#folder(id), 'request.json'), text, 'The job'); await writeDocument(join(this.#folder(id), 'job.json'), job); }
-      catch (error) { await rm(this.#folder(id), { recursive: true, force: true }).catch(() => {}); throw error; } // Nothing half-made stays.
-      this.#jobs.set(id, job);
-      this.#emit(job, null);
-      if (key) this.#keys.set(key, id);
-      this.#pump();
-      return { jobId: id, status, deduplicated: false, job: this.#view(job) };
-    });
+    return this.#serial(() => this.#accept(spec, requester, link));
+  }
+  /**
+   * The body of a submit, inside the queue. `link` (server code only, Task 12) records what made the job: a delegation or a
+   * schedule. `pinned` is the agent snapshot when the caller already pinned it (a delegation checks every sub-task first).
+   */
+  async #accept(spec, requester, link = null, pinned = null) {
+    const submissionSha256 = fingerprint(spec), key = this.#key(requester, spec.idempotencyKey), existing = key ? this.#jobs.get(this.#keys.get(key)) : null;
+    if (existing) {
+      if (existing.submissionSha256 !== submissionSha256) fail('This idempotency key was already used for a different job. Nothing was submitted.', 'IDEMPOTENCY_CONFLICT', 409, { jobId: existing.id });
+      return { jobId: existing.id, status: existing.status, deduplicated: true, job: this.#view(existing) };
+    }
+    if (this.#closing) fail('The app is shutting down. Nothing was submitted.', 'SHUTTING_DOWN', 503);
+    const agent = pinned ?? await this.#pin(spec), id = newId('job'), at = this.now(), status = spec.requireApproval ? 'waiting_for_approval' : 'queued', linked = linkOf(link);
+    const request = { schema: SCHEMA.request, version: 1, jobId: id, acceptedAt: at, input: spec.input, instructions: spec.instructions, tools: spec.tools, permissions: spec.permissions,
+      limits: { timeoutMs: spec.timeoutMs ?? this.#settings.defaultTimeoutMs, maxOutputBytes: LIMITS.resultBytes }, requireApproval: spec.requireApproval,
+      projectId: spec.projectId, networkId: spec.networkId, parentJobId: spec.parentJobId, ...(spec.pipeline ? { pipeline: spec.pipeline } : {}), ...linked, agent };
+    const text = `${JSON.stringify(request)}\n`;
+    const job = { schema: SCHEMA.job, version: 1, id, revision: 1, status, source: SOURCE[requester.kind], requester: { kind: requester.kind, id: requester.id ?? null },
+      agentId: spec.agentId, projectId: spec.projectId, networkId: spec.networkId, pipelineRunId: spec.pipeline?.runId ?? null, nodeId: spec.pipeline?.nodeId ?? null, parentJobId: spec.parentJobId,
+      idempotencyKey: spec.idempotencyKey, submissionSha256, requestSha256: sha256(text), createdAt: at, updatedAt: at, acceptedAt: at, queuedAt: status === 'queued' ? this.#stamp() : null,
+      attempts: [], currentAttemptId: null, outcome: null, errorCode: null, reason: '', result: null, history: [{ at, status, by: requester.kind }], outputsRemovedAt: null, ...linked };
+    try { await writeImmutable(join(this.#folder(id), 'request.json'), text, 'The job'); await writeDocument(join(this.#folder(id), 'job.json'), job); }
+    catch (error) { await rm(this.#folder(id), { recursive: true, force: true }).catch(() => {}); throw error; } // Nothing half-made stays.
+    this.#jobs.set(id, job);
+    this.#emit(job, null);
+    if (key) this.#keys.set(key, id);
+    this.#pump();
+    return { jobId: id, status, deduplicated: false, job: this.#view(job) };
   }
 
   async list({ status, agentId, projectId, networkId, parentJobId, pipelineRunId, offset, limit } = {}) {
@@ -422,6 +483,11 @@ export class NetworkJobs {
         if (!view.enabled) fail('The agent was switched off in Network before the job started. Nothing ran.', 'REGISTRATION_DISABLED', 409);
         if (view.base.stale) fail(`The agent’s Base definition can no longer be used (${view.base.staleReason}). Nothing ran.`, 'BASE_REVOKED', 409);
         if (job.projectId && !(await this.registry.projects()).includes(job.projectId)) fail('The job’s project is no longer on the board. Nothing ran.', 'PROJECT_NOT_FOUND', 409);
+        // A sub-job is checked against the delegation policy again: what the owner revoked since it was queued never starts.
+        if (job.delegation) {
+          if (!this.delegation) fail('Delegation is not available, so this sub-job cannot start. Nothing ran.', 'DELEGATION_REVOKED', 409);
+          await this.delegation.recheck(job, this.#chain(job));
+        }
       } catch (error) {
         if (!(error instanceof NetworkError) || error.code === 'NETWORK_DATA_DAMAGED') throw error; // Unreadable data: the job waits, it is not failed.
         await this.#save(this.#move(job, 'failed', { outcome: 'failed', errorCode: error.code, reason: error.message }, 'app'));
@@ -513,6 +579,16 @@ export class NetworkJobs {
       if (end.result && (bytes(end.result.text) > LIMITS.resultBytes || (json && bytes(json) > LIMITS.jsonBytes))) [status, errorCode, reason] = ['failed', 'OUTPUT_LIMIT', 'The result was larger than the 1 MiB limit (64 KiB for its json) and was not kept.'];
       if ((status === 'completed' && (!running || !end.result?.text.trim())) || (status === 'waiting_for_input' && !running)) [status, errorCode] = [started ? 'unknown' : 'failed', errorCode || 'NO_RESULT'];
       if (status === 'unknown' && !started) status = 'failed';
+      const changes = { exitCode: end.exitCode, ...(end.sideEffects ? { sideEffects: end.sideEffects } : {}), ...(end.coverage ? { coverage: end.coverage } : {}), ...(end.usage ? { usage: end.usage } : {}),
+        ...(end.nativeSessionId ? { nativeSessionId: end.nativeSessionId } : {}) };
+      // Task 12: a structured request at the end of the report is only a request. Accepted, the job waits for its answer or its
+      // sub-jobs; refused, the job completes with its report and the refusal is recorded.
+      const asked = status === 'completed' ? parseHandoff(end.result.json) : null;
+      if (asked) {
+        const handed = await this.#handoff(job, attempt, own, end.result.text, asked, changes);
+        if (handed.job) { clearTimeout(live.timer); return { applied: true, job: this.#view(handed.job) }; }
+        reason = handed.refused;
+      }
       let result;
       if (status === 'completed') {
         const folder = `attempts/${escapeId(attempt.id)}`;
@@ -520,13 +596,126 @@ export class NetworkJobs {
         if (json) await writeImmutable(this.#attemptFile(own, 'result.json'), json, 'The job result');
         result = { textRef: `${folder}/result.md`, ...(json ? { jsonRef: `${folder}/result.json` } : {}), chars: end.result.text.length, sha256: sha256(end.result.text) };
       }
-      const changes = { exitCode: end.exitCode, ...(end.sideEffects ? { sideEffects: end.sideEffects } : {}), ...(end.coverage ? { coverage: end.coverage } : {}), ...(end.usage ? { usage: end.usage } : {}),
-        ...(end.nativeSessionId ? { nativeSessionId: end.nativeSessionId } : {}) };
       const saved = await this.#save(this.#end(job, status, { errorCode, reason, attempt: changes, result }, 'worker'));
       clearTimeout(live.timer);
       return { applied: true, job: this.#view(saved) };
     });
   }
+  /**
+   * Task 12: act on the request at the end of an attempt's report, inside the queue. Refused (switched off, malformed, over a
+   * bound, against the policy, or a sub-task that could never run): nothing is created, a `blocked` message and an event
+   * record why, and the answer is { refused } so the job completes with its report. Accepted: the report is kept as the
+   * attempt's handoff.md (and the checked sub-jobs as handoff.json), the job waits — for an answer, or for sub-jobs created
+   * now under the keys `job:<id>:delegate:a<attempt>:<n>`, so a repeated pass never doubles one — and the answer is { job }.
+   */
+  async #handoff(job, attempt, own, text, asked, changes) {
+    const rounds = job.attempts.filter(item => item.handoff).length;
+    let children = null;
+    try {
+      if (asked.error) fail(`The request could not be read: ${asked.error}`, 'HANDOFF_INVALID', 400);
+      if (!this.delegation) fail('Handoffs are not available in this app.', 'HANDOFF_OFF', 403);
+      if (rounds >= HANDOFF_LIMITS.rounds) fail(`A job may hand off at most ${HANDOFF_LIMITS.rounds} times.`, 'HANDOFF_LIMIT', 409);
+      const { policy } = await this.delegation.policy();
+      if (asked.kind === 'needs_input' && !policy.askOwner) fail('Questions from agents are switched off. The owner can switch them on in Network → Settings.', 'HANDOFF_OFF', 403);
+      if (asked.kind === 'delegate') {
+        const plans = await this.delegation.plan({ policy, parent: job, request: await this.#request(job), chain: this.#chain(job), tasks: asked.tasks, children: this.#childrenOf(job.id).length, by: 'agent', attempt });
+        children = [];
+        for (const [index, plan] of plans.entries()) {
+          const spec = submission({ ...plan.input, idempotencyKey: `delegate:a${attempt.number}:${index}` });
+          children.push({ spec, link: plan.link, agent: await this.#pin(spec) }); // A sub-task that could never run refuses the whole request.
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof NetworkError)) throw error;
+      const what = asked.kind === 'needs_input' ? 'ask a question' : asked.kind === 'delegate' ? `delegate ${asked.tasks.length} sub-task${asked.tasks.length === 1 ? '' : 's'}` : 'hand off';
+      const refused = `It asked to ${what}, which was refused: ${error.message}`.slice(0, LIMITS.reason);
+      await this.messages.post(job.id, { kind: 'blocked', from: { app: true }, to: this.#requesterParty(job), text: refused, attemptId: attempt.id }, { agentId: job.agentId }).catch(() => {});
+      this.#handoffEvent(job, 'refused', asked.kind ?? 'invalid', refused, error.code);
+      return { refused };
+    }
+    await writeImmutable(this.#attemptFile(own, 'handoff.md'), text, 'The handoff report');
+    if (children) await writeImmutable(this.#attemptFile(own, 'handoff.json'), `${JSON.stringify({ kind: 'delegate', tasks: children.map(({ spec, link }) => ({ spec, link })) })}\n`, 'The delegation');
+    const at = this.now(), handoff = { kind: asked.kind, chars: text.length, sha256: sha256(text), at };
+    const awaiting = children ? { kind: 'children', attemptId: attempt.id, at, tasks: children.map(({ spec }, index) => ({ index, agentId: spec.agentId, key: spec.idempotencyKey, refused: null })) }
+      : { kind: 'input', attemptId: attempt.id, at, question: asked.question };
+    // The reason is in job.status events, so it never quotes the question or the sub-tasks (those stay in the messages).
+    const reason = children ? `Delegated ${children.length} sub-job${children.length === 1 ? '' : 's'}; it runs again with their results.` : 'It asked a question; it runs again with the answer.';
+    // The question is recorded before the job shows as waiting, so whoever sees it waiting can read what it asked.
+    if (!children) await this.messages.post(job.id, { kind: 'needs_input', from: { agentId: job.agentId }, to: this.#requesterParty(job), text: asked.question, attemptId: attempt.id }, { agentId: job.agentId }).catch(() => {});
+    let saved = await this.#save({ ...this.#end(job, 'waiting_for_input', { reason, attempt: { ...changes, handoff } }, 'worker'), awaiting });
+    if (!children) {
+      this.#handoffEvent(saved, 'waiting', 'needs_input', 'It asked a question and waits for the answer.');
+      return { job: saved };
+    }
+    saved = await this.#spawn(saved, children);
+    this.#handoffEvent(saved, 'waiting', 'delegate', `It delegated ${children.length} sub-job${children.length === 1 ? '' : 's'} and waits for their results.`);
+    return { job: await this.#continueIfDone(saved).catch(() => saved) };
+  }
+  /** Create a waiting job's sub-jobs (each under its own key, so one that exists is found, not doubled); refusals are kept. */
+  async #spawn(parent, children) {
+    const requester = { kind: 'job', id: parent.id }, refused = new Map();
+    for (const [index, child] of children.entries()) {
+      try {
+        const made = await this.#accept(child.spec, requester, child.link, child.agent);
+        if (!made.deduplicated) await this.messages.post(parent.id, { kind: 'request', from: { agentId: parent.agentId }, to: { agentId: child.spec.agentId }, text: child.spec.input.text, jobId: made.jobId,
+          attemptId: parent.awaiting.attemptId, task: index }, { agentId: parent.agentId }).catch(() => {});
+      } catch (error) { if (!(error instanceof NetworkError)) throw error; refused.set(index, { code: error.code, message: error.message.slice(0, 300) }); }
+    }
+    if (!refused.size) return parent;
+    return this.#save({ ...parent, awaiting: { ...parent.awaiting, tasks: parent.awaiting.tasks.map(task => (refused.has(task.index) ? { ...task, refused: refused.get(task.index) } : task)) } });
+  }
+  /** At load: the sub-jobs of a waiting job that were never written are created from its handoff.json, under the same keys. */
+  async #resume(job) {
+    const requester = { kind: 'job', id: job.id };
+    if (job.awaiting.tasks.some(task => !task.refused && !this.#keys.has(this.#key(requester, task.key)))) {
+      const saved = JSON.parse(await readFile(this.#attemptFile({ jobId: job.id, attemptId: job.awaiting.attemptId }, 'handoff.json'), 'utf8'));
+      job = await this.#spawn(job, saved.tasks.map(({ spec, link }) => ({ spec, link, agent: null })));
+    }
+    return this.#continueIfDone(job);
+  }
+  /**
+   * A job that waits for its sub-jobs goes on once every one ended (or was refused): one `result` or `blocked` message per
+   * sub-task records what came back (each written once, so this can run again safely), then the job is queued again as a new
+   * attempt that reads them. Until then nothing changes.
+   */
+  async #continueIfDone(parent) {
+    const waiting = parent.awaiting, requester = { kind: 'job', id: parent.id };
+    if (parent.status !== 'waiting_for_input' || waiting?.kind !== 'children') return parent;
+    const outcomes = waiting.tasks.map(task => ({ task, child: task.refused ? null : this.#jobs.get(this.#keys.get(this.#key(requester, task.key))) ?? null }));
+    if (outcomes.some(({ task, child }) => !task.refused && !TERMINAL.has(child?.status))) return parent;
+    const { messages } = await this.messages.list(parent.id);
+    const recorded = new Set(messages.filter(message => message.attemptId === waiting.attemptId && ['result', 'blocked'].includes(message.kind) && Number.isSafeInteger(message.task)).map(message => message.task));
+    for (const { task, child } of outcomes) if (!recorded.has(task.index)) await this.messages.post(parent.id, await this.#outcome(parent, waiting, task, child), { agentId: parent.agentId });
+    const saved = await this.#save({ ...this.#move(parent, 'queued', { queuedAt: this.#stamp(), currentAttemptId: null, outcome: null, errorCode: null, reason: '' }, 'app'), awaiting: null });
+    this.#handoffEvent(saved, 'continued', 'delegate', `Its ${waiting.tasks.length} sub-job${waiting.tasks.length === 1 ? '' : 's'} ended; it runs again with their results.`);
+    this.#pump();
+    return saved;
+  }
+  /** What came back from one sub-task, as the parent's next attempt reads it: the result (cut to 14 KiB) or why there is none. */
+  async #outcome(parent, waiting, task, child) {
+    const base = { to: { agentId: parent.agentId }, attemptId: waiting.attemptId, task: task.index };
+    if (task.refused) return { ...base, kind: 'blocked', from: { app: true }, text: `Sub-task ${task.index + 1} for agent ${task.agentId} was refused before it ran: ${task.refused.message}` };
+    if (child.status === 'completed') {
+      try {
+        const { text } = await this.result(child.id), kept = cut(text, 14 * 1024);
+        return { ...base, kind: 'result', from: { agentId: child.agentId }, jobId: child.id, text: kept === text ? text : `${kept}\n\n(Cut to 14 KiB here: the whole result is kept with sub-job ${child.id}.)` };
+      } catch (error) { if (!(error instanceof NetworkError)) throw error; } // An unreadable result is reported as missing below.
+    }
+    const ended = child.status === 'completed' ? 'completed, but its result could not be read' : `ended ${child.status.replaceAll('_', ' ')}${child.errorCode ? ` (${child.errorCode})` : ''}`;
+    return { ...base, kind: 'blocked', from: { agentId: child.agentId }, jobId: child.id, text: `Sub-job ${child.id} ${ended}${child.reason ? `: ${child.reason}` : '.'}` };
+  }
+  /** What an attempt's prompt gets (Task 12): the handoffs the policy offers now (guide) and the job's earlier handoffs (context). */
+  async #handoffFor(job, request) {
+    const rounds = job.attempts.filter(item => item.handoff).length, last = job.attempts.findLast(item => item.handoff);
+    let context = '';
+    if (last) {
+      const report = await readFile(this.#attemptFile({ jobId: job.id, attemptId: last.id }, 'handoff.md'), 'utf8').catch(() => '');
+      context = threadText(sha256(report) === last.handoff.sha256 ? report : '', (await this.messages.list(job.id)).messages);
+    }
+    const guide = this.delegation ? await this.delegation.guide(job, request, this.#chain(job), { children: this.#childrenOf(job.id).length, rounds }) : '';
+    return guide || context ? { guide, context } : null;
+  }
+
   /**
    * End an attempt this process owns (cancel, timeout, shutdown): stop the worker (bounded to 3 s), then save `status`
    * unless the worker's own report was saved first. One stop per attempt; a failed save can be tried again.
@@ -542,7 +731,7 @@ export class NetworkJobs {
         return await this.#serial(async () => {
           const job = this.#jobs.get(live.jobId), attempt = current(job);
           if (attempt?.id !== live.own.attemptId || ATTEMPT_ENDED.has(attempt.status)) return job;
-          const saved = await this.#save(this.#end(job, status, details, status === 'cancelled' ? 'owner' : 'app'));
+          const saved = await this.#save(this.#end(job, status, details, details.by ?? (status === 'cancelled' ? 'owner' : 'app')));
           live.endedByEngine = true;
           later(() => this.#release(live), LIMITS.stopMs); // A worker that never returns still frees its slot.
           return saved;
@@ -571,6 +760,7 @@ export class NetworkJobs {
     const live = this.#live.get(own.attemptId), job = { ...this.#view(this.#jobs.get(jobId)), request: structuredClone(live.request) };
     let error = null;
     try {
+      job.handoff = await this.#handoffFor(this.#jobs.get(jobId), live.request); // Task 12: null unless a handoff is offered or came back.
       await this.worker.claim(job, own);
       if (!own.signal.aborted) await this.worker.start(job, own);
     } catch (caught) { error = caught; }
@@ -601,18 +791,22 @@ export class NetworkJobs {
     await Promise.allSettled([...this.#live.values()].map(live => this.#stop(live, 'interrupted', { errorCode: 'APP_STOPPED', reason: 'Promptboard stopped while this job ran. Nothing was started again: retry or close it.' })));
   }
 
-  /** Cancel a job that has not ended. A queued or waiting job is cancelled at once; a running attempt is stopped first. */
-  async cancel(id, input = {}) {
+  /**
+   * Cancel a job that has not ended. A queued or waiting job is cancelled at once; a running attempt is stopped first.
+   * `by: 'machine'` when the external client that submitted it cancels it (the REST gateway checks that it is its own).
+   */
+  async cancel(id, input = {}, { by = 'owner', reason: why = null } = {}) {
     only(input, [], 'a cancel request');
+    const reason = why ?? (by === 'machine' ? 'Cancelled by the external client that submitted it.' : 'Cancelled by you.');
     await this.#ready();
     const first = await this.#serial(async () => {
       const job = this.#job(id);
       if (TERMINAL.has(job.status)) fail(`This job already ended as ${job.status}. Nothing was cancelled.`, 'JOB_FINISHED', 409);
       if (!NEXT[job.status].includes('cancelled')) fail('This job needs your decision instead: retry it or close it.', 'JOB_STATE', 409);
       const live = job.currentAttemptId && this.#live.get(job.currentAttemptId);
-      return live ? { live } : { job: await this.#save(this.#end(job, 'cancelled', { reason: 'Cancelled by you.' })) };
+      return live ? { live } : { job: await this.#save(this.#end(job, 'cancelled', { reason }, by)) };
     });
-    const job = first.job ?? await this.#stop(first.live, 'cancelled', { reason: 'Cancelled by you.' });
+    const job = first.job ?? await this.#stop(first.live, 'cancelled', { reason, by });
     return { job: this.#view(job), cancelled: job.status === 'cancelled' };
   }
   /** `decision: 'approve'` queues a job that waits for approval; 'reject' cancels it. Only the owner's routes call this. */
@@ -677,12 +871,82 @@ export class NetworkJobs {
       const users = [...this.#jobs.values()].filter(other => other.parentJobId === id && !TERMINAL.has(other.status)).map(other => other.id);
       if (users.length) fail('Open jobs name this job as their parent. Nothing was deleted.', 'JOB_IN_USE', 409, { jobIds: users });
       if (this.holds?.(job)) fail('A pipeline run that is still open uses this job’s result. Nothing was deleted.', 'JOB_IN_USE', 409, { pipelineRunId: job.pipelineRunId });
+      const parent = job.parentJobId && this.#jobs.get(job.parentJobId);
+      if (parent?.status === 'waiting_for_input' && parent.awaiting?.kind === 'children') fail('The job that delegated this one still waits for its sub-jobs. Nothing was deleted.', 'JOB_IN_USE', 409, { jobIds: [parent.id] });
       const folder = this.#folder(id), gone = `${folder}.deleted-${this.now()}-${randomBytes(4).toString('hex')}`;
       try { await rename(folder, gone); } catch { fail('The job could not be deleted. Check folder permissions and try again.', 'NETWORK_WRITE_FAILED', 500); }
       await rm(gone, { recursive: true, force: true }).catch(() => {}); // Renamed first, so the job is gone even if this is cut short.
       this.#jobs.delete(id);
       if (job.idempotencyKey) this.#keys.delete(this.#key(job.requester, job.idempotencyKey));
       return { deleted: id };
+    });
+  }
+
+  // ---- Task 12: messages, answers and an external client's sub-jobs (architecture §23).
+  /** The job's messages, oldest first, and how many addressed to `reader` ({ owner: true } or { clientId }) are unread. */
+  async messagesOf(id, { reader }) {
+    await this.#ready();
+    this.#job(id);
+    return this.messages.list(id, { reader });
+  }
+  /** A note from the owner or the client that submitted the job (`review` or `request`): a record, which a later attempt reads as data. */
+  async postMessage(id, input, { from }) {
+    only(input, ['kind', 'text', 'json'], 'a message');
+    if (!POSTED_KINDS.includes(input.kind)) fail(`Add a ${POSTED_KINDS.join(' or a ')} note.`);
+    await this.#ready();
+    return this.#serial(async () => {
+      const job = this.#job(id);
+      return { message: await this.messages.post(id, { kind: input.kind, from, to: { agentId: job.agentId }, text: input.text, ...(input.json !== undefined ? { json: input.json } : {}) }, { agentId: job.agentId }) };
+    });
+  }
+  /** Read receipts for `reader`: every unread message addressed to it, or those listed in `ids`. Nothing about execution changes. */
+  async readMessages(id, input, { reader }) {
+    only(input, ['ids'], 'a read receipt');
+    if (input.ids !== undefined && (!Array.isArray(input.ids) || input.ids.length > 500 || input.ids.some(item => typeof item !== 'string' || !/^msg_[0-9a-f]{20}$/.test(item)))) fail('List the message IDs to mark as read, or none for all of them.');
+    await this.#ready();
+    return this.#serial(async () => { this.#job(id); return this.messages.markRead(id, input.ids ?? null, reader); });
+  }
+  /**
+   * Answer the question a waiting job asked: the answer is recorded as a `result` message first, then the job is queued again
+   * as a new attempt that reads it. The owner sends the revision it saw; the external client that submitted the job may
+   * answer it too (`by: 'machine'`).
+   */
+  async answer(id, input, { by = 'owner', clientId = null } = {}) {
+    only(input, by === 'owner' ? ['expectedRevision', 'text'] : ['text'], 'an answer');
+    if (by === 'owner') requireRevision(input);
+    if (typeof input.text !== 'string' || !input.text.trim()) fail('Write the answer.');
+    await this.#ready();
+    return this.#serial(async () => {
+      const job = this.#job(id);
+      if (job.status !== 'waiting_for_input' || job.awaiting?.kind === 'children') fail('This job is not waiting for an answer.', 'JOB_STATE', 409);
+      if (by === 'owner' && input.expectedRevision !== job.revision) conflict('This job');
+      await this.messages.post(id, { kind: 'result', from: by === 'owner' ? { owner: true } : { clientId }, to: { agentId: job.agentId }, text: input.text, ...(job.awaiting ? { attemptId: job.awaiting.attemptId } : {}) }, { agentId: job.agentId });
+      const saved = await this.#save({ ...this.#move(job, 'queued', { queuedAt: this.#stamp(), currentAttemptId: null, outcome: null, errorCode: null, reason: '' }, by), awaiting: null });
+      this.#handoffEvent(saved, 'continued', 'needs_input', `Answered by ${by === 'owner' ? 'the owner' : 'the external client'}; it runs again with the answer.`);
+      this.#pump();
+      return { job: this.#view(saved) };
+    });
+  }
+  /**
+   * A sub-job an external client asks for under its own job (the REST gateway checks the job is its own): the delegation
+   * policy decides as for an agent's request, inside the client's own scope. The parent does not wait for it; cancelling the
+   * parent cancels it. The client's idempotency key answers the same sub-job again.
+   */
+  async delegate(parentId, input, { clientId, idempotencyKey = null }) {
+    const task = delegationTask(input);
+    if (idempotencyKey !== null && (typeof idempotencyKey !== 'string' || !KEY.test(idempotencyKey) || LINE_BREAK.test(idempotencyKey))) fail(`The idempotency key is 1 to ${LIMITS.idempotencyKey} printable characters.`);
+    await this.#ready();
+    return this.#serial(async () => {
+      const parent = this.#job(parentId), requester = { kind: 'machine', id: clientId }, key = this.#key(requester, idempotencyKey), existing = key ? this.#jobs.get(this.#keys.get(key)) : null;
+      if (existing) {
+        if (existing.parentJobId !== parentId || existing.agentId !== task.agentId) fail('This idempotency key was already used for a different job. Nothing was submitted.', 'IDEMPOTENCY_CONFLICT', 409, { jobId: existing.id });
+        return { jobId: existing.id, status: existing.status, deduplicated: true, job: this.#view(existing) };
+      }
+      if (TERMINAL.has(parent.status)) fail('This job already ended, so it cannot get a sub-job. Submit a new job instead.', 'JOB_FINISHED', 409);
+      if (!this.delegation) fail('Delegation is not available in this app.', 'DELEGATION_OFF', 403);
+      const { policy } = await this.delegation.policy();
+      const [plan] = await this.delegation.plan({ policy, parent, request: await this.#request(parent), chain: this.#chain(parent), tasks: [task], children: this.#childrenOf(parent.id).length, by: 'machine' });
+      return this.#accept(submission({ ...plan.input, idempotencyKey }), requester, plan.link);
     });
   }
 

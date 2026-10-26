@@ -54,6 +54,9 @@ import { NetworkEvents } from './network/events.mjs';
 import { networkRoute } from './network/http.mjs';
 import { NetworkPipelines } from './network/pipeline-model.mjs';
 import { PipelineRunner } from './network/pipeline-runner.mjs';
+import { MachineListener } from './network/rest.mjs';
+import { Delegation } from './network/delegation.mjs';
+import { NetworkSchedules } from './network/schedules.mjs';
 import { NetworkError } from './network/storage.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
@@ -87,6 +90,8 @@ const assets = new Map([
   ['/network.js', ['network.js', 'text/javascript; charset=utf-8']],
   ['/network-graph.js', ['network-graph.js', 'text/javascript; charset=utf-8']],
   ['/network-activity.js', ['network-activity.js', 'text/javascript; charset=utf-8']],
+  ['/network-clients.js', ['network-clients.js', 'text/javascript; charset=utf-8']],
+  ['/network-delegation.js', ['network-delegation.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal and graph assets, served from the installed packages by exact path only (no CDN,
 // no directory browsing). Missing files (no npm install) return 404: the dock and the Network graph fall back.
@@ -368,7 +373,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker, networkEventOptions = {} } = {}) {
+export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker, networkEventOptions = {}, machineOptions = {}, networkScheduleOptions = {} } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   // One app per data folder; the board itself loads lazily, so starting never reads or writes board files.
   const lock = await lockDataDir(dataDir);
@@ -472,6 +477,12 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   // Pipelines (drafts, versions) and their runs; a run's steps are jobs of the engine above, never started by a save.
   const pipelines = new NetworkPipelines({ dataDir, registry: network });
   const pipelineRuns = new PipelineRunner({ dataDir, pipelines, jobs: networkJobs, events: networkEvents });
+  // External clients (REST and MCP): their own 127.0.0.1 listener, off until the owner turns it on; never this handle().
+  const machine = new MachineListener({ dataDir, registry: network, jobs: networkJobs, events: networkEvents, reservedPorts: () => [server.address()?.port, remoteAccess?.settings.port], ...machineOptions });
+  // Task 12: the owner's handoff policy (off by default) checks every question and sub-job an agent or a client asks for, and
+  // job schedules start nothing until the owner confirms them at this computer.
+  networkJobs.delegation = new Delegation({ dataDir, registry: network, clients: () => machine.clients.list() });
+  const networkSchedules = new NetworkSchedules({ dataDir, jobs: networkJobs, runs: pipelineRuns, registry: network, events: networkEvents, ...networkScheduleOptions });
   // Project memory: a merged card queues one lessons job (Board.completeTask); the worker starts once the app listens.
   const lessons = new Lessons({ dataDir, board, claim, runner: call => track(runner(call)) });
   board.lessons = lessons;
@@ -491,6 +502,8 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     if (closing) { res.setHeader('Connection', 'close'); return send(res, 503, { error: 'The app is shutting down.', code: 'SHUTTING_DOWN' }); }
+    // A machine client's token never acts on the owner's routes, even beside the owner's own token (architecture §10.3).
+    if (/^\s*bearer\s+pbm_/i.test(req.headers.authorization || '')) return send(res, 403, { error: 'Client tokens work only on the machine listener.', code: 'MACHINE_TOKEN_REFUSED' });
     if (!remote) {
       const actualPort = server.address()?.port;
       const allowedHosts = [`127.0.0.1:${actualPort}`, `localhost:${actualPort}`];
@@ -545,7 +558,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       catch (error) { return sendFailure(res, error, 'The Coordinator request failed. Project data is unchanged.', { status: 500, code: 'COORDINATOR_FAILED' }); }
     }
     if (/^\/api\/network(?:\/|$)/.test(pathname)) {
-      try { return await networkRoute({ network, jobs: networkJobs, events: networkEvents, board: () => board.state(), pipelines, runs: pipelineRuns, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
+      try { return await networkRoute({ network, jobs: networkJobs, events: networkEvents, board: () => board.state(), pipelines, runs: pipelineRuns, machine, schedules: networkSchedules, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The Network request failed. Nothing was changed.', { status: 500, code: 'NETWORK_FAILED' }); }
     }
     if (/^\/api\/sandbox(?:\/|$)/.test(pathname)) {
@@ -811,6 +824,8 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   lessons.start(); // Queued lessons jobs, also those a restart interrupted, run now (one at a time, through the job slot).
   void networkJobs.start().catch(() => {}); // Reconciles jobs a stop interrupted (never relaunched); queued ones start only with a worker.
   void pipelineRuns.start().catch(() => {}); // Open runs go on from what was saved and proven; approvals stay pending.
+  await machine.start().catch(() => {}); // Listens only when the owner turned external clients on; a failure is shown in Network → Settings.
+  networkSchedules.start(); // Fires only schedules the owner confirmed; a slot missed while closed fires once.
   let closed;
   // Idempotent and bounded: stop accepting, cancel owned work, close sockets, then
   // SIGKILL any owned CLI process group that is still alive.
@@ -818,6 +833,8 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     await lock.markStopping(); // First: once the port stops answering, a restart must not take the data folder yet.
     closing = true;
     await remoteAccess?.shutdown();
+    await machine.close();
+    networkSchedules.stop();
     notifications.close();
     const listening = new Promise(resolve => server.close(() => resolve()));
     busy?.controller.abort();
@@ -846,5 +863,5 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     await listening;
     await lock.release();
   })();
-  return { server, url: `http://127.0.0.1:${server.address().port}`, close, board, networkEvents };
+  return { server, url: `http://127.0.0.1:${server.address().port}`, close, board, networkEvents, machine };
 }

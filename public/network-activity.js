@@ -21,7 +21,8 @@ window.PromptboardNetworkActivity = (() => {
   const PROVIDERS = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI', agy: 'Antigravity' };
   const BY = { owner: 'by you', app: 'by Promptboard', worker: 'by the worker', machine: 'by an external client', pipeline: 'by a pipeline', job: 'by another job', schedule: 'by a schedule', a2a: 'by a remote agent' };
   const ACTIVITY = { turn: 'Turn', tool: 'Tool', web: 'Web search', mcp: 'MCP call', text: 'Writing', status: 'Status' };
-  const KINDS = [['', 'All events'], ['job.status', 'Job status'], ['job.activity', 'Job activity'], ['pipeline', 'Pipelines'], ['other', 'Other']];
+  const KINDS = [['', 'All events'], ['job.status', 'Job status'], ['job.activity', 'Job activity'], ['pipeline', 'Pipelines'], ['handoff', 'Handoffs and messages'], ['schedule', 'Schedules'], ['other', 'Other']];
+  const MESSAGE_KINDS = { request: 'request', result: 'result', review: 'review note', needs_input: 'question', blocked: 'blocked' }; // Task 12
   const LIVE = {
     off: '', connecting: 'Connecting to live updates…', live: 'Live: new events appear as they happen.', reconnecting: 'Connection lost. Reconnecting…',
     limited: 'Live updates paused: too many Activity views are open. Close one; this view tries again in 15 seconds.', stopped: 'Live updates stopped. Reload the page to start them again.',
@@ -46,7 +47,8 @@ window.PromptboardNetworkActivity = (() => {
   }
   const COVERAGE_NAMES = { tools: 'tool activity', 'partial-tools': 'limited activity', 'final-only': 'final result only' };
   const coverageName = level => COVERAGE_NAMES[level] || level;
-  const kindOf = event => (event.type === 'job.status' || event.type === 'job.activity' ? event.type : event.type.startsWith('pipeline.') ? 'pipeline' : 'other');
+  const kindOf = event => (event.type === 'job.status' || event.type === 'job.activity' ? event.type : event.type.startsWith('pipeline.') ? 'pipeline'
+    : ['job.message', 'job.handoff'].includes(event.type) ? 'handoff' : event.type.startsWith('schedule.') ? 'schedule' : 'other');
 
   function create(host) {
     const panel = el('section', 'network-panel network-activity'); panel.id = 'network-panel-activity'; panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', 'network-tab-activity'); panel.hidden = true;
@@ -99,6 +101,10 @@ window.PromptboardNetworkActivity = (() => {
     }
     const names = () => new Map((data.summary?.agents || []).map(agent => [agent.agentId, agent.name]));
     const agentName = id => names().get(id) || (id ? `Agent ${short(id)}` : '');
+    // Task 12 (network-delegation.js): a job's origin, approval request, question, sub-jobs and messages; the Schedules list.
+    const handoffs = window.PromptboardNetworkDelegation?.create({ request: host.request, say: host.say, go: host.go, rerender: () => scheduleRender(),
+      reloadJob: () => { if (job) void loadJob(job.id, { quiet: true }); }, chip, agentName }) || null;
+    if (handoffs) side.append(handoffs.schedules);
 
     // ---- Live: one stream while Activity or an agent's Activity tab shows.
     const live = { wanted: false, generation: 0, controller: null, last: null, state: 'off', attempts: 0, wake: null };
@@ -164,6 +170,7 @@ window.PromptboardNetworkActivity = (() => {
       add([item]);
       scheduleSummary();
       try { host.onEvent?.(item); } catch {}
+      try { handoffs?.onEvent(item); } catch {}
     }
     function add(events, { older: isOlder = false } = {}) {
       const fresh = events.filter(event => !data.seqs.has(event.seq));
@@ -251,7 +258,8 @@ window.PromptboardNetworkActivity = (() => {
         : row.status === 'preparing' ? 'preparing to start' : row.waiting?.message || row.reason || (row.status === 'waiting_for_input' ? 'It asked for input. Open its record.' : '');
       const open = openJob(row.id); open.dataset.openJob = row.id; open.dataset.focusKey = `queue:${row.id}`; open.setAttribute('aria-label', `Details of job ${short(row.id)} (${agentName(row.agentId)})`);
       const head = el('div', 'network-activity-row-head'); head.append(chip(row.status), el('strong', '', agentName(row.agentId)), el('span', 'note', `Job ${short(row.id)}`));
-      item.append(head, note([since, row.waiting?.position ? `position ${row.waiting.position}` : '', level ? `reports ${coverageName(level)}` : '', row.pipelineRunId ? `pipeline run ${short(row.pipelineRunId)}, step ${row.nodeId || '?'}` : ''].filter(Boolean).join(' · ')),
+      const from = row.parentJobId ? `sub-job of job ${short(row.parentJobId)}` : row.requester?.kind === 'schedule' ? 'from a schedule' : row.requester?.kind === 'machine' ? 'from an external client' : '';
+      item.append(head, note([since, row.waiting?.position ? `position ${row.waiting.position}` : '', level ? `reports ${coverageName(level)}` : '', row.pipelineRunId ? `pipeline run ${short(row.pipelineRunId)}, step ${row.nodeId || '?'}` : '', from].filter(Boolean).join(' · ')),
         note(usageText(row.attempt?.usage), 'note network-usage'), open);
       return item;
     }
@@ -281,6 +289,9 @@ window.PromptboardNetworkActivity = (() => {
       if (event.type === 'job.result') return `${jobText} · result saved`;
       if (event.type === 'pipeline.run') return `${run}: ${stateOf(event.status)[0]}`;
       if (event.type === 'pipeline.node') return `${run} · step ${event.nodeId || '?'}: ${stateOf(event.status)[0]}`;
+      if (event.type === 'job.message') return `${jobText} · ${MESSAGE_KINDS[event.kind] || 'message'} recorded`;
+      if (event.type === 'job.handoff') return `${jobText} · ${{ refused: 'handoff refused', continued: 'handoff came back: it runs again' }[event.status] || (event.kind === 'delegate' ? 'delegated sub-jobs' : 'asked a question')}`;
+      if (event.type === 'schedule.run') return `Schedule ${{ started: 'started work', skipped: 'skipped a time', failed: 'could not start' }[event.status] || event.status || ''}`;
       return `${event.type}${event.status ? `: ${stateOf(event.status)[0]}` : ''}`;
     }
     function eventItem(event, { withAgent = true } = {}) {
@@ -318,6 +329,7 @@ window.PromptboardNetworkActivity = (() => {
     // ---- One job: its record (Task 06 routes), its result when the app can serve it, and its events.
     async function loadJob(id, { quiet = false } = {}) {
       if (!quiet) job = { id, record: null, error: '', events: [], result: null, loading: true };
+      void handoffs?.loadJob(id);
       try {
         const [record, events] = await Promise.all([host.request(`/api/network/jobs/${id}`), host.request(`/api/network/events?jobId=${id}&limit=200`)]);
         if (job?.id !== id) return;
@@ -349,7 +361,8 @@ window.PromptboardNetworkActivity = (() => {
         ...(record.outcome ? [['Outcome', { completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', uncertain: 'Uncertain: it may have done its work', not_started: 'Nothing ran' }[record.outcome] || record.outcome]] : []),
         ...(record.errorCode ? [['Error', record.errorCode]] : []), ['Submitted', `${new Date(record.createdAt).toLocaleString()} (${ago(record.createdAt)})`], ['Updated', ago(record.updatedAt)],
         ...(request ? [['Tools', request.tools === 'web' ? 'Read-only web search' : 'None'], ['Time limit', `${Math.round(request.limits.timeoutMs / 60000) || '<1'} min`], ['Input', clip(request.input.text, 280)]] : [['Request', 'Its accepted request failed its integrity check.']]),
-        ...['projectId', 'networkId', 'parentJobId'].filter(key => record[key]).map(key => [{ projectId: 'Project', networkId: 'Network', parentJobId: 'Parent job' }[key], el('code', '', record[key])]),
+        ...['projectId', 'networkId'].filter(key => record[key]).map(key => [{ projectId: 'Project', networkId: 'Network' }[key], el('code', '', record[key])]),
+        ...(handoffs ? [handoffs.originFact(record)] : record.parentJobId ? [['Parent job', el('code', '', record.parentJobId)]] : []),
         ...(record.pipelineRunId ? [['Pipeline run', runLink(record.pipelineRunId)], ['Pipeline step', el('code', '', record.nodeId || '?')]] : [])];
       const facts = el('dl', 'network-facts');
       for (const [label, value] of rows) { const dd = el('dd'); dd.append(value); facts.append(el('dt', '', label), dd); }
@@ -372,7 +385,7 @@ window.PromptboardNetworkActivity = (() => {
       const events = el('ol', 'network-events network-job-events'); events.id = 'network-activity-job-events'; events.setAttribute('aria-label', 'Events of this job, newest first');
       events.append(...[...job.events].reverse().map(event => eventItem(event, { withAgent: false })));
       const eventsEmpty = job.events.length ? [] : [note('No events of this job are in the journal.')];
-      keepFocus(jobView, () => jobView.replaceChildren(back, title, facts, el('h3', '', 'Attempts'), ...(record.attempts.length ? [attempts] : [note('Not claimed yet.')]), el('h3', '', 'Result'), ...result,
+      keepFocus(jobView, () => jobView.replaceChildren(back, title, facts, ...(handoffs ? handoffs.jobParts(record) : []), el('h3', '', 'Attempts'), ...(record.attempts.length ? [attempts] : [note('Not claimed yet.')]), el('h3', '', 'Result'), ...result,
         el('h3', '', 'Status history'), history, el('h3', '', 'Events'), events, ...eventsEmpty));
       if (focusHeading) { heading.focus(); focusHeading = false; }
     }
@@ -421,8 +434,8 @@ window.PromptboardNetworkActivity = (() => {
     function show(where) {
       const entering = !shown && where;
       shown = where; panel.hidden = !where;
-      if (!where) return;
-      if (entering) void loadSummary();
+      if (!where) { handoffs?.closeDialog(); return; } // A dialog never stays over another section.
+      if (entering) { void loadSummary(); void handoffs?.loadSchedules(); }
       if (where.jobId && job?.id !== where.jobId) { focusHeading = true; void loadJob(where.jobId); }
       if (!where.jobId) job = null;
       render();
