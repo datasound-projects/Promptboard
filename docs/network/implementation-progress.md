@@ -41,13 +41,15 @@ branch from the same verified base, merged by the coordinator in order, then int
 | 07 | 07-local-worker-runtime.md | done (merged, wave A) | a6aab88 |
 | 08 | 08-live-activity-and-observability.md | done (merged, wave A) | 4d275e7 |
 | 09 | 09-pipeline-dag-engine.md | done (merged, wave A) | 018a2fd |
-| 10 | 10-pipeline-designer-and-network-run-ui.md | pending | |
-| 11 | 11-private-api-and-mcp.md | pending | |
-| 12 | 12-delegation-and-triggers.md | pending | |
-| 13 | 13-a2a-federation.md | pending | |
+| 10 | 10-pipeline-designer-and-network-run-ui.md | done (lane; in `feat/network-wave-b` 96987d8, merge here pending) | 6bc96d1 |
+| 11 | 11-private-api-and-mcp.md | done (lane; in `feat/network-wave-b`, merge here pending) | a1d6642 |
+| 12 | 12-delegation-and-triggers.md | in progress (lane `feat/network-12`) | |
+| 13 | 13-a2a-federation.md | in progress (lane `feat/network-13`) | |
 | 14 | 14-verification-and-release.md | pending | |
 
-**Next:** Wave A — Tasks 07, 08 and 09 in parallel (see below).
+**Next:** Wave A integrated (730c862, cd8f5f6; full suite clean twice). Running: Task 12 and Task 13 lanes and the
+Phase-2 review fixes (Tasks 06–11, 1 P2 + 10 P3) on `feat/network-wave-b`; then wave-b → 12 → 13 merge here, an
+integration pass, the full suite, and Task 14.
 
 ## Live provider runs
 
