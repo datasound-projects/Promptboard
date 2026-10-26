@@ -9,12 +9,13 @@
  * never written. A relation edge records allowed intent only: saving, publishing or importing starts nothing, sends no
  * message and shares no data.
  */
-import { readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { readdir, rename } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { ADAPTERS } from '../agents.mjs';
 import { primaryAgent } from '../base-resolver.mjs';
 import { redactLocal } from '../compose-local.mjs';
-import { serial } from '../durable.mjs';
+import { serial, syncDir } from '../durable.mjs';
 import { escapeId } from '../origin.mjs';
 import { NetworkMemory } from './memory.mjs';
 import { NetworkPosts } from './posts.mjs';
@@ -50,7 +51,7 @@ const storedRow = row => object(row) && AGENT_ID.test(row.id) && typeof row.base
   && ['tags', 'capabilities', 'projectAllowlist'].every(key => Array.isArray(row[key])) && typeof row.enabled === 'boolean';
 const storedDraft = data => NETWORK_ID.test(data.id) && typeof data.name === 'string' && typeof data.description === 'string' && Number.isSafeInteger(data.revision) && Number.isSafeInteger(data.createdAt)
   && Array.isArray(data.publishedVersions) && data.publishedVersions.every((entry, index) => entry?.version === index + 1 && SHA.test(entry.sha256))
-  && accepts(() => edgesOf(data.edges, nodesOf(data.nodes)));
+  && (data.archived === undefined || data.archived === true) && accepts(() => edgesOf(data.edges, nodesOf(data.nodes)));
 
 /** The fields an owner sets on a registration; `previous` fills the ones a change leaves out. */
 function registrationFields(input, previous = {}) {
@@ -132,6 +133,34 @@ async function containmentCycle(rootId, nodes, versionOf) {
   return walk(nodes, [rootId]);
 }
 
+/** Why a stale Base agent cannot be used, as a graph issue says it (the registration view's `staleReason`). */
+const STALE_TEXT = { missing: 'its Base agent no longer exists', 'wrong-kind': 'its Base resource is no longer an agent', disabled: 'its Base agent is switched off',
+  untrusted: 'its Base agent is not trusted', revoked: 'trust in its Base agent was revoked', 'no-primary-agent': 'its agent profile has no primary agent switched on',
+  'primary-agent-disabled': 'its profile’s primary agent is switched off', 'primary-agent-untrusted': 'its profile’s primary agent is not trusted', 'primary-agent-revoked': 'trust in its profile’s primary agent was revoked' };
+/**
+ * What the owner should fix or know about a graph's nodes, from `refs` (computed now, never stored): an agent that cannot
+ * take work, a sub-network that cannot be read, is archived or pins an older version. Saving never depends on these.
+ */
+function issuesOf(nodes, refs) {
+  const issues = [];
+  for (const node of nodes) {
+    const at = { nodeId: node.id };
+    if (node.type === 'agent') {
+      const ref = refs.agents[node.agentId], who = { ...at, agentId: node.agentId };
+      if (ref.missing) issues.push({ code: 'AGENT_MISSING', ...who, message: 'An agent node names a registration that no longer exists. Remove the node.' });
+      else if (ref.stale) issues.push({ code: 'AGENT_STALE', ...who, message: `“${ref.name}” cannot take work: ${STALE_TEXT[ref.staleReason] || 'its Base agent cannot be used'}. Fix it in Base, or remove it from this network.` });
+      else if (!ref.enabled) issues.push({ code: 'AGENT_DISABLED', ...who, message: `“${ref.name}” is switched off in Network. Switch it on in its profile, or remove it from this network.` });
+      continue;
+    }
+    const ref = refs.networks[node.networkId], which = { ...at, networkId: node.networkId, version: node.version };
+    if (!ref.pinned) { issues.push({ code: 'SUBNETWORK_UNAVAILABLE', ...which, message: `${ref.name ? `“${ref.name}”` : 'A sub-network'} version ${node.version} cannot be read from the data folder. Remove the node, or restore the network’s files.` }); continue; }
+    if (ref.archived) issues.push({ code: 'SUBNETWORK_ARCHIVED', ...which, message: `“${ref.name}” is archived. Its pinned version ${node.version} keeps working; restore it in the Library to change it.` });
+    const latest = ref.versions.at(-1);
+    if (latest > node.version) issues.push({ code: 'SUBNETWORK_OUTDATED', ...which, latest, message: `“${ref.name}” has version ${latest}; this network pins version ${node.version}. Choose the version in the node’s details to use the newer one.` });
+  }
+  return issues;
+}
+
 /**
  * What each CLI can do for Network, from the provider capability matrix (docs/network/architecture.md §8): 'yes',
  * 'partial', 'no' or 'unknown'; `jobTools` lists the Network job tool modes ([] = refused). A provider that is unset or
@@ -187,14 +216,14 @@ async function parseBundle(data) {
   });
   unique(agents.map(row => row.id), AGENT_ID);
   const networks = data.networks.map(draft => {
-    only(draft, ['id', 'name', 'description', 'revision', 'createdAt', 'updatedAt', 'nodes', 'edges', 'publishedVersions'], 'a network');
-    if (!Array.isArray(draft.publishedVersions)) invalidFile();
+    only(draft, ['id', 'name', 'description', 'revision', 'createdAt', 'updatedAt', 'nodes', 'edges', 'publishedVersions', 'archived'], 'a network');
+    if (!Array.isArray(draft.publishedVersions) || ![undefined, true].includes(draft.archived)) invalidFile();
     const publishedVersions = draft.publishedVersions.map((entry, index) => {
       only(entry, ['version', 'sha256', 'publishedAt'], 'a published version entry');
       if (entry.version !== index + 1 || typeof entry.sha256 !== 'string' || !SHA.test(entry.sha256)) invalidFile();
       return { version: entry.version, sha256: entry.sha256, publishedAt: time(entry.publishedAt) };
     });
-    return { id: draft.id, ...networkContent(draft), createdAt: time(draft.createdAt), publishedVersions };
+    return { id: draft.id, ...networkContent(draft), createdAt: time(draft.createdAt), publishedVersions, ...(draft.archived ? { archived: true } : {}) };
   });
   unique(networks.map(draft => draft.id), NETWORK_ID);
   const listed = new Map(networks.flatMap(draft => draft.publishedVersions.map(entry => [`${draft.id}@${entry.version}`, entry.sha256])));
@@ -321,7 +350,50 @@ export class NetworkRegistry {
     const path = await containmentCycle(id, nodes, pinned);
     if (!path) return;
     const drafts = await this.#loadDrafts(), names = path.map(item => item === id ? name : drafts.get(item)?.name || item);
-    fail(`A network cannot contain itself: ${names.join(' → ')}.`, 'NETWORK_CYCLE', 400, { path });
+    fail(`A network cannot contain itself: ${names.join(' → ')}. Remove the sub-network “${names[1]}” from this network, or pin a version of it that does not contain this network.`, 'NETWORK_CYCLE', 400, { path });
+  }
+  /**
+   * What a graph's nodes point at, read now and never stored: an agent's name and whether it can take work, a
+   * sub-network's name, published versions and the size of the pinned one (null when that version cannot be read).
+   */
+  async #refs(nodes) {
+    const rows = new Map((await this.#loadAgents()).rows.map(row => [row.id, row])), drafts = await this.#loadDrafts();
+    const resources = nodes.some(node => node.type === 'agent') ? await this.#resources() : new Map(), refs = { agents: {}, networks: {} };
+    for (const node of nodes) {
+      if (node.type === 'agent') {
+        const row = rows.get(node.agentId), base = row && baseSummary(resources, row.baseResourceId);
+        refs.agents[node.agentId] = row ? { name: row.displayName || base.name || row.baseResourceId, kind: base.kind, provider: base.provider, enabled: row.enabled, stale: base.stale, staleReason: base.staleReason } : { missing: true };
+        continue;
+      }
+      const child = drafts.get(node.networkId);
+      const pinned = await this.#version(node.networkId, node.version).then(version => ({ nodes: version.nodes.length, edges: version.edges.length }), error => { if (error instanceof NetworkError) return null; throw error; });
+      refs.networks[node.networkId] = child && !child.unavailable ? { name: child.name, archived: Boolean(child.archived), versions: child.publishedVersions.map(entry => entry.version), pinned } : { name: null, archived: false, versions: [], pinned };
+    }
+    return refs;
+  }
+  /**
+   * Every other network whose draft or published versions contain `id` as a sub-network, and the networks that could not
+   * be read to tell (`unknown`). Published versions never change, so a use there lasts for good.
+   * ponytail: reads every published version once (then cached); keep a reverse index if installs reach thousands of versions.
+   */
+  async #usedBy(id) {
+    const usedBy = [], unknown = [], pins = nodes => nodes.find(node => node.type === 'subnetwork' && node.networkId === id);
+    for (const draft of (await this.#loadDrafts()).values()) {
+      if (draft.id === id) continue;
+      if (draft.unavailable) { unknown.push(draft.id); continue; }
+      try {
+        const versions = [];
+        for (const entry of draft.publishedVersions) { const pin = pins((await this.#version(draft.id, entry.version)).nodes); if (pin) versions.push({ version: entry.version, pins: pin.version }); }
+        const pin = pins(draft.nodes);
+        if (pin || versions.length) usedBy.push({ networkId: draft.id, name: draft.name, archived: Boolean(draft.archived), draft: pin ? pin.version : null, versions });
+      } catch (error) { if (!(error instanceof NetworkError)) throw error; unknown.push(draft.id); }
+    }
+    return { usedBy, unknown };
+  }
+  /** A draft with what the editor and the Library show beside it: references, issues and where it is used. */
+  async #detail(draft) {
+    const refs = await this.#refs(draft.nodes), { usedBy, unknown } = await this.#usedBy(draft.id);
+    return { network: draft, refs, issues: issuesOf(draft.nodes, refs), usedBy, usedByUnknown: unknown };
   }
 
   /** `kind` is the role in Base (an Agent or an Agent profile); `facets` lists every declared capability, unfiltered. */
@@ -375,17 +447,21 @@ export class NetworkRegistry {
     });
   }
 
-  async listNetworks({ q, agentId, offset, limit } = {}) {
+  /** Archived networks are left out unless `archived` is 'true'. */
+  async listNetworks({ q, agentId, archived, offset, limit } = {}) {
     const query = search(q);
+    if (![undefined, 'true', 'false'].includes(archived)) fail('Choose archived=true to include archived networks.');
     return this.#serial(async () => {
       const drafts = [...(await this.#loadDrafts()).values()];
-      const items = drafts.filter(draft => !draft.unavailable).sort(byCreated)
+      const items = drafts.filter(draft => !draft.unavailable && (archived === 'true' || !draft.archived)).sort(byCreated)
         .filter(draft => (!query || draft.name.toLocaleLowerCase().includes(query) || draft.description.toLocaleLowerCase().includes(query)) && (!agentId || draft.nodes.some(node => node.agentId === agentId)))
-        .map(({ id, name, description, revision, createdAt, updatedAt, nodes, edges, publishedVersions }) => ({ id, name, description, revision, createdAt, updatedAt, nodeCount: nodes.length, edgeCount: edges.length, publishedVersions }));
+        .map(({ id, name, description, revision, createdAt, updatedAt, nodes, edges, publishedVersions, archived: shelved }) => ({ id, name, description, revision, createdAt, updatedAt, nodeCount: nodes.length, edgeCount: edges.length, publishedVersions, archived: Boolean(shelved) }));
       return { ...page(items, offset, limit, 'networks'), unavailable: drafts.filter(draft => draft.unavailable).map(({ id, unavailable }) => ({ id, code: unavailable })) };
     });
   }
   async network(id) { return this.#serial(async () => ({ network: await this.#draft(id) })); }
+  /** The draft with its references, issues and uses (GET /networks/:id). */
+  async networkDetail(id) { return this.#serial(async () => this.#detail(await this.#draft(id))); }
   async createNetwork(input) {
     only(input, ['name', 'description', 'nodes', 'edges'], 'a network');
     const content = networkContent(input);
@@ -393,21 +469,67 @@ export class NetworkRegistry {
       const id = newId('net'), at = this.now();
       this.#uniqueName(await this.#loadDrafts(), content.name, id);
       await this.#checkReferences(id, content);
-      return { network: await this.#saveDraft({ schema: SCHEMA.draft, version: 1, id, name: content.name, description: content.description, revision: 1, createdAt: at, updatedAt: at,
-        nodes: content.nodes, edges: content.edges, publishedVersions: [] }) };
+      return this.#detail(await this.#saveDraft({ schema: SCHEMA.draft, version: 1, id, name: content.name, description: content.description, revision: 1, createdAt: at, updatedAt: at,
+        nodes: content.nodes, edges: content.edges, publishedVersions: [] }));
+    });
+  }
+  /**
+   * A new, unpublished draft with the same nodes, relations and pins: agents and sub-networks stay references (IDs and
+   * pinned version numbers), so nothing is copied by value. The name gets " (copy)" unless one is given.
+   */
+  async duplicateNetwork(id, input) {
+    only(input, ['name'], 'a duplicate request');
+    return this.#serial(async () => {
+      const source = await this.#draft(id), drafts = await this.#loadDrafts(), at = this.now();
+      const name = input.name === undefined ? freeName(`${source.name.slice(0, LIMITS.name - 7)} (copy)`, new Set([...drafts.values()].filter(draft => !draft.unavailable).map(draft => draft.name.toLocaleLowerCase()))) : text(input.name, LIMITS.name, 'Network name', { required: true });
+      const copy = { schema: SCHEMA.draft, version: 1, id: newId('net'), name, description: source.description, revision: 1, createdAt: at, updatedAt: at, nodes: structuredClone(source.nodes), edges: structuredClone(source.edges), publishedVersions: [] };
+      this.#uniqueName(drafts, name, copy.id);
+      await this.#checkReferences(copy.id, copy); // Every pin must still be published and readable.
+      return this.#detail(await this.#saveDraft(copy));
+    });
+  }
+  /**
+   * Delete a draft that was never published and that no other network uses; anything else is refused with the reason
+   * (a published version may be pinned by a later run, and a parent's version pins it for good): archive it instead. The
+   * files are set aside as `<file>.deleted-<time>-<random>` (never read again, recoverable by hand); its memory file stays.
+   */
+  async deleteNetwork(id, input) {
+    only(input, ['expectedRevision'], 'a delete request');
+    revision(input);
+    return this.#serial(async () => {
+      const draft = await this.#draft(id);
+      if (input.expectedRevision !== draft.revision) conflict('This network');
+      const { usedBy, unknown } = await this.#usedBy(id);
+      if (unknown.length) fail('Some saved networks cannot be read, so Promptboard cannot tell whether they use this one. Nothing was deleted.', 'NETWORK_DATA_DAMAGED', 409, { networkIds: unknown });
+      if (usedBy.length) {
+        const where = usedBy.map(use => `“${use.name}” (${[use.draft ? 'draft' : '', ...use.versions.map(item => `v${item.version}`)].filter(Boolean).join(', ')})`).join(', ');
+        const forGood = usedBy.some(use => use.versions.length);
+        fail(`“${draft.name}” is a sub-network of ${where}. ${forGood ? 'Published versions never change, so it can only be archived.' : 'Remove it from those drafts first, or archive it.'} Nothing was deleted.`, 'NETWORK_IN_USE', 409, { usedBy });
+      }
+      if (draft.publishedVersions.length) fail(`“${draft.name}” has published versions, which later runs may pin, so it cannot be deleted. Archive it instead: it leaves the lists and every version stays readable. Nothing was deleted.`, 'NETWORK_PUBLISHED', 409);
+      const file = this.#draftPath(id), stamp = `${this.now()}-${randomBytes(4).toString('hex')}`;
+      try {
+        // The backup first: a draft whose backup remains would come back from it.
+        for (const path of [`${file}.bak`, file]) await rename(path, `${path}.deleted-${stamp}`).catch(error => { if (error.code !== 'ENOENT') throw error; });
+        await syncDir(dirname(file));
+      } catch { fail('The network could not be deleted. Check folder permissions and try again.', 'NETWORK_WRITE_FAILED', 500); }
+      (await this.#loadDrafts()).delete(id);
+      return { deleted: { id, name: draft.name } };
     });
   }
   /** Save the draft. Published versions are separate files and never change. */
   async updateNetwork(id, input) {
-    only(input, ['expectedRevision', 'name', 'description', 'nodes', 'edges'], 'a network');
+    only(input, ['expectedRevision', 'name', 'description', 'nodes', 'edges', 'archived'], 'a network');
     revision(input);
+    if (input.archived !== undefined && typeof input.archived !== 'boolean') fail('Archived must be true or false.');
     return this.#serial(async () => {
       const draft = await this.#draft(id);
       if (input.expectedRevision !== draft.revision) conflict('This network');
       const content = networkContent(input, draft);
       this.#uniqueName(await this.#loadDrafts(), content.name, id);
       await this.#checkReferences(id, content);
-      return { network: await this.#saveDraft({ ...draft, ...content, revision: draft.revision + 1, updatedAt: this.now() }) };
+      const { archived, ...rest } = draft, shelved = input.archived ?? Boolean(archived); // Archived only hides it from lists: pins of it keep working.
+      return this.#detail(await this.#saveDraft({ ...rest, ...content, revision: draft.revision + 1, updatedAt: this.now(), ...(shelved ? { archived: true } : {}) }));
     });
   }
   /** Publish the draft as the next immutable version: its file first, so the draft never names a version that was not saved. */
@@ -422,10 +544,11 @@ export class NetworkRegistry {
       const content = versionText({ networkId: id, number, publishedAt, name: draft.name, description: draft.description, nodes: draft.nodes, edges: draft.edges }), hash = sha256(content);
       await writeImmutable(this.#versionPath(id, number, hash), content);
       const published = { version: number, sha256: hash, publishedAt };
-      return { network: await this.#saveDraft({ ...draft, revision: draft.revision + 1, updatedAt: publishedAt, publishedVersions: [...draft.publishedVersions, published] }), published };
+      return { ...await this.#detail(await this.#saveDraft({ ...draft, revision: draft.revision + 1, updatedAt: publishedAt, publishedVersions: [...draft.publishedVersions, published] })), published };
     });
   }
-  async version(id, number) { return this.#serial(async () => ({ version: await this.#version(id, number) })); }
+  /** A published version, with what its nodes point at now (`refs`, computed, not part of the immutable version). */
+  async version(id, number) { return this.#serial(async () => { const version = await this.#version(id, number); return { version, refs: await this.#refs(version.nodes) }; }); }
 
   /** Registrations, drafts and every published version. Memory and reports stay out: private text (architecture §4.4). */
   async export() {
@@ -469,7 +592,7 @@ export class NetworkRegistry {
         const id = networkIds.get(draft.id), name = freeName(draft.name, names);
         if (name !== draft.name) warnings.push(`The network "${draft.name}" was imported as "${name}".`);
         return { schema: SCHEMA.draft, version: 1, id, name, description: draft.description, revision: 1, createdAt: draft.createdAt, updatedAt: at, nodes: remap(draft.nodes), edges: draft.edges,
-          publishedVersions: draft.publishedVersions.map(entry => ({ ...entry, sha256: hashes.get(`${id}@${entry.version}`) })) };
+          publishedVersions: draft.publishedVersions.map(entry => ({ ...entry, sha256: hashes.get(`${id}@${entry.version}`) })), ...(draft.archived ? { archived: true } : {}) };
       });
       // Registrations first, then versions, then drafts: a saved draft never names a missing agent or file.
       const saved = rows.length ? await this.#saveAgents(agents, [...agents.rows, ...rows]) : agents;

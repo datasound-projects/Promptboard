@@ -7,11 +7,13 @@
  *   POST /api/network/agents                { baseResourceId, expectedRevision, displayName?, tags?, capabilities?, enabled?, projectAllowlist? }
  *   GET  /api/network/agents/:id
  *   PATCH /api/network/agents/:id           { expectedRevision, …fields }
- *   GET  /api/network/networks              ?q agentId offset limit
+ *   GET  /api/network/networks              ?q agentId archived=true offset limit
  *   POST /api/network/networks              { name, description?, nodes?, edges? }
- *   GET  /api/network/networks/:id
- *   PATCH /api/network/networks/:id         { expectedRevision, name?, description?, nodes?, edges? }
+ *   GET  /api/network/networks/:id          the draft with refs, issues and usedBy
+ *   PATCH /api/network/networks/:id         { expectedRevision, name?, description?, nodes?, edges?, archived? }
+ *   DELETE /api/network/networks/:id        { expectedRevision }: only a never-published network nothing uses
  *   POST /api/network/networks/:id/publish  { expectedRevision }
+ *   POST /api/network/networks/:id/duplicate { name? }
  *   GET  /api/network/networks/:id/versions/:n
  *   GET  /api/network/export
  *   POST /api/network/import                { data, expectedRevision }
@@ -52,7 +54,7 @@ export async function networkRoute({ network, req, res, pathname, searchParams, 
       if (method === 'POST') return send(res, 200, await network.registerAgent(await body(BODY.small)));
     }
     if (pathname === '/api/network/networks') {
-      if (method === 'GET') return send(res, 200, await network.listNetworks(query(searchParams, ['q', 'agentId'])));
+      if (method === 'GET') return send(res, 200, await network.listNetworks(query(searchParams, ['q', 'agentId', 'archived'])));
       if (method === 'POST') return send(res, 200, await network.createNetwork(await body(BODY.network)));
     }
     if (method === 'GET' && pathname === '/api/network/export') return send(res, 200, await network.export());
@@ -78,13 +80,15 @@ export async function networkRoute({ network, req, res, pathname, searchParams, 
       if (postId && method === 'PATCH') return send(res, 200, await network.posts.update(agentId, postId, await body(BODY.small)));
       if (postId && method === 'DELETE') return send(res, 200, await network.posts.remove(agentId, postId, await body(BODY.small)));
     }
-    const match = pathname.match(/^\/api\/network\/networks\/(net_[0-9a-f]{20})(?:\/(publish)|\/versions\/([1-9]\d{0,8}))?$/);
+    const match = pathname.match(/^\/api\/network\/networks\/(net_[0-9a-f]{20})(?:\/(publish|duplicate)|\/versions\/([1-9]\d{0,8}))?$/);
     if (match) {
       const [, id, action, number] = match;
       if (method === 'GET' && number) return send(res, 200, await network.version(id, Number(number)));
       if (method === 'POST' && action === 'publish') return send(res, 200, await network.publishNetwork(id, await body(BODY.small)));
-      if (method === 'GET' && !action && !number) return send(res, 200, await network.network(id));
+      if (method === 'POST' && action === 'duplicate') return send(res, 200, await network.duplicateNetwork(id, await body(BODY.small)));
+      if (method === 'GET' && !action && !number) return send(res, 200, await network.networkDetail(id));
       if (method === 'PATCH' && !action && !number) return send(res, 200, await network.updateNetwork(id, await body(BODY.network)));
+      if (method === 'DELETE' && !action && !number) return send(res, 200, await network.deleteNetwork(id, await body(BODY.small)));
     }
     return send(res, 404, { error: 'This Network route does not exist.', code: 'NOT_FOUND' });
   } catch (error) {

@@ -16,6 +16,10 @@
     <script src="/vendor/xterm.js" defer></script>
     <script src="/vendor/addon-fit.js" defer></script>
     <script src="/vendor/addon-webgl.js" defer></script>
+    <!-- Cytoscape (Network → Graph) would insert its one <style> rule, which the CSP refuses; this placeholder tells it the
+         rule is already in styles.css (.__________cytoscape_container). -->
+    <meta id="__________cytoscape_stylesheet" name="cytoscape-stylesheet" content="styles.css">
+    <script src="/vendor/cytoscape.min.js" defer></script>
     <script src="/dom.js" defer></script>
     <script src="/base.js" defer></script>
     <script src="/notifications.js" defer></script>
@@ -35,6 +39,7 @@
     <script src="/live-preview.js" defer></script>
     <script src="/lessons.js" defer></script>
     <script src="/sandbox.js" defer></script>
+    <script src="/network-graph.js" defer></script>
     <script src="/network.js" defer></script>
     <script src="/app.js" defer></script>
     <script src="/dock.js" defer></script>

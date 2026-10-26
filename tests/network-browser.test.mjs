@@ -44,7 +44,7 @@ test('Network in Chrome: list and profile side by side or one after the other, b
     assert.equal(await ev(`return document.title;`), 'Network · Promptboard');
     colors[theme] = await ev(`return [getComputedStyle(document.querySelector('#network-detail')).backgroundColor, getComputedStyle(document.querySelector('.network-agent')).color];`);
     await shot(`network-1440-${theme}-profile`);
-    await ev(`location.hash = '#/network/graph';`); await wait(`!document.querySelector('#network-panel-soon').hidden`, 'Graph');
+    await ev(`location.hash = '#/network/graph';`); await wait(`!document.querySelector('#network-panel-graph').hidden`, 'Graph');
     await shot(`network-1440-${theme}-graph`);
 
     // Phone: the list first; choosing an agent shows its profile instead (focus moves there); Back returns to the row.

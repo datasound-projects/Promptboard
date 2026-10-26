@@ -2944,3 +2944,86 @@ button.origin-context-badge { cursor: pointer; }
 .network-quote { white-space: pre-wrap; overflow-wrap: anywhere; }
 .network-danger { border-color: var(--error); color: var(--error); }
 @media (max-width: 730px) { .network-memory-tools, .network-preview-controls { grid-template-columns: minmax(0, 1fr); } .network-memory-tools > button { justify-self: start; } }
+/* Network Library and Graph (network-graph.js). Cytoscape's own rule lives here because the CSP refuses the <style> it
+   would insert; index.html holds the placeholder element that tells it so. */
+.__________cytoscape_container { position: relative; }
+.network-section-intro { max-width: 920px; margin: 12px 0 0; }
+.network-library-tools { grid-template-columns: minmax(200px, 1fr) auto auto; }
+.network-library-tools .check-row { align-self: center; margin-bottom: 8px; }
+.network-library-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.network-graph-icon { color: var(--ink); }
+.network-delete-reason { margin: 0; font-size: 12.5px; }
+.network-library .network-profile h3 { margin: 14px 0 4px; color: var(--subtle); font: 600 11px var(--mono); letter-spacing: 1px; text-transform: uppercase; }
+.network-library .network-profile-title .network-chips { margin: 2px 0 0; gap: 4px 12px; }
+.network-versions { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.network-versions li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--divider); }
+.network-issues { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.network-issue { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--og-warn) 40%, transparent); border-left: 4px solid var(--og-warn); border-radius: 8px; background: color-mix(in srgb, var(--og-warn) 6%, var(--surface)); overflow-wrap: anywhere; }
+.network-issue.is-clear { border-color: var(--line); border-left-color: var(--og-ok); background: none; color: var(--muted); }
+.network-primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+.network-primary:hover:enabled { background: var(--primary-hover); border-color: var(--primary-hover); }
+.network-graph-chooser { display: grid; gap: 10px; max-width: 640px; margin-top: 18px; }
+.network-graph-chooser h2 { margin: 0; color: var(--ink); font-size: 18px; }
+.network-graph { display: grid; gap: 10px; margin-top: 16px; min-width: 0; }
+.network-graph-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px 16px; }
+.network-graph-title { display: grid; gap: 6px; min-width: 0; }
+.network-graph-title h2 { margin: 0; color: var(--ink); font-size: 21px; letter-spacing: -.4px; overflow-wrap: anywhere; }
+.network-graph-meta { align-items: center; gap: 6px 10px; }
+.network-graph-versions { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.network-version-chip { padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--muted); font: 11.5px var(--mono); }
+.network-version-chip:hover { border-color: var(--line-strong); color: var(--ink); }
+.network-version-chip[aria-current="page"] { border-color: var(--sash); color: var(--ink); }
+.network-graph-actions { margin-top: 0; }
+.network-inert { margin: 0; max-width: 920px; font-size: 12.5px; }
+.network-graph-notice:empty { display: none; }
+.network-notice { margin: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); font-size: 13px; }
+.network-cap-notice { border-color: color-mix(in srgb, var(--og-warn) 45%, transparent); border-left: 4px solid var(--og-warn); color: var(--text); }
+.network-graph-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
+.network-graph-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.field-label.network-inline-label { display: inline-flex; align-items: center; gap: 6px; }
+.field-label.network-inline-label :is(select, input) { width: auto; height: 34px; margin: 0; font-size: 13px; }
+.field-label.network-inline-label input { width: 170px; }
+.network-graph-filter { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; border: 0; font-size: 12.5px; }
+.network-graph-filter .check-row { gap: 6px; }
+.network-graph-filter .relation-message, .network-relation.relation-message { color: var(--og-design); }
+.network-graph-filter .relation-delegate, .network-relation.relation-delegate { color: var(--og-define); }
+.network-graph-filter .relation-share_result, .network-relation.relation-share_result { color: var(--og-operate); }
+.network-graph-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 330px); gap: 14px; align-items: start; }
+.network-canvas-box { display: grid; gap: 6px; min-width: 0; }
+.network-canvas { height: clamp(400px, calc(100vh - 430px), 760px); border: 1px solid var(--line); border-radius: 10px; background: radial-gradient(circle, var(--divider) 1px, transparent 1.2px) 0 0 / 22px 22px, var(--surface); overflow: hidden; }
+.network-canvas:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.network-canvas-hint { margin: 0; font-size: 12px; }
+.network-graph-side { display: grid; gap: 10px; max-height: clamp(400px, calc(100vh - 400px), 800px); overflow: auto; min-width: 0; padding-right: 2px; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+.network-graph-side h3 { margin: 8px 0 2px; color: var(--subtle); font: 600 11px var(--mono); letter-spacing: 1px; text-transform: uppercase; }
+.network-graph-side h4 { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.network-graph-details { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.network-graph-details .note, .network-graph-details .network-stale { margin: 0; }
+.network-graph-detail-title { margin: 0 !important; color: var(--ink) !important; font: 600 15px var(--sans) !important; letter-spacing: 0 !important; text-transform: none !important; overflow-wrap: anywhere; }
+.network-graph-lists { display: grid; gap: 6px; }
+.network-graph-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.network-graph-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.network-graph-item { display: flex; flex: 1; align-items: flex-start; gap: 8px; min-width: 0; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); text-align: left; font-size: 13px; }
+.network-graph-item:hover { border-color: var(--line-strong); }
+.network-graph-item[aria-current="true"] { border-color: var(--line-strong); box-shadow: inset 3px 0 0 var(--sash); }
+.network-graph-item.is-problem { border-color: var(--error); }
+.network-graph-row[data-state="disabled"] .network-graph-item { opacity: .65; }
+.network-graph-row[data-state="stale"] .network-graph-item, .network-graph-row[data-state="missing"] .network-graph-item, .network-graph-row[data-state="unavailable"] .network-graph-item { border-left: 3px solid var(--og-warn); }
+.network-node-mark { flex: none; color: var(--muted); }
+.network-node-relations .network-graph-row { justify-content: space-between; font-size: 12.5px; }
+.network-connect { display: grid; gap: 8px; margin: 4px 0 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.network-connect legend { padding: 0 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.network-connect button { justify-self: start; }
+.network-inside { display: grid; gap: 6px; padding: 8px 10px; border-radius: 8px; background: var(--og-glass-2); }
+.network-pick-list { display: grid; gap: 6px; max-height: 50vh; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.network-pick:disabled { opacity: .6; }
+@media (min-width: 731px) { .network-graph-panel .network-back { display: none; } }
+@media (max-width: 1100px) { .network-graph-body { grid-template-columns: minmax(0, 1fr) minmax(240px, 290px); } }
+@media (max-width: 730px) {
+  .network-library-tools { grid-template-columns: minmax(0, 1fr); }
+  /* A phone never gets the canvas (network-graph.js does not draw it there): the lists, then one node's details. */
+  .network-graph-body { grid-template-columns: minmax(0, 1fr); }
+  .network-graph-side { max-height: none; overflow: visible; }
+  .network-graph-panel[data-view="list"] .network-graph-details { display: none; }
+  .network-graph-panel[data-view="detail"] :is(.network-graph-lists, .network-graph-toolbar) { display: none; }
+  .network-graph-actions { width: 100%; }
+}

@@ -276,7 +276,7 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     'GET /api/network/agents', 'POST /api/network/agents', 'GET /api/network/networks', 'POST /api/network/networks', 'GET /api/network/export', 'POST /api/network/import',
     ...each(`/api/network/agents/agt_${'a'.repeat(20)}`, ['GET', 'PATCH', 'GET memory', 'POST memory', 'GET memory/preview', `PATCH memory/mem_${'b'.repeat(20)}`, `DELETE memory/mem_${'b'.repeat(20)}`, `POST memory/mem_${'b'.repeat(20)}/approve`,
       'GET posts', 'POST posts', `PATCH posts/pst_${'c'.repeat(20)}`, `DELETE posts/pst_${'c'.repeat(20)}`]),
-    ...each(`/api/network/networks/net_${'a'.repeat(20)}`, ['GET', 'PATCH', 'POST publish', 'GET versions/1', 'GET memory', 'POST memory', `PATCH memory/mem_${'b'.repeat(20)}`, `DELETE memory/mem_${'b'.repeat(20)}`, `POST memory/mem_${'b'.repeat(20)}/approve`])];
+    ...each(`/api/network/networks/net_${'a'.repeat(20)}`, ['GET', 'PATCH', 'DELETE', 'POST publish', 'POST duplicate', 'GET versions/1', 'GET memory', 'POST memory', `PATCH memory/mem_${'b'.repeat(20)}`, `DELETE memory/mem_${'b'.repeat(20)}`, `POST memory/mem_${'b'.repeat(20)}/approve`])];
   // The table covers every route the server and Base declare: a new route must be added here, local-only or not.
   const paths = [...LOCAL_ONLY, ...ALLOWED].map(row => row.split(' ')[1].split('?')[0]);
   for (const file of ['server.mjs', 'base-http.mjs', 'sandbox.mjs', 'network/http.mjs']) {

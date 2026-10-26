@@ -83,7 +83,8 @@ requirements are in [NETWORK_REQUIREMENTS.md](NETWORK_REQUIREMENTS.md).
 
 ### Task 05 — Graph designer and nested networks
 
-`tests/network-graph.test.mjs` (model) and `tests/network-graph-browser.test.mjs` (Chrome):
+`tests/network-graph.test.mjs` (model and routes), `tests/network-graph-ui.test.mjs` (jsdom, the keyboard lists) and
+`tests/network-graph-browser.test.mjs` (Chrome, the canvas and the stress fixture):
 
 1. Build a 3-agent network containing a pinned 2-agent sub-network; save; reload; positions, edges and relations
    identical.

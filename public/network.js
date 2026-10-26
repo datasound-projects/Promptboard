@@ -1,6 +1,7 @@
 'use strict';
 
-// Network page (#/network): the agent directory and agent profiles, over the owner routes /api/network/*.
+// Network page (#/network): the agent directory and agent profiles, over the owner routes /api/network/*; the Graph and
+// Library sections live in network-graph.js and are shown from here.
 // Base stays the only editor of agent definitions: this page reads Base, registers a Base agent by its ID, edits only the
 // Network identity (display name, tags, capabilities, projects, on/off) and opens the real resource in Base. A profile
 // also holds the agent's memory (proposed, then approved by the owner, with history and a preview of exactly what a job
@@ -11,10 +12,10 @@ window.PromptboardNetwork = (() => {
   // Agents works now; each other section says what it will do and offers no working-looking controls until then.
   const SECTIONS = [
     ['agents', 'Agents', ''],
-    ['graph', 'Graph', 'Draw networks from registered agents and nested networks, then publish versions. Saving a graph never starts work.'],
+    ['graph', 'Graph', ''],
     ['pipelines', 'Pipelines', 'Build execution pipelines from a published network: parallel steps, joins, approvals and a saved report.'],
     ['activity', 'Activity', 'Live status and events of Network jobs, with what each CLI can report shown next to every status.'],
-    ['library', 'Library', 'Every network and pipeline with its drafts, published versions and where each version is used, plus export and import.'],
+    ['library', 'Library', ''],
     ['federation', 'Federation', 'Work with trusted remote agents over A2A. It stays off until you turn it on.'],
   ];
   const PROFILE_TABS = [
@@ -41,7 +42,7 @@ window.PromptboardNetwork = (() => {
   const CAPABILITIES = [['toolEvents', 'Tool-level activity'], ['waitingEvents', 'Waiting and permission events'], ['readOnly', 'Enforced read-only mode'], ['webSearch', 'Read-only web search'],
     ['sessionId', 'Native session ID'], ['usage', 'Usage reported'], ['dockerSandbox', 'Docker sandbox'], ['liveVerified', 'Checked with the real CLI']];
   const VALUES = { yes: ['Yes', 'ok'], partial: ['Partly', 'warn'], no: ['No', 'off'], unknown: ['Unknown', ''] };
-  const AGENT_ID = /^agt_[0-9a-f]{20}$/;
+  const AGENT_ID = /^agt_[0-9a-f]{20}$/, NETWORK_ID = /^net_[0-9a-f]{20}$/;
 
   const note = (text, className = 'note') => el('p', className, text);
   const labelled = (text, control, className = 'field-label') => { const label = el('label', className); label.append(text, control); return label; };
@@ -63,11 +64,13 @@ window.PromptboardNetwork = (() => {
     return list;
   }
 
-  // #/network (Agents), #/network/agents/<id>, #/network/<section>. Anything else under #/network opens Agents.
+  // #/network (Agents), #/network/agents/<id>, #/network/<section>, #/network/library/<networkId>,
+  // #/network/graph/<networkId> and its published versions #/network/graph/<networkId>/v<n>. Anything else opens Agents.
   function route() {
-    const [section, id] = location.hash.replace(/^#\/network\/?/, '').split('/');
+    const [section, id, extra] = location.hash.replace(/^#\/network\/?/, '').split('/');
     if (section === 'agents' && AGENT_ID.test(id || '')) return { section: 'agents', agentId: id };
-    return { section: SECTIONS.some(([key]) => key === section) ? section : 'agents', agentId: null };
+    if (['graph', 'library'].includes(section) && NETWORK_ID.test(id || '')) return { section, agentId: null, networkId: id, version: section === 'graph' && /^v[1-9]\d{0,8}$/.test(extra || '') ? Number(extra.slice(1)) : null };
+    return { section: SECTIONS.some(([key]) => key === section) ? section : 'agents', agentId: null, networkId: null, version: null };
   }
   const hashFor = (section, agentId) => (agentId ? `#/network/agents/${agentId}` : section === 'agents' ? '#/network' : `#/network/${section}`);
 
@@ -104,7 +107,7 @@ window.PromptboardNetwork = (() => {
     const find = id => state.agents.find(agent => agent.id === id) || fetched.get(id) || null;
     async function request(path, options) {
       const { response, data } = await context.api(path, options);
-      if (!response.ok) throw Object.assign(new Error(data.error || 'Network could not complete this request. Nothing was changed.'), { code: data.code });
+      if (!response.ok) throw Object.assign(new Error(data.error || 'Network could not complete this request. Nothing was changed.'), { code: data.code, details: data.details });
       return data;
     }
 
@@ -115,7 +118,7 @@ window.PromptboardNetwork = (() => {
     titles.append(heading, note('Register Base agents once, then find them here. Their definitions stay in Base.', 'intro-description'));
     headActions.append(register); head.append(titles, headActions);
     const privacy = note('Network keeps references to Base agents in this computer’s data folder. Opening or editing them never runs an agent.', 'note network-privacy');
-    const panelOf = id => (id === 'agents' ? 'network-panel-agents' : 'network-panel-soon');
+    const panelOf = id => ({ agents: 'network-panel-agents', graph: 'network-panel-graph', library: 'network-panel-library' })[id] || 'network-panel-soon';
     const sections = tablist('Network sections', SECTIONS.map(([id, label, soon]) => [id, label, Boolean(soon)]), 'network-tab', panelOf, id => go(hashFor(id)), 'network-tabs');
     const status = note('', 'note network-status'); status.id = 'network-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
     const alert = el('div', 'inline-error network-alert'); alert.id = 'network-error'; alert.setAttribute('role', 'alert'); alert.hidden = true;
@@ -149,7 +152,10 @@ window.PromptboardNetwork = (() => {
     const agentsPanel = el('section', 'network-panel'); agentsPanel.id = 'network-panel-agents'; agentsPanel.setAttribute('role', 'tabpanel'); agentsPanel.setAttribute('aria-labelledby', 'network-tab-agents');
     agentsPanel.append(toolbar, layout);
     const soonPanel = el('section', 'network-panel network-unavailable'); soonPanel.id = 'network-panel-soon'; soonPanel.setAttribute('role', 'tabpanel'); soonPanel.hidden = true;
-    view.append(head, privacy, sections, status, alert, agentsPanel, soonPanel);
+    // Graph and Library (network-graph.js): the networks, their versions and the editor, beside the same status line.
+    const graphs = window.PromptboardNetworkGraph?.create({ request, say, go, showError, openDialog, closeDialog: () => closeDialog(),
+      memoryPanel: networkId => memoryView(null, networkId), openAgent: id => go(hashFor('agents', id)) }) || null;
+    view.append(head, privacy, sections, status, alert, agentsPanel, soonPanel, ...(graphs ? [graphs.library, graphs.graph] : []));
 
     // The sidebar lists the same sections as links, so the phone drawer and the keyboard both reach them.
     const sideNav = el('nav', 'base-categories network-sections'); sideNav.id = 'network-sections'; sideNav.setAttribute('aria-label', 'Network sections');
@@ -162,11 +168,15 @@ window.PromptboardNetwork = (() => {
 
     // ---- Rendering
     function render() {
-      const { section } = route();
+      const where = route(), { section } = where;
+      if (graphs && !graphs.guard(where)) return; // A graph with unsaved changes asks first; "keep editing" brings its address back.
       sections.select(section);
       for (const link of sideNav.children) { if (link.dataset.section === section) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current'); }
-      agentsPanel.hidden = section !== 'agents'; soonPanel.hidden = section === 'agents';
+      const own = Boolean(graphs) && ['graph', 'library'].includes(section);
+      agentsPanel.hidden = section !== 'agents'; soonPanel.hidden = section === 'agents' || own;
       register.hidden = section !== 'agents';
+      graphs?.show(own ? where : null);
+      if (own) return;
       if (section !== 'agents') {
         const [, label, text] = SECTIONS.find(([id]) => id === section);
         soonPanel.setAttribute('aria-labelledby', `network-tab-${section}`);
@@ -315,13 +325,14 @@ window.PromptboardNetwork = (() => {
     }
     const names = new Map(); // agentId → its networks ({ id, name }), read once per page visit.
     function networkNames(id) {
-      if (!names.has(id)) names.set(id, request(`/api/network/networks?agentId=${id}&limit=200`).then(data => data.networks.map(({ id: networkId, name }) => ({ id: networkId, name }))).catch(failure => { names.delete(id); throw failure; }));
+      if (!names.has(id)) names.set(id, request(`/api/network/networks?agentId=${id}&archived=true&limit=200`).then(data => data.networks.map(({ id: networkId, name }) => ({ id: networkId, name }))).catch(failure => { names.delete(id); throw failure; }));
       return names.get(id);
     }
 
     // ---- Memory: the agent's notes. Each starts as a proposal; only approved ones can reach a job. Every change names the
     // record revision shown here, so a note changed elsewhere is never approved unseen (the server answers 409; Reload).
-    const memory = { agentId: null, agent: null, key: '', data: null, error: null, loading: false, version: 0, focus: null, q: '', status: '', open: new Set(),
+    // `id` is the agent's or the network's ID and `path` its route; only an agent's memory has the job preview.
+    const memory = { id: null, path: '', agent: null, key: '', data: null, error: null, loading: false, version: 0, focus: null, q: '', status: '', open: new Set(),
       preview: null, previewError: '', previewKey: null, previewVersion: 0, project: '', lessons: false, network: '' };
     const memoryRoot = el('section', 'network-memory'); memoryRoot.setAttribute('aria-label', 'Memory');
     const memorySearch = Object.assign(el('input'), { type: 'search', placeholder: 'Find in memory…', autocomplete: 'off', maxLength: 200 }); memorySearch.id = 'network-memory-search';
@@ -342,10 +353,10 @@ window.PromptboardNetwork = (() => {
     const previewText = el('pre', 'network-preview-text'); previewText.id = 'network-preview-text'; previewText.tabIndex = 0; previewText.setAttribute('aria-label', 'Exact text a job would receive');
     const previewSize = note('', 'note network-preview-size'); previewSize.id = 'network-preview-size';
     const previewBox = el('div', 'network-preview'); previewBox.setAttribute('aria-live', 'polite'); previewBox.append(previewReasons, previewText, previewSize);
-    memoryRoot.append(el('h3', '', 'Memory'),
-      note('Notes this agent can be given in a Network job. You approve each one before any job receives it, and it is given as reference data, never as instructions. Project memory stays with each Kanban project.'),
-      memoryTools, memoryCounts, memoryAlert, memoryList, memoryEmpty, memoryMore,
-      el('h3', '', 'What a job would receive'), note('The exact text added to a job’s prompt for this agent, and why each part is in it or not. Nothing runs here.'), previewControls, previewBox);
+    const memoryIntro = note('');
+    const previewSection = el('div', 'network-preview-section');
+    previewSection.append(el('h3', '', 'What a job would receive'), note('The exact text added to a job’s prompt for this agent, and why each part is in it or not. Nothing runs here.'), previewControls, previewBox);
+    memoryRoot.append(el('h3', '', 'Memory'), memoryIntro, memoryTools, memoryCounts, memoryAlert, memoryList, memoryEmpty, memoryMore, previewSection);
     let memoryTimer = null;
     memorySearch.addEventListener('input', () => { clearTimeout(memoryTimer); memoryTimer = setTimeout(() => { if (memory.q !== memorySearch.value.trim()) { memory.q = memorySearch.value.trim(); void loadMemory(); } }, 250); });
     memoryStatus.addEventListener('change', () => { memory.status = memoryStatus.value; void loadMemory(); });
@@ -353,33 +364,41 @@ window.PromptboardNetwork = (() => {
       Object.assign(memory, { project: previewProject.value, lessons: previewLessons.checked, network: previewNetwork.value }); void loadPreview();
     });
 
-    /** The Memory panel of `agent` (one node kept across renders, so search text and focus survive a list reload). */
-    function memoryView(agent) {
-      if (memory.agentId !== agent.id) {
-        Object.assign(memory, { agentId: agent.id, data: null, error: null, loading: false, focus: null, q: '', status: '', open: new Set(), preview: null, previewError: '', previewKey: null, project: '', lessons: false, network: '' });
+    /**
+     * The Memory panel of `agent`, or of the network `networkId` (Library), as one node kept across renders, so search
+     * text and focus survive a list reload. A network's memory has no preview: it reaches a job only through an agent.
+     */
+    function memoryView(agent, networkId) {
+      const id = agent ? agent.id : networkId;
+      if (memory.id !== id) {
+        Object.assign(memory, { id, path: `/api/network/${agent ? 'agents' : 'networks'}/${id}`, data: null, error: null, loading: false, focus: null, q: '', status: '', open: new Set(), preview: null, previewError: '', previewKey: null, project: '', lessons: false, network: '' });
         memory.version++; memory.previewVersion++; memorySearch.value = ''; memoryStatus.value = ''; memoryAlert.hidden = true;
       }
+      memoryIntro.textContent = agent ? 'Notes this agent can be given in a Network job. You approve each one before any job receives it, and it is given as reference data, never as instructions. Project memory stays with each Kanban project.'
+        : 'Notes about this network. You approve each one; a job of one of its agents receives approved notes only when it runs in this network and asks for network memory, as reference data, never as instructions.';
+      previewSection.hidden = !agent; memory.agent = agent;
+      if (!agent) { renderMemory(); if (!memory.data && !memory.loading && !memory.error) void loadMemory(); return memoryRoot; }
       // What decides the preview: a change of the registration (on/off, projects, networks) or of its Base agent.
-      memory.agent = agent; memory.key = JSON.stringify([agent.id, agent.revision, agent.enabled, agent.base.stale, agent.networks, agent.projectAllowlist]);
+      memory.key = JSON.stringify([agent.id, agent.revision, agent.enabled, agent.base.stale, agent.networks, agent.projectAllowlist]);
       previewOptions(agent); renderMemory(); renderPreview();
       return memoryRoot;
     }
     function openTab() {
-      if (profileTab === 'memory' && memory.agentId) { if (!memory.data && !memory.loading) void loadMemory(); if (memory.previewKey !== memory.key) void loadPreview(); }
+      if (profileTab === 'memory' && memory.agent) { if (!memory.data && !memory.loading) void loadMemory(); if (memory.previewKey !== memory.key) void loadPreview(); }
       if (profileTab === 'posts' && posts.agentId && !posts.data && !posts.loading) void loadPosts();
     }
     async function loadMemory({ append = false } = {}) {
-      const agentId = memory.agentId, version = ++memory.version;
+      const version = ++memory.version;
       memory.loading = true; renderMemory();
       const params = new URLSearchParams({ limit: '200', offset: String(append ? memory.data.records.length : 0) });
       if (memory.q) params.set('q', memory.q); if (memory.status) params.set('status', memory.status);
       try {
-        const data = await request(`/api/network/agents/${agentId}/memory?${params}`);
+        const data = await request(`${memory.path}/memory?${params}`);
         if (version === memory.version) { memory.data = append ? { ...data, records: [...memory.data.records, ...data.records] } : data; memory.error = null; }
       } catch (failure) { if (version === memory.version) { if (append) memoryFailure(failure); else Object.assign(memory, { data: null, error: failure }); } }
       finally { if (version === memory.version) { memory.loading = false; renderMemory(); } }
     }
-    const refreshMemory = async () => { await loadMemory(); await loadPreview(); };
+    const refreshMemory = async () => { await loadMemory(); if (memory.agent) await loadPreview(); };
     function renderMemory() {
       const data = memory.data, waiting = !data && !memory.error, active = document.activeElement, keep = memoryList.contains(active) ? active.id : '';
       memoryList.setAttribute('aria-busy', String(memory.loading || waiting));
@@ -434,8 +453,8 @@ window.PromptboardNetwork = (() => {
     async function decide(record, decision) {
       memoryAlert.hidden = true;
       try {
-        await request(`/api/network/agents/${memory.agentId}/memory/${record.id}/approve`, { method: 'POST', body: { expectedRevision: record.revision, decision } });
-        say(decision === 'approve' ? 'Approved. Jobs of this agent may now receive it.' : 'No job receives it now.');
+        await request(`${memory.path}/memory/${record.id}/approve`, { method: 'POST', body: { expectedRevision: record.revision, decision } });
+        say(decision === 'approve' ? `Approved. ${memory.agent ? 'Jobs of this agent' : 'Jobs that run in this network and ask for its memory'} may now receive it.` : 'No job receives it now.');
         memory.focus = record.id; await refreshMemory();
       } catch (failure) { memoryFailure(failure); }
     }
@@ -457,8 +476,8 @@ window.PromptboardNetwork = (() => {
         event.preventDefault(); submit.disabled = true; failure.hidden = true;
         try {
           const data = record
-            ? await request(`/api/network/agents/${memory.agentId}/memory/${record.id}`, { method: 'PATCH', body: { expectedRevision: record.revision, kind: kind.value, text: text.value } })
-            : await request(`/api/network/agents/${memory.agentId}/memory`, { method: 'POST', body: { expectedRevision: memory.data?.revision ?? 0, kind: kind.value, text: text.value } });
+            ? await request(`${memory.path}/memory/${record.id}`, { method: 'PATCH', body: { expectedRevision: record.revision, kind: kind.value, text: text.value } })
+            : await request(`${memory.path}/memory`, { method: 'POST', body: { expectedRevision: memory.data?.revision ?? 0, kind: kind.value, text: text.value } });
           closeDialog(); say(record ? 'Saved the memory record.' : 'Proposed. Approve it when it is right.');
           memory.focus = data.record.id; await refreshMemory();
         } catch (error) {
@@ -471,7 +490,7 @@ window.PromptboardNetwork = (() => {
     }
     function deleteRecord(record) {
       confirmDialog('Delete memory?', [note(`“${clip(record.text, 200)}”`, 'note network-quote'), note('Jobs stop receiving it. It is deleted for good, with its history.')], async () => {
-        await request(`/api/network/agents/${memory.agentId}/memory/${record.id}`, { method: 'DELETE', body: { expectedRevision: record.revision } });
+        await request(`${memory.path}/memory/${record.id}`, { method: 'DELETE', body: { expectedRevision: record.revision } });
         say('Deleted the memory record.'); memory.focus = record.id; opener = memoryAdd;
       }, refreshMemory);
     }
@@ -482,10 +501,10 @@ window.PromptboardNetwork = (() => {
       previewLessons.checked = memory.lessons;
       const fill = list => { previewNetwork.replaceChildren(...select([['', 'No network'], ...list]).children); if (!list.some(([id]) => id === memory.network)) memory.network = ''; previewNetwork.value = memory.network; };
       fill(agent.networks.map(id => [id, id]));
-      if (agent.networks.length) void networkNames(agent.id).then(list => { if (memory.agentId === agent.id) fill(list.map(item => [item.id, item.name])); }, () => {});
+      if (agent.networks.length) void networkNames(agent.id).then(list => { if (memory.id === agent.id) fill(list.map(item => [item.id, item.name])); }, () => {});
     }
     async function loadPreview() {
-      const agentId = memory.agentId, key = memory.key, version = ++memory.previewVersion;
+      const agentId = memory.id, key = memory.key, version = ++memory.previewVersion;
       const params = new URLSearchParams({ memory: memory.network ? 'agent+network' : 'agent', projectLessons: String(memory.lessons) });
       if (memory.project) params.set('projectId', memory.project); if (memory.network) params.set('networkId', memory.network);
       previewBox.setAttribute('aria-busy', 'true');
@@ -744,11 +763,15 @@ window.PromptboardNetwork = (() => {
     // ---- Page entry
     async function show() {
       const entering = !visible; visible = true;
-      if (entering) { memory.agentId = null; posts.agentId = null; } // Read again on every visit, as the directory is.
+      if (entering) { memory.id = null; posts.agentId = null; } // Read again on every visit, as the directory is.
       render();
       if (entering) { say(''); showError(''); await load(); }
     }
-    function leave() { visible = false; if (dialog.open) { opener = null; closeDialog(); } } // A dialog never stays over another page.
+    function leave() {
+      if (graphs && !graphs.guard(null)) return; // Unsaved graph changes: "keep editing" brings the editor's address back.
+      visible = false; graphs?.show(null);
+      if (dialog.open) { opener = null; closeDialog(); } // A dialog never stays over another page.
+    }
     return { show, leave, refresh: load };
   }
   return { create };

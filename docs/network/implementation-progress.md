@@ -27,7 +27,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 | 02 | 02-registry-and-storage.md | done | 7771788 |
 | 03 | 03-network-page-and-agent-profiles.md | done | 9edf549 |
 | 04 | 04-agent-memory-and-feed.md | done | 1fc58b6 |
-| 05 | 05-graph-designer-and-subnetworks.md | pending | |
+| 05 | 05-graph-designer-and-subnetworks.md | done | (next commit) |
 | 06 | 06-general-purpose-job-engine.md | pending | |
 | 07 | 07-local-worker-runtime.md | pending | |
 | 08 | 08-live-activity-and-observability.md | pending | |
@@ -38,7 +38,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 | 13 | 13-a2a-federation.md | pending | |
 | 14 | 14-verification-and-release.md | pending | |
 
-**Next task:** 05
+**Next task:** 06
 
 ## Live provider runs
 
@@ -450,3 +450,156 @@ Job references on reports are refused until Task 06; machine-written reports wai
 **Commit.** 1fc58b6 (Task 04), then this log entry.
 
 **Next task: 05.**
+
+### Task 05 — Graph designer and nested networks (2026-10-26)
+
+**What was done.** Network → Library and Network → Graph work. The Library lists every network (search, Show archived)
+and, per network, its draft revision, published versions newest first with the latest marked, where it is used (other
+networks' drafts and published versions), the issues to fix and the network's own **Memory** (the Task 04 panel over the
+existing `/api/network/networks/:id/memory` routes, without the job preview); it creates, renames, duplicates, archives,
+restores and deletes networks, and exports/imports the Network file. Delete removes only a never-published network that
+nothing contains; otherwise the button is disabled with the reason and the server refuses (`NETWORK_IN_USE` with where,
+`NETWORK_PUBLISHED`); archive is offered instead and keeps every version readable and every pin working. The Graph edits
+one draft on a Cytoscape canvas: add agents (registrations) and sub-networks (a pin `{ networkId, version }` of a
+published version, never a copy), drag to place, typed relations (message, delegate, share_result) with own connect
+controls (canvas Connect mode with two taps, or the keyboard form in the node details), disconnect, remove, undo, pan,
+zoom, fit, grid and layered layouts on request, search, relation filter, collapse/expand of nested networks with lazy
+reads of the pinned version, and a 1,000-node view cap with a notice. Save draft is one `PATCH` of the whole working copy
+with the loaded revision (drags and layouts batched into it); a conflict overwrites nothing and offers "Load the saved
+draft" or "Save mine as a new network"; leaving with unsaved edits asks (in-app navigation and tab close). Publish
+writes an immutable version; the version chips `v1`, `v2 · latest` open a read-only view. The page says that saving or
+publishing starts nothing and that a relation grants no permission, sends no message and shares no data. Beside the canvas
+the Nodes and Relations lists and the details panel do everything by keyboard; at 390 px there is no canvas, only the
+lists and then one node's details. Nothing here starts a job, a run or a model call.
+
+**Dependency.** `cytoscape` **3.34.3** (published 2026-09-07, MIT, no dependencies), `npm install --save-exact`; `npm
+audit`: 0 vulnerabilities. Package 5.7 MB unpacked; the served `dist/cytoscape.min.js` is 435,503 bytes (136,854 gzip).
+Served by exact path `/vendor/cytoscape.min.js` from `node_modules` (the vendor map now resolves from `node_modules/`;
+the xterm entries gained their `@xterm/` prefix) and loaded by `index.html` with `<script defer>` (architecture §13). The CSP
+is unchanged: Cytoscape's one `<style>` rule is in `styles.css` and `<meta id="__________cytoscape_stylesheet">` in
+`index.html` tells it so; the Chrome test proves no `<style>` element is inserted and no CSP message appears. No
+`cytoscape-edgehandles`. Licence text added to `THIRD_PARTY_NOTICES.md` (checked by `tests/cli.test.mjs`).
+
+**Files.** New: `public/network-graph.js`, `tests/network-graph.test.mjs`, `tests/network-graph-ui.test.mjs`,
+`tests/network-graph-browser.test.mjs`. Changed: `src/network/registry.mjs` (archive flag, `networkDetail` with refs,
+issues and uses, duplicate, delete, version refs, cycle message with the fix), `src/network/http.mjs` (DELETE, duplicate,
+`archived` query, detail route), `src/server.mjs` (`/network-graph.js`, `/vendor/cytoscape.min.js`), `public/network.js`
+(routes `#/network/{library,graph}/<id>[/v<n>]`, the guard, Graph and Library available, error `details`, the Memory panel
+for a network too), `public/index.html` (Cytoscape script and placeholder, `network-graph.js`), `public/styles.css`,
+`package.json`, `package-lock.json`, `THIRD_PARTY_NOTICES.md`, `tests/helpers/ui-harness.mjs` (evaluates
+`network-graph.js`), `tests/network-ui.test.mjs` and `tests/network-browser.test.mjs` (Graph and Library are no longer
+"soon"), `tests/remote-access.test.mjs` (2 rows), `docs/network/architecture.md` (§4.5 note, §4.8, §5, §10.1 row 05,
+§12.2, §13), `docs/network/acceptance.md` (test file names), this file.
+
+**Routes.** New: `DELETE /api/network/networks/:id` (`{ expectedRevision }`), `POST /api/network/networks/:id/duplicate`
+(`{ name? }`). Changed: `GET /api/network/networks?archived=true`; `PATCH /api/network/networks/:id` takes `archived`;
+`GET /networks/:id` and every create/update/publish/duplicate answer `{ network, refs, issues, usedBy, usedByUnknown }`;
+`GET …/versions/:n` answers `{ version, refs }`. All behind `handle()`, allowed from a paired device, listed in
+`tests/remote-access.test.mjs`. Decisions: architecture §4.8 and §12.2.
+
+**Tests** (temporary data folders, no CLI, no network beyond the local test server):
+
+- `tests/network-graph.test.mjs` 6 tests: (1) a 3-agent network pinning a 2-agent version saves and reads back the same
+  (fractional position, IDs, relations) after a restart; refs; a batched move; version refs not stored in the version
+  file; (2) one child version reused by two parents: each stored pin holds only `id, type, networkId, version, position`,
+  no child agent ID, name or Base instruction text in the parents, one version file; Used by lists both (draft and v1
+  pins); duplicate keeps references, starts unpublished (also from a published network), names `(copy)`, `(copy) (2)`,
+  refuses a taken name and extra fields; rename leaves the published name; (3) A → B → C → A refused with
+  `details.path` and the fix in the message, the draft byte-identical; a self-pin is a cycle; delete refused
+  `NETWORK_IN_USE` (draft and version uses, "only be archived"), `NETWORK_PUBLISHED`, conflict, missing revision; a draft
+  deleted: draft and backup set aside, memory file kept, gone after a restart; fails closed while a draft is unreadable;
+  (4) archive: hidden, listed with `archived=true`, bad values refused, versions readable, the parent still saves with a
+  `SUBNETWORK_ARCHIVED` issue, export/import keep the flag (a false flag refused), restore removes it; (5) issues
+  `AGENT_DISABLED`, `AGENT_STALE` (Base agent switched off), `SUBNETWORK_OUTDATED` with messages; a tampered pinned
+  version gives `pinned: null` and `SUBNETWORK_UNAVAILABLE` while a save is refused; (6) the routes over the real server:
+  detail, version refs, delete refusals with IDs only and no data-folder path, 404/403/409, duplicate, archive, list
+  filter, `archived=maybe` 400; zero runner calls, `state.json` byte-identical, `network/` holds only registrations and
+  networks.
+- `tests/network-graph-ui.test.mjs` 5 tests (jsdom; no canvas there, so the keyboard lists): (1) New network → Add agent
+  ×3 (switched-off marked, placed ones disabled) → Add sub-network (pin v1, never itself) → three typed relations from the
+  form, duplicate refused, no self target → grid → Save; the server draft has those agents, pin, grid positions and
+  relations; the switched-off agent's issue says what to do; reopened in a new page with the same nodes, relations and
+  position; Publish v1, disconnect, Save: v1 identical; Publish v2: chips `v1`, `v2 · latest`; the v1 view is read only
+  with its 3 relations; Library versions and Used by; only GETs and graph routes, zero runner calls; (2) the indirect
+  cycle in the editor: the message with the path, the node marked, the saved draft identical, Remove from the alert,
+  Undo ×2 back to clean; (3) `beforeunload` only when dirty; navigation inside Network and to Base asks (declined keeps
+  the editor and edits; accepted discards); a conflicting save offers both choices, "Save mine" makes `Team (my
+  changes)` with the edits and leaves the other draft; "Load the saved draft" drops edits; (4) Library: server search;
+  Delete disabled with the reason (used, published); archive, Show archived, restore with focus kept; rename and a rename
+  conflict with Reload (nothing saved); delete of an unused draft; duplicate; export (file name and content) and import
+  (counts, agents off, nothing ran) and a non-JSON file refused; network memory proposed and approved in the Library;
+  (5) every Graph and Library control named, disabled buttons carry a reason; row → focused details; canvas keys move,
+  delete and undo; search and relation filter; "Show what is inside"; phone width shows one node with Back and focus
+  back on its row.
+- `tests/network-graph-browser.test.mjs` 2 tests (Chrome): (1) the child and parent built through the UI, three nodes
+  dragged with real mouse events, three relations by Connect + taps, a double tap on one node refused; the canvas equals
+  the saved draft and the dragged positions were saved; after a page reload the same positions and relations; publish
+  v1; drag + disconnect + save: v1 identical; expand the nested network (2 inner nodes, read only, the switched-off one
+  marked); the cycle Review pair → Research team → Review pair refused with its message and the node marked; discard;
+  light and dark at 1440 (canvas beside the lists, theme colours differ) and 390 (no canvas, lists, then one node with
+  Back); Cytoscape from `/vendor/`, no outside request, no `<style>` element, no exception or CSP message; (2) the stress
+  fixture below.
+- Existing tests changed only where Graph and Library were "soon" (`network-ui` test 1, `network-browser`), plus the 2
+  route rows in `remote-access`.
+- Mutation check (`$TMPDIR/network-logs/task-05-mutations.log`, final code): 37 of 38 mutations make a test fail (delete
+  in-use, published and unreadable checks, setting the backup aside, the archived filter and its import, a duplicate's
+  unpublished state, Used by of versions, the disabled and outdated issues, unreadable pins, the cycle fix text, the
+  DELETE, duplicate and detail routes, the guard, `beforeunload`, the conflict choices, the cycle's marked node, undo, no
+  self target, no duplicate relation, read-only versions, the node state, the delete reason, the network memory panel,
+  the archived query, import, the phone details, arrow keys, the relation filter, the view cap, the stylesheet placeholder,
+  the container rule, no canvas on a phone, the vendor route, a drag reaching the saved draft). The one that does not:
+  removing the `POST duplicate` row from `remote-access` (its scan matches actions by suffix and Kanban already has
+  `/api/tasks/:id/duplicate`; a pre-existing limit of that test, listed below).
+- Runs: `npm run check` pass; the new tests twice: 11/11 non-browser and 2/2 browser, both times
+  (`task-05-new-twice.log`); touched modules `network-ui`, `network-registry`, `network-http`, `network-memory`,
+  `remote-access`, `cli`, `server`, `ui`, `ui-2`, `ui-3`, `project-explorer-ui`, `sandbox-ui` 208/208 (`task-05-touched.log`).
+- Full `npm test` on the final code (log `$TMPDIR/network-logs/task-05-suite.log`, 2026-10-26 07:32–07:59): non-browser
+  1,554 tests, 1,553 pass, 0 fail, 0 cancelled, 1 skipped (the win32-only `editors.test.mjs` test); browser 150/150. Exit 0,
+  no reruns needed. Task 04's 1,543 + 6 model + 5 UI = 1,554; 148 + 2 = 150. (Docs were edited during the run; the
+  screenshots and the mutation log were made after it on the same code.)
+
+**Performance** (headless Chrome 1440×1000 with software rendering (`--use-angle=swiftshader`), this Mac, the test alone,
+six runs, and once inside the full suite): the 1,000-node / 999-relation draft draws in **0.53–1.21 s** (1.41 s in the suite) from choosing it to two painted frames after
+every node is on the canvas (cold first canvas of the page; a second open is about 0.15 s; target under 3 s met); five
+pan/zoom steps each 20–970 ms, median about 100 ms (the slow ones are Cytoscape rebuilding its cached textures at a new
+zoom level in software); choosing a node from the list 35–160 ms; Fit 25–180 ms; expanding a 500-node pinned version
+(read lazily) 165–575 ms; JS heap after GC 3.2 MB before and 14.7–16.8 MB after opening the 1,000-node graph (**+11.4 to
++13.6 MB**). Last run: `{"firstRenderMs":645,"panZoomStepMs":[47,81,43,148,95],"chooseNodeMs":70,"fitMs":119,
+"expand500Ms":574,"heapDeltaMB":11.4}` (`$TMPDIR/network-logs/task-05-perf.json`). The view cap refused expanding a 600-node version next to it ("would then draw 1,112, more than the
+1,000-node view limit") and drew nothing more; a 1,001-node draft shows its notice. Before two fixes the same fixture
+took 2.2 s to draw and up to 2–3 s per zoom step: adding elements one by one (now one `cy.add` per change) and dashed
+lines (now solid above 300 relations; measured: dashes cost 1–3.7 s per frame, solid 20–300 ms). The suite asserts only
+under 10 s (CI draws in software under load); `PB_NETWORK_PERF_LOG=<file>` writes the numbers. No promise of running
+workers is made or implied: the fixture only draws registrations.
+
+**Acceptance criteria and evidence** (screenshots in `$TMPDIR/network-logs/task-05-screens/`, all looked at):
+
+- *Visual editor creates a 3-agent network with a nested 2-agent network; saves and reopens with positions/edges
+  preserved:* browser test 1 (mouse, reload), UI test 1 (lists, new page), model test 1 (restart);
+  `graph-1440-{light,dark}.png`, `graph-1440-light-expanded.png`.
+- *One nested network is reused by two parents with no copied resources:* model test 2, UI test 1 (Used by).
+- *Cycles are rejected and actionable errors displayed:* model test 3, UI test 2 (indirect, through the UI path), browser
+  test 1; `graph-1440-light-cycle.png`.
+- *Graph editing/publishing never starts work or leaks data; 500+ node stress fixture is measurable:* model test 6 (zero
+  runner calls, `state.json` identical, only registrations and networks under `network/`), UI test 1 (request log),
+  model test 2 (no Base instruction text in drafts); browser test 2 and the numbers above; `stress-1000.png`,
+  `stress-lazy-cap.png`.
+- acceptance.md Task 05 rows: 1 → browser 1, UI 1, model 1; 2 → model 2; 3 → model 3, UI 2, browser 1 (`NETWORK_IN_USE`:
+  model 3, 6, UI 4); 4 → model 5, UI 1, browser 1 (disabled marked), self-relation refused in all three; 5 → UI 3, browser
+  1 (dirty chip); 6 → browser 1; 7 → browser 2; 8 → UI 5, browser 1 (390 px); `graph-390-{light,dark}-{list,detail}.png`,
+  `library-{1440,390}-{light,dark}.png`.
+
+**Known limits.** The view cap counts nodes (1,000), not relations; a draft above it is still drawn whole. Pan and zoom on
+1,000 nodes can stall up to about 1 s when Cytoscape rebuilds textures in software rendering; GPU drawing should be faster
+(not measured). Above 300 relations they are drawn solid, not dashed. The side lists show 200 rows until "Show all". The
+Add dialogs list the first 200 agents or networks (search narrows them). Expansion is not remembered (default collapsed);
+the stored `collapsed` flag is kept but unused. Inner nodes of an expanded network are read only and cannot be connected
+(open that network to change it). Layouts, drags and arrow keys are undone one step at a time (50 steps). `usedBy` reads
+every published version once per server start. The vendor script is parsed on every page load (about 136 KB gzip). The
+`remote-access` route scan matches actions by suffix, so the `duplicate` row is also satisfied by Kanban's
+`/api/tasks/:id/duplicate` (the row is listed anyway). No isolated app instance outside the tests ran except a scratch
+look and two perf experiments on port 4905 (temporary folders, removed). Paid CLI runs: 0.
+
+**Commit.** Recorded in the next commit.
+
+**Next task: 06.**

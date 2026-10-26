@@ -193,7 +193,8 @@ reading new backups. A board restore never starts Network work because jobs are 
 ### 4.5 Retention
 
 - Published network and pipeline versions: never deleted automatically. Delete of a network or pipeline is refused while
-  a non-terminal job or pipeline run references any of its versions (`NETWORK_IN_USE`).
+  a non-terminal job or pipeline run references any of its versions (`NETWORK_IN_USE`). Task 05 is stricter for networks:
+  a published or contained network cannot be deleted at all, only archived (§4.8).
 - Jobs: metadata, `request.json` and `result.*` are kept until the owner deletes a terminal job. `stream.jsonl` and
   `output.log` of terminal jobs older than `outputRetentionDays` (default 30) are removed once per start, bounded to 500
   jobs per sweep (as `src/board.mjs:721-735`), never for a job referenced by a non-terminal pipeline run or parent job.
@@ -291,6 +292,42 @@ Refinements made while building `src/network/{memory,posts}.mjs`; none changes a
 11. **Shared helpers** (`only`, `requireRevision`, `conflict`, `object`, `page`, `cleanText`) moved from `registry.mjs` to
     `storage.mjs` so memory, posts and later domains use one copy.
 
+### 4.8 Graph and Library settled in Task 05
+
+Refinements made while building Network → Graph and Network → Library (`src/network/registry.mjs`, `http.mjs`,
+`public/network-graph.js`); none changes a binding rule.
+
+1. **Delete** (`DELETE /api/network/networks/:id`, `{ expectedRevision }`) removes only a network that was never published
+   and that no other network's draft or published version contains. Otherwise it is refused with the reason:
+   `NETWORK_IN_USE` (409, `details.usedBy` = `[{ networkId, name, archived, draft: pinnedVersion|null, versions:
+   [{ version, pins }] }]`; a use by a published version lasts for good, so the message says it can only be archived) or
+   `NETWORK_PUBLISHED` (409; a later run may pin any published version). While any saved draft cannot be read the delete
+   fails closed (`NETWORK_DATA_DAMAGED`): that draft might use it. A deleted draft and its backup are set aside as
+   `<file>.deleted-<time>-<random>` (backup first, so the draft cannot come back from it): never read again, recoverable by
+   hand. Its memory file stays (§4.7 item 9). Version files are never deleted.
+2. **Archive** is the answer for everything delete refuses: `PATCH …/networks/:id { expectedRevision, archived: true|false }`
+   stores `archived: true` on the draft (absent when not archived, so older drafts and exports stay valid). An archived
+   network leaves `GET /networks` unless `?archived=true`, is not offered as a new sub-network, and keeps every version
+   readable; every existing pin keeps working and shows an issue (`SUBNETWORK_ARCHIVED`). Export and import carry the flag.
+3. **Duplicate** (`POST …/networks/:id/duplicate`, `{ name? }`) writes a new unpublished draft with the same nodes, relations
+   and pins (IDs and version numbers only; nothing copied by value); the name defaults to `<name> (copy)`, then ` (2)`….
+   Rename is the existing `PATCH { name, description }`; published versions keep the name they were published with.
+4. **Detail answers.** `GET /networks/:id` and every create, update, publish and duplicate answer
+   `{ network, refs, issues, usedBy, usedByUnknown }`; `GET …/versions/:n` answers `{ version, refs }`. `refs` is computed
+   on read and never stored (it is not part of a version's hashed bytes): per agent `{ name, kind, provider, enabled,
+   stale, staleReason }` (or `{ missing: true }`), per sub-network `{ name, archived, versions, pinned: { nodes, edges } |
+   null }` (null when the pinned version cannot be read). `issues` (warnings; saving never depends on them):
+   `AGENT_MISSING`, `AGENT_DISABLED`, `AGENT_STALE`, `SUBNETWORK_UNAVAILABLE`, `SUBNETWORK_ARCHIVED`, `SUBNETWORK_OUTDATED`
+   (with `latest`), each with `nodeId` and a message that says what to do. `usedBy` reads every published version once
+   and caches it (`ponytail:` reverse index if installs reach thousands of versions); a draft or version that cannot be read
+   is listed in `usedByUnknown` instead of failing the answer. `registry.network(id)` stays the light read memory uses.
+5. **Errors that point at a fix.** `NETWORK_CYCLE` now says which sub-network to remove ("Remove the sub-network “B” from
+   this network, or pin a version of it that does not contain this network"); a self-pin is a cycle, not a missing
+   reference. The editor marks the node that closes the loop (`details.path[1]`) and the nodes of a
+   `NETWORK_REFERENCE_INVALID`, and offers to remove them; the draft on disk is unchanged and the edits are kept.
+6. **`collapsed`** stays accepted and round-trips unchanged, but the Graph does not write it: expansion is view state
+   (default collapsed, lazy), because expanding must not change the draft or a version's hash.
+
 ## 5. Data shapes
 
 Field names are binding; tasks may add optional fields.
@@ -313,7 +350,7 @@ NetworkDraft = { schema, version: 1, id: 'net_…', name /* ≤80, unique case-i
   nodes: [ { id: 'n_…', type: 'agent', agentId, position: { x, y }, collapsed?: true }
          | { id: 'n_…', type: 'subnetwork', networkId, version: number /* pinned published version */, position, collapsed? } ],
   edges: [ { id: 'e_…', from: nodeId, to: nodeId, relation: 'message' | 'delegate' | 'share_result' } ],
-  publishedVersions: [ { version, sha256, publishedAt } ] }
+  publishedVersions: [ { version, sha256, publishedAt } ], archived?: true /* Task 05: only while archived */ }
 NetworkVersion = { schema, version: 1, networkId, number, sha256, publishedAt, name, description, nodes, edges }
 
 // network/pipelines/<id>.json
@@ -602,7 +639,7 @@ The token, Host, Origin, proxy and fetch-site checks before it (`:470-489`) stay
 | 02 | `GET/POST /api/network/agents`, `GET/PATCH /api/network/agents/:id`; `GET/POST /api/network/networks`, `GET/PATCH /api/network/networks/:id`, `POST /api/network/networks/:id/publish`, `GET /api/network/networks/:id/versions/:n`; `GET /api/network/export`, `POST /api/network/import` |
 | 03 | no new route: `GET /api/network/agents` also takes `kind` (`profile`/`agentProfile`) and `provider`, and answers `facets.capabilities`; agent views gain the computed fields of §5 |
 | 04 | `GET/POST /api/network/agents/:id/memory` (list with `?q=` keywords and `status`, propose with the scope revision), `PATCH/DELETE /api/network/agents/:id/memory/:mid` (record revision; DELETE takes it in the body), `POST /api/network/agents/:id/memory/:mid/approve` (`{ expectedRevision, decision: 'approve' \| 'reject' }`), `GET /api/network/agents/:id/memory/preview?projectId&networkId&memory&projectLessons`; the same except the preview under `/api/network/networks/:id/memory`; `GET/POST /api/network/agents/:id/posts`, `PATCH/DELETE /api/network/agents/:id/posts/:pid` (§4.7) |
-| 05 | `DELETE /api/network/networks/:id`, `POST /api/network/networks/:id/duplicate` |
+| 05 | `DELETE /api/network/networks/:id` (`{ expectedRevision }`), `POST /api/network/networks/:id/duplicate` (`{ name? }`); `GET /api/network/networks` also takes `archived=true`; `PATCH /api/network/networks/:id` also takes `archived`; network answers carry `refs`, `issues`, `usedBy` and versions `refs` (§4.8) |
 | 06 | `GET/PATCH /api/network/settings`; `POST/GET /api/network/jobs`, `GET /api/network/jobs/:id`, `POST /api/network/jobs/:id/cancel`, `POST /api/network/jobs/:id/approve`, `POST /api/network/jobs/:id/retry`, `POST /api/network/jobs/:id/close`, `DELETE /api/network/jobs/:id` (terminal only) |
 | 07 | `GET /api/network/jobs/:id/result`, `GET /api/network/jobs/:id/attempts/:aid/:artifact` (`prompt`, `output`, `result`) |
 | 08 | `GET /api/network/events?after=&limit=&agentId=&jobId=&networkId=&pipelineRunId=`, `GET /api/network/events/stream?after=` |
@@ -821,11 +858,55 @@ Refinements of the plan above made while building `public/network.js`; none chan
    (was 430), the actions compact at ≤ 540 px (was 500), the links tighten at ≤ 610 px (was 560), and link padding is
    9 px at ≤ 820 px. `tests/app-fixes-browser.test.mjs` checks the widths just above each step on all five pages.
 
+### 12.2 Settled in Task 05 (Graph and Library)
+
+1. **Routes:** `#/network/library`, `#/network/library/<networkId>`, `#/network/graph` (choose a network),
+   `#/network/graph/<networkId>` (the draft editor) and `#/network/graph/<networkId>/v<n>` (a published version, read only).
+   `public/network-graph.js` (`window.PromptboardNetworkGraph.create`) owns both panels; `network.js` routes to it and lends
+   it its status line, dialog and the Memory panel.
+2. **Library:** search (server), Show archived, New network, Export (the Network file through `PromptboardDom.download`),
+   Import (a file; registrations arrive switched off), and per network: Open in Graph, Rename, Duplicate, Archive/Restore,
+   Delete (disabled with the reason when §4.8 would refuse it), published versions newest first with Latest and View,
+   Used by, Check (issues) and the network's **Memory** (the Task 04 panel over `/api/network/networks/:id/memory`, without
+   the job preview, which exists for agents only).
+3. **Editor:** a working copy edited locally, saved as one `PATCH` of all nodes and relations with the loaded revision
+   (positions from drags, arrow keys and layouts are batched into it). Save draft, Publish version n (saves first when
+   needed, with a confirmation that versions never change), Undo (50 steps), Discard changes, version chips `v1`, `v2 · latest`
+   (each opens the read-only view). Add agent (search over registrations; switched-off and stale ones marked; already
+   placed ones disabled), Add sub-network (only published versions of other, non-archived networks; the pin is
+   `{ networkId, version }`), own connect controls (no edgehandles): the node details' "Connect from" form (keyboard), or
+   Connect mode on the canvas (relation select, then two taps; Escape stops), Disconnect in the relation list, the node's
+   relations and the relation details; Remove (node with its relations, or a relation). The page says plainly that saving or
+   publishing starts nothing and that a relation grants no permission, sends no message and shares no data.
+4. **Canvas** (Cytoscape, desktop only): drag to place, wheel/pinch pan and zoom plus Fit, −, +; Arrange in a grid (plain
+   JS, so it also works without the canvas) and Arrange in layers (breadth-first along the relations), both only on request;
+   search fades non-matching nodes and filters the lists; relation checkboxes hide a type. Colours come from the page tokens
+   and follow the theme. Relations are dashed with a colour and arrow shape per type (message: triangle, delegate: tee,
+   share result: circle); above 300 relations on the canvas they are drawn solid, because dashes cost seconds per frame in
+   software rendering (measured). Graphs above 300 nodes pan and zoom on a cached image with relations hidden while moving.
+   Switched-off agents are dashed and faded, stale/missing ones and unreadable pins have a warning border, the node that
+   closes a refused cycle an error border.
+5. **Lazy nested networks:** a sub-network node is drawn collapsed (name, pinned version, size). Expanding it (double-click
+   or the details button) reads that version then (`GET …/versions/:n`, cached for the visit) and draws its nodes and
+   relations inside it, read only and not draggable; nested sub-networks inside can be expanded in turn. **View cap:** at
+   most 1,000 nodes are drawn; an expansion that would pass it is refused with a notice that names the sizes and what to
+   do, and a draft that itself has more than 1,000 nodes is drawn with a notice. Without a canvas, "Show what is inside"
+   lists the pinned version's nodes (first 200).
+6. **Accessible fallback and phones:** beside the canvas, the Nodes and Relations lists (200 rows, then "Show all") and the
+   details panel do everything with the keyboard; with the canvas focused, arrow keys move the chosen node (Shift: 50),
+   Delete removes it and Escape stops connecting. At ≤ 730 px the canvas is never created: the lists, then one node's
+   details with "Back to the lists" (focus returns to the row). Without Cytoscape (the vendor file missing), the page says
+   so and the lists edit the same draft.
+7. **Unsaved changes and conflicts:** leaving the editor (another section, another page, another network) asks with
+   `window.confirm` as Base does; "keep editing" brings the editor's address back. Closing the tab asks through
+   `beforeunload`. A save over a newer draft (`REVISION_CONFLICT`) overwrites nothing and offers "Load the saved draft"
+   (drops the edits) or "Save mine as a new network" (`<name> (my changes)`).
+
 ## 13. Dependencies (checked 2026-10-26 with `npm view`; nothing installed)
 
 | Package | Decision | Version (published) | License | Size | Notes |
 |---|---|---|---|---|---|
-| `cytoscape` | **Use** (Task 05) | 3.34.3 (2026-09-07) | MIT | 5.7 MB unpacked; `dist/cytoscape.min.js` 435,503 B (137 KB gzip) | No dependencies. UMD `dist/cytoscape.min.js` served by exact path `/vendor/cytoscape.min.js` (like xterm, `src/server.mjs:82-88`) and loaded with a `<script defer>`; ESM build exists but the app uses classic scripts. The bundle has no `eval`, `new Function`, workers or network calls, but inserts one `<style>` element (`.__________cytoscape_container{position:relative}`) unless an element with id `__________cytoscape_stylesheet` exists; the CSP (`style-src 'self'`) would block it. Put that rule in `styles.css` and an empty `<meta id="__________cytoscape_stylesheet">` in `index.html`. Never relax the CSP. 3.34.4 (2026-10-15) is too new. |
+| `cytoscape` | **Installed** (Task 05: `npm install --save-exact`, `npm audit` 0 vulnerabilities, no dependencies; `THIRD_PARTY_NOTICES.md`). The vendor map now resolves paths from `node_modules/` (xterm entries gained their `@xterm/` prefix); only the listed exact paths are served. | 3.34.3 (2026-09-07) | MIT | 5.7 MB unpacked; `dist/cytoscape.min.js` 435,503 B (137 KB gzip) | No dependencies. UMD `dist/cytoscape.min.js` served by exact path `/vendor/cytoscape.min.js` (like xterm, `src/server.mjs:82-88`) and loaded with a `<script defer>`; ESM build exists but the app uses classic scripts. The bundle has no `eval`, `new Function`, workers or network calls, but inserts one `<style>` element (`.__________cytoscape_container{position:relative}`) unless an element with id `__________cytoscape_stylesheet` exists; the CSP (`style-src 'self'`) would block it. Put that rule in `styles.css` and an empty `<meta id="__________cytoscape_stylesheet">` in `index.html`. Never relax the CSP. 3.34.4 (2026-10-15) is too new. |
 | `cytoscape-edgehandles` | **Do not use** | 4.0.1 (2021-07-28) | MIT | 201 KB | Its UMD build reads `lodash.memoize`/`lodash.throttle` as `root._.memoize`/`root._.throttle` (needs a global lodash) and is unmaintained since 2021. Task 05 writes its own connect controls: select a node, choose "Connect to…", pick the target by click or from a keyboard list, choose the relation. |
 | `@modelcontextprotocol/server` | **Use** (Task 11) | 2.3.1 (2026-10-05) | Apache-2.0 | 7.0 MB | Same release as the installed `@modelcontextprotocol/client` 2.3.1 and `core` 2.3.1 (`package.json`, `node_modules/@modelcontextprotocol/`); its only dependencies are `zod ^4.2.0` (4.6.7 installed) and `core` 2.3.1. Exports `McpServer`, `./stdio` (`StdioServerTransport`, `serveStdio`), `WebStandardStreamableHTTPServerTransport`, Host/Origin validators. 2.4.0 (2026-10-23) is too new; upgrade client and server together later. |
 | `@a2a-js/sdk` | **Use** (Task 13) | 1.3.0 (2026-09-29) | Apache-2.0 | 4.5 MB | A2A protocol `1.0` (`PROTOCOL_VERSION = "1.0"`). Hard dependency only `jose ^6.2.3` (6.2.12 installed); Express, gRPC and databases are optional peers and not needed: use `DefaultRequestHandler`, `JsonRpcTransportHandler`, `InMemoryTaskStore` (server) and `ClientFactory`, `DefaultAgentCardResolver`, `JsonRpcTransportFactory` with `fetchImpl` (client). |

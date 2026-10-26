@@ -80,15 +80,17 @@ const assets = new Map([
   ['/lessons.js', ['lessons.js', 'text/javascript; charset=utf-8']],
   ['/sandbox.js', ['sandbox.js', 'text/javascript; charset=utf-8']],
   ['/network.js', ['network.js', 'text/javascript; charset=utf-8']],
+  ['/network-graph.js', ['network-graph.js', 'text/javascript; charset=utf-8']],
 ]);
-// Pinned terminal assets, served from the installed packages by exact path only (no CDN,
-// no directory browsing). Missing files (no npm install) return 404 and the dock falls back.
-const vendorDir = fileURLToPath(new URL('../node_modules/@xterm/', import.meta.url));
+// Pinned terminal and graph assets, served from the installed packages by exact path only (no CDN,
+// no directory browsing). Missing files (no npm install) return 404: the dock and the Network graph fall back.
+const vendorDir = fileURLToPath(new URL('../node_modules/', import.meta.url));
 const vendor = new Map([
-  ['/vendor/xterm.js', ['xterm/lib/xterm.js', 'text/javascript; charset=utf-8']],
-  ['/vendor/xterm.css', ['xterm/css/xterm.css', 'text/css; charset=utf-8']],
-  ['/vendor/addon-fit.js', ['addon-fit/lib/addon-fit.js', 'text/javascript; charset=utf-8']],
-  ['/vendor/addon-webgl.js', ['addon-webgl/lib/addon-webgl.js', 'text/javascript; charset=utf-8']],
+  ['/vendor/xterm.js', ['@xterm/xterm/lib/xterm.js', 'text/javascript; charset=utf-8']],
+  ['/vendor/xterm.css', ['@xterm/xterm/css/xterm.css', 'text/css; charset=utf-8']],
+  ['/vendor/addon-fit.js', ['@xterm/addon-fit/lib/addon-fit.js', 'text/javascript; charset=utf-8']],
+  ['/vendor/addon-webgl.js', ['@xterm/addon-webgl/lib/addon-webgl.js', 'text/javascript; charset=utf-8']],
+  ['/vendor/cytoscape.min.js', ['cytoscape/dist/cytoscape.min.js', 'text/javascript; charset=utf-8']], // Network → Graph canvas (MIT).
 ]);
 
 function send(res, code, body) {

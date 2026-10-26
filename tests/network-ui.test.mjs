@@ -71,24 +71,24 @@ test('Network is the fifth page: nav, title, skip link and sidebar; back and for
   assert.deepEqual([win.document.activeElement.id, win.location.hash], ['network-view', '#/network']);
   assert.equal($('#network-view').getAttribute('aria-labelledby'), 'network-heading'); assert.equal($('#network-heading').textContent, 'Network');
   assert.deepEqual([...$('#network-view [role="tablist"]').querySelectorAll('[role="tab"]')].map(tab => [tab.dataset.tab, tab.getAttribute('aria-selected'), tab.dataset.available || 'true']),
-    [['agents', 'true', 'true'], ['graph', 'false', 'false'], ['pipelines', 'false', 'false'], ['activity', 'false', 'false'], ['library', 'false', 'false'], ['federation', 'false', 'false']]);
+    [['agents', 'true', 'true'], ['graph', 'false', 'true'], ['pipelines', 'false', 'false'], ['activity', 'false', 'false'], ['library', 'false', 'true'], ['federation', 'false', 'false']]);
   // Every page still opens, and history moves through all five pages and Network's own sub-routes.
   const open = page => () => Object.entries(VIEWS).every(([hash, id]) => $(id).hidden === (hash !== page));
   for (const hash of ['#/origin', '#/', '#/kanban', '#/base']) await visit(ctx, hash, open(hash));
   assert.equal($('#base-error').hidden, true, $('#base-error').textContent);
   await until(() => $('.base-list-panel').getAttribute('aria-busy') === 'false', 'Base still loads');
   assert.ok(!$('#prompt-input').disabled && $('#generate-button'), 'Compose still works');
-  await visit(ctx, '#/network/graph', () => !$('#network-panel-soon').hidden);
+  await visit(ctx, '#/network/graph', () => !$('#network-panel-graph').hidden && $('#network-panel-soon').hidden);
   assert.deepEqual([win.document.title, $('#network-tab-graph').getAttribute('aria-selected'), $('#network-panel-agents').hidden], ['Network · Promptboard', 'true', true]);
   assert.equal($('#network-sections [aria-current="page"]').dataset.section, 'graph');
   await visit(ctx, `#/network/agents/${lead.id}`, () => $('#network-detail-heading')?.textContent === 'Lead');
   const back = async (check, label) => { win.history.back(); await until(check, `back to ${label}`); };
   const forward = async (check, label) => { win.history.forward(); await until(check, `forward to ${label}`); };
-  await back(() => !$('#network-panel-soon').hidden && $('#network-tab-graph').getAttribute('aria-selected') === 'true', 'Graph');
+  await back(() => !$('#network-panel-graph').hidden && $('#network-tab-graph').getAttribute('aria-selected') === 'true', 'Graph');
   await back(open('#/base'), 'Base'); assert.equal(win.document.title, 'Base · Promptboard');
   await back(open('#/kanban'), 'Kanban');
   await forward(open('#/base'), 'Base');
-  await forward(() => open('#/network')() && !$('#network-panel-soon').hidden, 'Graph');
+  await forward(() => open('#/network')() && !$('#network-panel-graph').hidden, 'Graph');
   await forward(() => $('#network-detail-heading')?.textContent === 'Lead' && !$('#network-panel-agents').hidden, 'the agent');
   assert.equal($(`[data-agent-id="${lead.id}"]`).getAttribute('aria-current'), 'true');
   $('.page-nav a[href="#/"]').click(); win.location.hash = '#/'; await until(open('#/'), 'Compose from the nav');
