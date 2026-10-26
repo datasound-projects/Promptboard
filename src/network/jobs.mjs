@@ -178,6 +178,7 @@ export class NetworkJobs {
   #claiming = new Set(); // job IDs the pump is claiming now.
   #lastQueued = 0;
   #retry = null;
+  #sweeping = null; // The retention pass sweep() started, which close() waits for.
 
   #folder(id) { return join(this.dir, 'jobs', escapeId(id)); }
   #attemptFile(own, name) { return join(this.#folder(own.jobId), 'attempts', escapeId(own.attemptId), name); }
@@ -230,9 +231,9 @@ export class NetworkJobs {
     }
   }
   /**
-   * Retention (architecture §4.5), once per start: a finished job's large attempt logs (stream.jsonl, output.log) go after
-   * outputRetentionDays, at most 500 jobs per start, never while its parent job is still open. Metadata, the request and
-   * results stay until the owner deletes the job.
+   * Retention (architecture §4.5), once per start and again once the pipeline runner has loaded: a finished job's large
+   * attempt logs (stream.jsonl, output.log) go after outputRetentionDays, at most 500 jobs per pass, never while its parent
+   * job is still open. Metadata, the request and results stay until the owner deletes the job.
    */
   async #sweep() {
     const cutoff = this.now() - this.#settings.outputRetentionDays * DAY;
@@ -593,11 +594,14 @@ export class NetworkJobs {
   wake() { this.#pump(); }
   /** Begin after the server listens: load, reconcile, sweep, then start queued jobs when a worker exists. */
   async start() { await this.#ready(); this.#started = true; this.#pump(); }
+  /** Retention again: the pipeline runner calls it once it has loaded, since until then `holds` keeps every step job. */
+  sweep() { return this.#sweeping = this.#ready().then(() => this.#serial(() => (this.#closing ? null : this.#sweep()))).catch(() => {}); }
   /** Shutdown: claim nothing more, stop owned attempts and save them as interrupted (architecture §7.4). */
   async close() {
     this.#closing = true;
     clearTimeout(this.#retry);
     await this.#loading?.catch(() => {});
+    await this.#sweeping;
     await Promise.allSettled([...this.#live.values()].map(live => this.#stop(live, 'interrupted', { errorCode: 'APP_STOPPED', reason: 'Promptboard stopped while this job ran. Nothing was started again: retry or close it.' })));
   }
 

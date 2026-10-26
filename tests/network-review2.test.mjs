@@ -69,6 +69,37 @@ test('P2-2: a machine stream dropped while the listener authenticates it or scan
   assert.match(await streamAnswers(ctx, (await ctx.client({ agents: [lead.id] })).token), /^200 /, 'slots freed after drops during authentication');
 });
 
+test('P2-3: retention removes the old logs of a finished run’s step job, as it does for a plain job, though the runner loads after the job engine', async t => {
+  const ctx = await fixture(t, { worker: fakeWorker() });
+  const lead = await ctx.register('lead');
+  const network = (await ctx.owner('/api/network/networks', 'POST', { name: 'Desk', nodes: [{ id: `n_${pad(1)}`, type: 'agent', agentId: lead.id, position: { x: 0, y: 0 } }], edges: [] })).json.network;
+  await ctx.owner(`/api/network/networks/${network.id}/publish`, 'POST', { expectedRevision: 1 });
+  const step = (n, type, config) => ({ id: `n_${pad(n)}`, type, position: { x: n * 200, y: 0 }, config });
+  const pipeline = (await ctx.owner('/api/network/pipelines', 'POST', { networkId: network.id, networkVersion: 1, name: 'One',
+    nodes: [step(1, 'agent', { agentId: lead.id }), step(2, 'output', { name: 'report', include: [`n_${pad(1)}`] })],
+    edges: [{ id: `e_${pad(1)}`, from: `n_${pad(1)}`, to: `n_${pad(2)}`, fromPort: 'text', toPort: 'input' }] })).json.pipeline;
+  await ctx.owner(`/api/network/pipelines/${pipeline.id}/publish`, 'POST', { expectedRevision: 1 });
+  const { runId } = (await ctx.owner(`/api/network/pipelines/${pipeline.id}/runs`, 'POST', { version: 1, confirm: true })).json;
+  await until(async () => (await ctx.owner(`/api/network/pipeline-runs/${runId}`)).json.run.status === 'completed', 'run completed', 15000);
+  const plainId = (await ctx.owner('/api/network/jobs', 'POST', { agentId: lead.id, input: { text: 'Plain' } })).json.jobId;
+  await until(async () => (await ctx.owner(`/api/network/jobs/${plainId}`)).json.job.status === 'completed', 'plain job completed');
+  const stepId = (await ctx.owner(`/api/network/jobs?pipelineRunId=${runId}`)).json.jobs[0].id;
+  await ctx.app.close();
+  // Both jobs finished 40 days ago (retention: 30 days) and each has a stream.jsonl log.
+  const logs = {};
+  for (const id of [stepId, plainId]) {
+    const folder = join(ctx.dataDir, 'network', 'jobs', `job__${id.slice(4)}`), file = join(folder, 'job.json'), job = JSON.parse(await readFile(file, 'utf8'));
+    job.updatedAt = Date.now() - 40 * DAY; await writeFile(file, `${JSON.stringify(job, null, 1)}\n`);
+    logs[id] = join(folder, 'attempts', `att__${job.attempts[0].id.slice(4)}`, 'stream.jsonl'); await writeFile(logs[id], '{"kind":"status"}\n');
+  }
+  const again = await fixture(t, { dataDir: ctx.dataDir, worker: fakeWorker() });
+  await until(async () => (await again.owner(`/api/network/jobs/${plainId}`)).json.job.outputsRemovedAt, 'the plain job swept');
+  await until(async () => (await again.owner(`/api/network/jobs/${stepId}`)).json.job.outputsRemovedAt, 'the step job swept once the runner loaded');
+  assert.equal(await exists(logs[stepId]), false, 'the finished run no longer needs its step job’s log');
+  assert.equal(await exists(logs[plainId]), false);
+  assert.equal((await again.owner(`/api/network/pipeline-runs/${runId}`)).json.run.status, 'completed');
+});
+
 test('P2-9: a machine client’s open stream ends at its expiry and delivers nothing after it', async t => {
   let skew = 0;
   const ctx = await fixture(t, { worker: fakeWorker({ mode: 'manual' }), machineOptions: { now: () => Date.now() + skew } });

@@ -110,6 +110,7 @@ export class PipelineRunner {
       await this.#serial(() => this.#change(runs.get(id), r => Object.assign(r, { status: 'interrupted', errorCode: 'RESTORED_FROM_BACKUP',
         reason: 'This run was read from its backup copy, which may not know every step job it started. It does not go on by itself: check its jobs, then cancel it.' }))).catch(() => {});
     }
+    void this.jobs.sweep?.(); // The engine's start sweep ran before this knew which runs ended, so it kept every step job's logs.
   }
   #run(id) {
     if (typeof id !== 'string' || !RUN_ID.test(id)) fail('This pipeline run does not exist.', 'NOT_FOUND', 404);
