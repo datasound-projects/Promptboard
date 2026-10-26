@@ -4,8 +4,9 @@
 // no dead buttons, and no job, run or generation request from opening or editing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { join, relative } from 'node:path';
 import { setup, until } from './helpers/ui-harness.mjs';
 
 const VIEWS = { '#/origin': '#origin-view', '#/': '#prompt-view', '#/kanban': '#kanban-view', '#/base': '#base-view', '#/network': '#network-view' };
@@ -43,6 +44,16 @@ const ready = ctx => until(() => ctx.$('.network-list-panel')?.getAttribute('ari
 const choose = (ctx, selector, value) => { const node = ctx.$(selector); node.value = value; node.dispatchEvent(new ctx.win.Event('change', { bubbles: true })); };
 const submit = ctx => ctx.$('#network-dialog form').dispatchEvent(new ctx.win.Event('submit', { bubbles: true, cancelable: true }));
 const key = (ctx, node, name) => node.dispatchEvent(new ctx.win.KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
+/** Approved Project Memory of a board project, in the file format src/lessons.mjs reads. */
+async function lessonsFile(ctx, projectId, texts) {
+  await mkdir(join(ctx.dataDir, 'lessons'), { recursive: true });
+  const lessons = texts.map((text, index) => ({ id: `l${index}`, kind: 'command', text, evidence: '', taskId: 't1', taskNumber: 1, status: 'approved', createdAt: 1000 + index, decidedAt: 2000 + index }));
+  await writeFile(join(ctx.dataDir, 'lessons', `${projectId}.json`), JSON.stringify({ schema: 'promptboard.lessons', version: 1, projectId, revision: 2, settings: { enabled: true, provider: '', model: '' }, lessons, jobs: [] }));
+}
+const folderSnapshot = async dir => JSON.stringify(await Promise.all((await readdir(dir, { recursive: true, withFileTypes: true })).filter(entry => entry.isFile())
+  .map(async entry => [relative(dir, join(entry.parentPath, entry.name)), createHash('sha256').update(await readFile(join(entry.parentPath, entry.name))).digest('hex')])));
+const records = ctx => [...ctx.$('#network-memory-list').querySelectorAll('.network-record')];
+const reasonsText = ctx => ctx.$('#network-preview-reasons').textContent;
 const baseSnapshot = async ctx => { const base = await ctx.app.board.base.list(); return JSON.stringify([base.revision, base.resources.map(item => [item.id, item.revision, item.updatedAt, item.enabled, item.trust, item.configuration])]); };
 
 test('Network is the fifth page: nav, title, skip link and sidebar; back and forward across all five pages and Network sub-routes', async t => {
@@ -263,12 +274,14 @@ test('keyboard and labels: tablists follow arrow keys, every control is named, E
   assert.equal($('#network-register').hidden, true, 'no Register agent outside Agents');
   key(ctx, tab('federation'), 'Home'); await until(() => selected('agents', '#/network')() && !$('#network-panel-agents').hidden, 'Home');
   await visit(ctx, `#/network/agents/${lead.id}`, () => $('#network-detail-heading'));
-  // Profile tabs: Tasks, Activity and Memory are clearly unavailable.
+  // Profile tabs: Tasks and Activity are clearly unavailable; Memory and Posts work.
   const inner = id => $(`#network-profile-tab-${id}`);
   inner('profile').focus(); key(ctx, inner('profile'), 'ArrowRight');
   assert.deepEqual([win.document.activeElement, $('#network-profile-panel-tasks').hidden, $('#network-profile-panel-profile').hidden], [inner('tasks'), false, true]);
-  for (const id of ['tasks', 'activity', 'memory']) assert.match($(`#network-profile-panel-${id}`).textContent, /Not available yet\./);
-  key(ctx, inner('tasks'), 'Home'); assert.equal($('#network-profile-panel-profile').hidden, false);
+  for (const id of ['tasks', 'activity']) assert.match($(`#network-profile-panel-${id}`).textContent, /Not available yet\./);
+  for (const id of ['memory', 'posts']) assert.doesNotMatch($(`#network-profile-panel-${id}`).textContent, /Not available yet/);
+  key(ctx, inner('tasks'), 'End'); assert.deepEqual([win.document.activeElement, $('#network-profile-panel-posts').hidden], [inner('posts'), false]);
+  key(ctx, inner('posts'), 'Home'); assert.equal($('#network-profile-panel-profile').hidden, false);
 
   // Names: every control and button in the page and the dialog; tabs and panels reference each other.
   const named = root => {
@@ -299,5 +312,159 @@ test('keyboard and labels: tablists follow arrow keys, every control is named, E
       if ($('#network-dialog').open) { key(ctx, $('#network-dialog'), 'Escape'); }
       await visit(ctx, route, () => win.location.hash === route && !$('#network-dialog').open); await ctx.idle();
     }
+  }
+});
+
+test('Memory tab: propose, approve, edit with history, search, withdraw and delete; a stale approval offers Reload; the preview shows exactly what a job gets and why', async t => {
+  const ctx = await setup(t, { hash: '#/' }); const { $, win } = ctx;
+  await seed(ctx);
+  const site = await ctx.app.board.createProject({ name: 'Site' }), other = await ctx.app.board.createProject({ name: 'Other' }); await win.__pbTest.loadBoard();
+  await lessonsFile(ctx, site.id, ['Run the Site tests with npm test.']); await lessonsFile(ctx, other.id, ['OTHER LESSON: never for this agent.']);
+  const lead = await register(ctx, 'lead', { projectAllowlist: [site.id] });
+  const before = { base: await baseSnapshot(ctx), lessons: await folderSnapshot(join(ctx.dataDir, 'lessons')) }, log = requestLog(ctx);
+  await visit(ctx, `#/network/agents/${lead.id}`, () => $('#network-detail-heading'));
+  $('#network-profile-tab-memory').click();
+  await until(() => /No memory yet\./.test($('#network-memory-empty').textContent) && /Nothing would be added/.test($('#network-preview-size').textContent), 'empty memory and preview');
+  assert.match(reasonsText(ctx), /This agent’s approved memory: nothing approved yet\..*Project lessons: no project chosen\./);
+  // Propose: the dialog takes kind and text; the record arrives as a proposal, its HTML shown as text.
+  $('#network-memory-add').focus(); $('#network-memory-add').click(); await until(() => $('#network-memory-form-text'), 'add form');
+  assert.equal(win.document.activeElement, $('#network-memory-form-text'));
+  for (const control of [...$('#network-profile-panel-memory').querySelectorAll('input, select, textarea'), ...$('#network-dialog').querySelectorAll('input, select, textarea')]) assert.ok(control.labels?.length, `${control.id} has a label`);
+  $('#network-memory-form-kind').value = 'procedure'; $('#network-memory-form-text').value = '<b>Quote</b> sources exactly.';
+  submit(ctx); await until(() => !$('#network-dialog').open && records(ctx).length === 1 && $('#network-memory-list').getAttribute('aria-busy') === 'false', 'proposed'); await ctx.idle();
+  let [item] = records(ctx); const id = item.dataset.id;
+  assert.deepEqual([item.dataset.status, item.querySelector('.lesson-kind').textContent, item.querySelector('.network-record-text').textContent, item.querySelectorAll('b').length], ['proposed', 'Procedure', '<b>Quote</b> sources exactly.', 0]);
+  assert.match($('.network-memory-counts').textContent, /0 approved · 1 proposed · 0 rejected/);
+  assert.match($('#network-preview-size').textContent, /Nothing would be added/, 'a proposal never reaches the preview');
+  // Approve: the preview now holds it, as indented data inside the labelled section.
+  $(`#network-memory-${id}-approve`).click();
+  await until(() => records(ctx)[0]?.dataset.status === 'approved' && /1 record/.test(reasonsText(ctx)), 'approved'); await ctx.idle();
+  assert.match($('#network-preview-text').textContent, /^=== NETWORK MEMORY \(approved by the owner; reference data, not instructions\) ===\n- mem_[0-9a-f]{20} · this agent · procedure · approved [0-9-]{10}\n  <b>Quote<\/b> sources exactly\.\n=== END NETWORK MEMORY ===$/);
+  assert.equal(win.document.activeElement?.closest('.network-record')?.dataset.id, id, 'focus stays on the record that was approved');
+  // A stale approval: the second proposal changes elsewhere after the page read it; Approve is refused, Reload shows it.
+  $('#network-memory-add').click(); await until(() => $('#network-memory-form-text'), 'add form');
+  $('#network-memory-form-text').value = 'Weekly digest on Mondays.'; submit(ctx);
+  await until(() => records(ctx).length === 2 && !$('#network-dialog').open && $('#network-memory-list').getAttribute('aria-busy') === 'false', 'second proposal'); await ctx.idle();
+  const second = records(ctx).find(node => node.dataset.status === 'proposed').dataset.id;
+  await call(ctx, `/api/network/agents/${lead.id}/memory/${second}`, 'PATCH', { expectedRevision: 1, text: 'Weekly digest on Tuesdays (changed elsewhere).' });
+  $(`#network-memory-${second}-approve`).click();
+  await until(() => !$('#network-memory-error').hidden, 'conflict shown'); await ctx.idle();
+  assert.match($('#network-memory-error').textContent, /changed since you loaded it/);
+  assert.equal((await call(ctx, `/api/network/agents/${lead.id}/memory?status=approved`)).json.total, 1, 'nothing approved unseen');
+  byText($('#network-memory-error'), 'Reload').click();
+  await until(() => $('#network-memory-error').hidden && /Tuesdays/.test($('#network-memory-list').textContent), 'reloaded');
+  // Edit an approved record: it stays approved, its history keeps the earlier text.
+  $(`#network-memory-${id}-edit`).click(); await until(() => $('#network-memory-form-text')?.value === '<b>Quote</b> sources exactly.', 'edit form');
+  assert.match($('#network-dialog').textContent, /It stays approved/);
+  $('#network-memory-form-text').value = 'Quote sources exactly, with the date.'; submit(ctx);
+  await until(() => !$('#network-dialog').open && /with the date/.test($(`#network-memory-${id}`)?.textContent || ''), 'edited'); await ctx.idle();
+  item = $(`#network-memory-${id}`);
+  assert.deepEqual([item.dataset.status, item.querySelector('summary').textContent], ['approved', 'History (3)']);
+  assert.match(item.querySelector('.network-history-list').textContent, /^Edited .*revision 3Before \(Procedure\): <b>Quote<\/b> sources exactly\.Approved .*revision 2Proposed .*revision 1$/);
+  assert.equal(win.document.activeElement, $(`#network-memory-${id}-reject`), 'focus returns to the edited record');
+  // Search (server-side keywords) and the status filter.
+  $('#network-memory-search').value = 'TUESDAYS digest'; $('#network-memory-search').dispatchEvent(new win.Event('input', { bubbles: true }));
+  await until(() => records(ctx).length === 1 && records(ctx)[0].dataset.id === second, 'search'); assert.ok(log.some(([, url]) => url.includes('q=TUESDAYS+digest')));
+  $('#network-memory-search').value = 'nothing-like-this'; $('#network-memory-search').dispatchEvent(new win.Event('input', { bubbles: true }));
+  await until(() => /No records match\./.test($('#network-memory-empty').textContent), 'no match');
+  byText($('#network-memory-empty'), 'Clear search').click(); await until(() => records(ctx).length === 2, 'cleared');
+  choose(ctx, '#network-memory-status', 'approved'); await until(() => records(ctx).length === 1 && records(ctx)[0].dataset.id === id, 'approved only');
+  choose(ctx, '#network-memory-status', ''); await until(() => records(ctx).length === 2, 'all again');
+  // The preview: lessons only with the permission and only for a project on the agent's list.
+  choose(ctx, '#network-preview-project', site.id);
+  await until(() => /Project lessons of Site: not given unless the job allows them\./.test(reasonsText(ctx)), 'not permitted');
+  assert.ok(!$('#network-preview-text').textContent.includes('Site tests'));
+  const lessons = $('#network-preview-lessons'); lessons.checked = true; lessons.dispatchEvent(new win.Event('change', { bubbles: true }));
+  await until(() => $('#network-preview-text').textContent.includes('Run the Site tests with npm test.'), 'lessons in');
+  assert.match(reasonsText(ctx), /Project lessons of Site: its approved lessons, read from Project memory/);
+  choose(ctx, '#network-preview-project', other.id);
+  await until(() => /Project lessons of Other: never given, because the project is not on this agent’s project list\./.test(reasonsText(ctx)), 'other project refused');
+  assert.ok(!$('#network-preview-text').textContent.includes('OTHER LESSON'));
+  assert.ok([...$('#network-preview-project').options].find(option => option.value === other.id).textContent.includes('(not on its project list)'));
+  // Withdraw the approved record: no job receives it.
+  choose(ctx, '#network-preview-project', '');
+  $(`#network-memory-${id}-reject`).click();
+  await until(() => $(`#network-memory-${id}`)?.dataset.status === 'rejected' && /Nothing would be added/.test($('#network-preview-size').textContent), 'withdrawn');
+  // Delete, after a confirmation; focus goes to Add memory.
+  $(`#network-memory-${id}-delete`).click(); await until(() => $('#network-confirm-delete'), 'confirm');
+  assert.equal(win.document.activeElement, $('#network-confirm-delete'));
+  $('#network-confirm-delete').click();
+  await until(() => !$('#network-dialog').open && records(ctx).length === 1, 'deleted'); await ctx.idle();
+  assert.equal(win.document.activeElement, $('#network-memory-add'));
+  // Revocation: switched off on the Profile tab, the preview says nothing would be given.
+  $('#network-profile-tab-profile').click();
+  const toggle = $('#network-enabled'); toggle.checked = false; toggle.dispatchEvent(new win.Event('change', { bubbles: true }));
+  await until(() => $('#network-detail .base-status')?.textContent === 'Disabled', 'disabled'); await ctx.idle();
+  $('#network-profile-tab-memory').click();
+  await until(() => /Nothing: this registration is switched off in Network/.test(reasonsText(ctx)), 'revoked');
+  // Base and Project Memory unchanged; only memory routes and the switch wrote; nothing ran.
+  assert.equal(await baseSnapshot(ctx), before.base);
+  assert.equal(await folderSnapshot(join(ctx.dataDir, 'lessons')), before.lessons, 'Project Memory files byte-identical');
+  const writes = [...new Set(log.filter(([method]) => method !== 'GET').map(([method, url]) => `${method} ${url.replaceAll(lead.id, ':id').replace(/mem_[0-9a-f]{20}/, ':mid')}`))].sort();
+  assert.deepEqual(writes, ['DELETE /api/network/agents/:id/memory/:mid', 'PATCH /api/network/agents/:id', 'PATCH /api/network/agents/:id/memory/:mid', 'POST /api/network/agents/:id/memory', 'POST /api/network/agents/:id/memory/:mid/approve']);
+  assert.ok(!log.some(([, url]) => /\/api\/(generate|runs|jobs|network\/jobs|research|compose)|\/run\b/.test(url)), JSON.stringify(log));
+  assert.deepEqual([ctx.calls.length, (await ctx.app.board.view()).runs.length], [0, 0]);
+});
+
+test('Posts tab: a report in safe Markdown, labelled as yours and not as a run event; edit conflict offers Reload; delete; scripts never run', async t => {
+  const ctx = await setup(t, { hash: '#/' }); const { $, win } = ctx;
+  await seed(ctx);
+  const lead = await register(ctx, 'lead');
+  await visit(ctx, `#/network/agents/${lead.id}`, () => $('#network-detail-heading'));
+  $('#network-profile-tab-posts').click();
+  await until(() => /No reports yet\./.test($('#network-post-empty').textContent), 'empty reports');
+  assert.match($('#network-profile-panel-posts').textContent, /not events from a run, and nothing checks them/);
+  $('#network-post-write').click(); await until(() => $('#network-post-form-markdown'), 'write form');
+  assert.equal(win.document.activeElement, $('#network-post-form-markdown'));
+  for (const control of $('#network-dialog').querySelectorAll('textarea')) assert.ok(control.labels?.length, `${control.id} has a label`);
+  $('#network-post-form-markdown').value = '## Week 1\n**Shipped** the digest.\n\n<script>window.__pwned = 1</script>\n<img src=x onerror="window.__pwned = 2">\n[click](javascript:alert(1)) and [docs](https://example.com/docs)';
+  $('#network-post-form-references').value = 'Card #12\n\n  https://example.com/run  ';
+  submit(ctx); await until(() => !$('#network-dialog').open && $('#network-post-list .network-post'), 'published'); await ctx.idle();
+  const post = $('#network-post-list .network-post'), body = post.querySelector('.network-post-body');
+  assert.match(post.querySelector('.network-post-head').textContent, /^ReportWritten by you · /);
+  assert.deepEqual([body.querySelector('h3')?.textContent, body.querySelector('strong')?.textContent, body.querySelectorAll('script, img, iframe, [onerror]').length], ['Week 1', 'Shipped', 0]);
+  assert.ok(body.textContent.includes('<script>window.__pwned = 1</script>') && body.textContent.includes('<img src=x onerror='), 'HTML is shown as text');
+  assert.deepEqual([...body.querySelectorAll('a')].map(link => link.getAttribute('href')), ['https://example.com/docs'], 'only the http(s) link is a link');
+  assert.deepEqual([...post.querySelectorAll('.network-sources li')].map(node => node.textContent), ['Card #12', 'https://example.com/run']);
+  assert.equal(win.__pwned, undefined);
+  assert.equal(win.document.activeElement, $(`#network-post-${post.dataset.id}-edit`), 'focus on the new report');
+  // Edit conflict: changed elsewhere after the page read it; the dialog offers Reload instead of overwriting.
+  await call(ctx, `/api/network/agents/${lead.id}/posts/${post.dataset.id}`, 'PATCH', { expectedRevision: 1, markdown: 'Changed elsewhere.' });
+  $(`#network-post-${post.dataset.id}-edit`).click(); await until(() => $('#network-post-form-markdown'), 'edit form');
+  $('#network-post-form-markdown').value = 'Mine.'; submit(ctx);
+  await until(() => /changed since you loaded it/.test($('#network-dialog [role="alert"]').textContent), 'conflict'); await ctx.idle();
+  byText($('#network-dialog'), 'Reload').click();
+  await until(() => !$('#network-dialog').open && /Changed elsewhere\./.test($('#network-post-list').textContent), 'reloaded');
+  $(`#network-post-${post.dataset.id}-edit`).click(); await until(() => $('#network-post-form-markdown')?.value === 'Changed elsewhere.', 'edit current');
+  $('#network-post-form-markdown').value = '*Edited* report.'; submit(ctx);
+  await until(() => !$('#network-dialog').open && $('#network-post-list em')?.textContent === 'Edited', 'edited');
+  assert.match($('#network-post-list .network-post-head').textContent, /edited/);
+  // Delete after a confirmation.
+  $(`#network-post-${post.dataset.id}-delete`).click(); await until(() => $('#network-confirm-delete'), 'confirm');
+  $('#network-confirm-delete').click();
+  await until(() => !$('#network-dialog').open && /No reports yet\./.test($('#network-post-empty').textContent), 'deleted'); await ctx.idle();
+  assert.equal(win.document.activeElement, $('#network-post-write'));
+  // A report is never shown as activity or a job: those tabs still have nothing.
+  for (const id of ['tasks', 'activity']) assert.match($(`#network-profile-panel-${id}`).textContent, /Not available yet\./);
+  assert.deepEqual([ctx.calls.length, (await ctx.app.board.view()).runs.length], [0, 0]);
+});
+
+test('moving to another agent while memory and reports load shows that agent’s own, never the first one’s', async t => {
+  const ctx = await setup(t, { hash: '#/' }); const { $, win } = ctx;
+  await seed(ctx);
+  const lead = await register(ctx, 'lead'), team = await register(ctx, 'team');
+  for (const [agent, text] of [[lead, 'LEAD NOTE'], [team, 'TEAM NOTE']]) {
+    await call(ctx, `/api/network/agents/${agent.id}/memory`, 'POST', { expectedRevision: 0, kind: 'fact', text });
+    await call(ctx, `/api/network/agents/${agent.id}/posts`, 'POST', { expectedRevision: 0, markdown: `${text} report` });
+  }
+  await visit(ctx, `#/network/agents/${lead.id}`, () => $('#network-detail-heading')?.textContent === 'Lead');
+  for (const [tabId, list, other] of [['memory', '#network-memory-list', 'LEAD NOTE'], ['posts', '#network-post-list', 'LEAD NOTE report']]) {
+    $(`#network-profile-tab-${tabId}`).click(); // Its request is on the way when the next agent opens.
+    win.location.hash = `#/network/agents/${team.id}`;
+    await until(() => $('#network-detail-heading')?.textContent === 'Team' && $(list).textContent.includes('TEAM NOTE'), `${tabId} of the second agent`);
+    await ctx.idle();
+    assert.ok(!$(list).textContent.includes(other), `${tabId}: nothing of the first agent`);
+    await visit(ctx, `#/network/agents/${lead.id}`, () => $('#network-detail-heading')?.textContent === 'Lead' && $(list).textContent.includes('LEAD NOTE'));
+    $('#network-profile-tab-profile').click();
   }
 });

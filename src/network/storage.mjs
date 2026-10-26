@@ -3,10 +3,13 @@
  * <dataDir>/network/, written through durable.mjs. A mutable document keeps a `.bak`; a damaged copy is set aside when
  * the other one loads; no usable copy, or a copy saved by a newer version, is refused and never rewritten. Immutable
  * documents are written once under a name that carries the SHA-256 of their exact bytes and are checked on every read.
+ * Also the input rules every Network domain shares: strict objects, expected revisions, paging and owner text.
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { redactLocal } from '../compose-local.mjs';
+import { noPaths } from '../coordinator.mjs';
 import { readWithBackup, setAside, syncDir, writeAtomic } from '../durable.mjs';
 
 export class NetworkError extends Error {
@@ -16,6 +19,31 @@ export const fail = (message, code, status, details) => { throw new NetworkError
 /** `<prefix>_` + 20 lowercase hex characters: server-generated, so it is safe in a file name. */
 export const newId = prefix => `${prefix}_${randomBytes(10).toString('hex')}`;
 export const sha256 = text => createHash('sha256').update(text).digest('hex');
+
+export const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+export const conflict = what => fail(`${what} changed since you loaded it. Reload and try again.`, 'REVISION_CONFLICT', 409);
+export function requireRevision(input) { if (!Number.isSafeInteger(input.expectedRevision)) fail('Reload, then send the revision you loaded as expectedRevision.', 'REVISION_REQUIRED'); }
+/** Strict input: a field this model does not own is refused, so nothing from Base is ever copied into Network. */
+export function only(input, allowed, what) {
+  if (!object(input)) fail(`Send ${what} as a JSON object.`);
+  const extra = Object.keys(input).find(key => !allowed.includes(key));
+  if (extra === undefined) return;
+  const base = ['provider', 'model', 'effort', 'instructions', 'tools', 'prompt', 'skills'].includes(extra) ? ' Provider, model, instructions and tools come from the Base agent: change them in Base.' : '';
+  fail(`"${extra.slice(0, 40)}" is not a field of ${what}.${base}`);
+}
+export const PAGE_LIMIT = 200;
+export function page(items, offset = 0, limit = 50, key) {
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > PAGE_LIMIT) fail(`Choose an offset of 0 or more and a limit of 1 to ${PAGE_LIMIT}.`);
+  return { total: items.length, offset, limit, next: offset + limit < items.length ? offset + limit : null, [key]: items.slice(offset, offset + limit) };
+}
+const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+/**
+ * Long owner text (memory, reports) as it is saved and shown: line breaks normalised, control characters dropped, local
+ * folders cut to their last name and secret-looking values masked (as Project memory does, src/lessons.mjs), because it
+ * can reach a cloud-backed CLI or an export.
+ */
+export const cleanText = value => redactLocal(noPaths(String(value).replace(/\r\n?/g, '\n').replace(CONTROL, ''))).trim();
+
 const NEWER = 'This Network data was saved by a newer Promptboard version. Update the app; nothing was changed.';
 
 /**

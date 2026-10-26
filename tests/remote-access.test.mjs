@@ -272,9 +272,11 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     ...each('/api/base', ['GET', 'GET presets', 'POST avatar/cancel', 'POST avatar/generate', 'POST preview', 'POST apply', 'POST restore-global', 'POST skills/import', 'POST resources', 'POST import/preview', 'POST import', 'POST export', 'POST roots', 'DELETE roots/r1',
       'POST wiki/cancel', 'POST wiki/generate', 'POST wiki/apply', 'POST source/import', 'GET markdown/templates']),
     ...each('/api/base/resources/b1', ['GET', 'GET revisions', 'GET revisions/1', 'GET avatar', 'POST override', 'POST deploy', 'PATCH', 'DELETE', 'POST test', 'POST refresh', 'GET search']),
-    // Network (architecture §10.2): registry, graph and export routes create no way in and change no trust.
+    // Network (architecture §10.2): registry, graph, export, memory and report routes create no way in and change no trust.
     'GET /api/network/agents', 'POST /api/network/agents', 'GET /api/network/networks', 'POST /api/network/networks', 'GET /api/network/export', 'POST /api/network/import',
-    ...each(`/api/network/agents/agt_${'a'.repeat(20)}`, ['GET', 'PATCH']), ...each(`/api/network/networks/net_${'a'.repeat(20)}`, ['GET', 'PATCH', 'POST publish', 'GET versions/1'])];
+    ...each(`/api/network/agents/agt_${'a'.repeat(20)}`, ['GET', 'PATCH', 'GET memory', 'POST memory', 'GET memory/preview', `PATCH memory/mem_${'b'.repeat(20)}`, `DELETE memory/mem_${'b'.repeat(20)}`, `POST memory/mem_${'b'.repeat(20)}/approve`,
+      'GET posts', 'POST posts', `PATCH posts/pst_${'c'.repeat(20)}`, `DELETE posts/pst_${'c'.repeat(20)}`]),
+    ...each(`/api/network/networks/net_${'a'.repeat(20)}`, ['GET', 'PATCH', 'POST publish', 'GET versions/1', 'GET memory', 'POST memory', `PATCH memory/mem_${'b'.repeat(20)}`, `DELETE memory/mem_${'b'.repeat(20)}`, `POST memory/mem_${'b'.repeat(20)}/approve`])];
   // The table covers every route the server and Base declare: a new route must be added here, local-only or not.
   const paths = [...LOCAL_ONLY, ...ALLOWED].map(row => row.split(' ')[1].split('?')[0]);
   for (const file of ['server.mjs', 'base-http.mjs', 'sandbox.mjs', 'network/http.mjs']) {

@@ -16,29 +16,20 @@ import { primaryAgent } from '../base-resolver.mjs';
 import { redactLocal } from '../compose-local.mjs';
 import { serial } from '../durable.mjs';
 import { escapeId } from '../origin.mjs';
-import { fail, newId, NetworkError, readDocument, readImmutable, sha256, writeDocument, writeImmutable } from './storage.mjs';
+import { NetworkMemory } from './memory.mjs';
+import { NetworkPosts } from './posts.mjs';
+import { conflict, fail, newId, NetworkError, object, only, page, PAGE_LIMIT, readDocument, readImmutable, requireRevision as revision, sha256, writeDocument, writeImmutable } from './storage.mjs';
 
 const SCHEMA = { agents: 'promptboard.network-agents', draft: 'promptboard.network-draft', version: 'promptboard.network-version' };
-export const NETWORK_LIMITS = Object.freeze({ agents: 5000, nodes: 5000, edges: 20000, draftBytes: 8 * 1024 * 1024, name: 80, description: 2000, labels: 20, label: 40, projects: 200, page: 200, coordinate: 1e7 });
+export const NETWORK_LIMITS = Object.freeze({ agents: 5000, nodes: 5000, edges: 20000, draftBytes: 8 * 1024 * 1024, name: 80, description: 2000, labels: 20, label: 40, projects: 200, page: PAGE_LIMIT, coordinate: 1e7 });
 export const RELATIONS = Object.freeze(['message', 'delegate', 'share_result']);
 const LIMITS = NETWORK_LIMITS, AGENT_KINDS = ['profile', 'agentProfile'];
 const REGISTRATION_FIELDS = ['displayName', 'tags', 'capabilities', 'enabled', 'visibility', 'projectAllowlist'];
 const AGENT_ID = /^agt_[0-9a-f]{20}$/, NETWORK_ID = /^net_[0-9a-f]{20}$/, NODE_ID = /^n_[0-9a-f]{12}$/, EDGE_ID = /^e_[0-9a-f]{12}$/;
 const EXTERNAL_ID = /^[A-Za-z0-9_-]{1,100}$/, SHA = /^[0-9a-f]{64}$/, CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 
-const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-const conflict = what => fail(`${what} changed since you loaded it. Reload and try again.`, 'REVISION_CONFLICT', 409);
 const invalidFile = () => fail('This is not a valid Promptboard Network export. Nothing was imported.', 'NETWORK_IMPORT_INVALID');
 const byCreated = (a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1);
-function revision(input) { if (!Number.isSafeInteger(input.expectedRevision)) fail('Reload, then send the revision you loaded as expectedRevision.', 'REVISION_REQUIRED'); }
-/** Strict input: a field this model does not own is refused, so nothing from Base is ever copied into Network. */
-function only(input, allowed, what) {
-  if (!object(input)) fail(`Send ${what} as a JSON object.`);
-  const extra = Object.keys(input).find(key => !allowed.includes(key));
-  if (extra === undefined) return;
-  const base = ['provider', 'model', 'effort', 'instructions', 'tools', 'prompt', 'skills'].includes(extra) ? ' Provider, model, instructions and tools come from the Base agent: change them in Base.' : '';
-  fail(`"${extra.slice(0, 40)}" is not a field of ${what}.${base}`);
-}
 /** Owner text, trimmed; a credential typed into it is masked before it is saved. */
 function text(value, max, label, { required = false, nullable = false } = {}) {
   if (!required && (value === undefined || value === null || value === '')) return nullable ? null : '';
@@ -174,10 +165,6 @@ function baseSummary(resources, id) {
     // Base's own "Used by" places (assignments, resources, active runs); Base lists them, Network only counts them.
     usedBy: (resource.usedBy || []).filter(use => !use.historical).length };
 }
-function page(items, offset = 0, limit = 50, key) {
-  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > LIMITS.page) fail(`Choose an offset of 0 or more and a limit of 1 to ${LIMITS.page}.`);
-  return { total: items.length, offset, limit, next: offset + limit < items.length ? offset + limit : null, [key]: items.slice(offset, offset + limit) };
-}
 const search = value => { if (value !== undefined && (typeof value !== 'string' || value.length > 200)) fail('Search with at most 200 characters.'); return value?.toLocaleLowerCase(); };
 function freeName(name, taken) {
   let candidate = name;
@@ -236,9 +223,13 @@ async function parseBundle(data) {
 }
 
 export class NetworkRegistry {
-  /** `base` is Board's Base, only ever read through list(); `projects()` returns the board's project IDs. */
+  /**
+   * `base` is Board's Base, only ever read through list(); `projects()` returns the board's project IDs. `memory` and
+   * `posts` keep each agent's (and network's) notes and reports in their own files (memory.mjs, posts.mjs).
+   */
   constructor({ dataDir, base, projects = async () => [], now = Date.now }) {
     this.dir = join(dataDir, 'network'); this.base = base; this.projects = projects; this.now = now;
+    this.memory = new NetworkMemory({ dataDir, registry: this, now }); this.posts = new NetworkPosts({ dataDir, registry: this, now });
   }
   // ponytail: one queue for the whole registry, reads included; per-file queues if owner edits ever contend.
   #serial = serial();
@@ -436,7 +427,7 @@ export class NetworkRegistry {
   }
   async version(id, number) { return this.#serial(async () => ({ version: await this.#version(id, number) })); }
 
-  /** Registrations, drafts and every published version. Nothing else exists in this domain to leave out yet. */
+  /** Registrations, drafts and every published version. Memory and reports stay out: private text (architecture §4.4). */
   async export() {
     return this.#serial(async () => {
       const agents = await this.#loadAgents(), drafts = [...(await this.#loadDrafts()).values()], unavailable = drafts.filter(draft => draft.unavailable).map(draft => draft.id);

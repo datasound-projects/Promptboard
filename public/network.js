@@ -2,10 +2,12 @@
 
 // Network page (#/network): the agent directory and agent profiles, over the owner routes /api/network/*.
 // Base stays the only editor of agent definitions: this page reads Base, registers a Base agent by its ID, edits only the
-// Network identity (display name, tags, capabilities, projects, on/off) and opens the real resource in Base. Nothing here
-// starts a job, a run or a model call. All text is set as text (PromptboardDom), never parsed as HTML.
+// Network identity (display name, tags, capabilities, projects, on/off) and opens the real resource in Base. A profile
+// also holds the agent's memory (proposed, then approved by the owner, with history and a preview of exactly what a job
+// would receive) and the owner's reports. Nothing here starts a job, a run or a model call. All text is set as text
+// (PromptboardDom); reports are Markdown drawn by PromptboardMarkdown, which shows HTML as text and loads nothing.
 window.PromptboardNetwork = (() => {
-  const { el, button, plural, ago } = window.PromptboardDom;
+  const { el, button, plural, ago, clip } = window.PromptboardDom;
   // Agents works now; each other section says what it will do and offers no working-looking controls until then.
   const SECTIONS = [
     ['agents', 'Agents', ''],
@@ -19,8 +21,13 @@ window.PromptboardNetwork = (() => {
     ['profile', 'Profile', ''],
     ['tasks', 'Tasks', 'The jobs this agent takes will appear here once Network jobs arrive in a later update.'],
     ['activity', 'Activity', 'This agent’s live status and events will appear here once Network activity arrives in a later update.'],
-    ['memory', 'Memory', 'Approved memory for this agent will appear here in a later update. Project memory stays with each Kanban project.'],
+    ['memory', 'Memory', ''],
+    ['posts', 'Posts', ''],
   ];
+  const MEMORY_KINDS = [['fact', 'Fact'], ['lesson', 'Lesson'], ['preference', 'Preference'], ['procedure', 'Procedure']];
+  const KIND_NAMES = Object.fromEntries(MEMORY_KINDS);
+  const MEMORY_STATES = { proposed: ['Proposed', 'warn'], approved: ['Approved', 'ok'], rejected: ['Rejected', 'off'] };
+  const HISTORY = { proposed: 'Proposed', edited: 'Edited', approved: 'Approved', rejected: 'Rejected' };
   const KINDS = { profile: 'Agent', agentProfile: 'Agent profile' };
   const ICONS = { profile: '◉', agentProfile: '◎' };
   const PROVIDERS = [['claude', 'Claude Code'], ['codex', 'Codex'], ['gemini', 'Gemini CLI'], ['agy', 'Antigravity']];
@@ -255,10 +262,11 @@ window.PromptboardNetwork = (() => {
       const inner = tablist('Agent profile sections', PROFILE_TABS.map(([id, label, soon]) => [id, label, Boolean(soon)]), 'network-profile-tab', panelId, id => { profileTab = id; showInner(); }, 'network-profile-tabs');
       const panels = PROFILE_TABS.map(([id, label, soon]) => {
         const panel = el('section', 'network-profile-panel'); panel.id = panelId(id); panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', `network-profile-tab-${id}`);
-        if (soon) panel.append(el('h3', '', label), note('Not available yet.', 'note unavailable'), note(soon)); else panel.append(...profileSections(agent));
+        if (soon) panel.append(el('h3', '', label), note('Not available yet.', 'note unavailable'), note(soon));
+        else panel.append(...(id === 'memory' ? [memoryView(agent)] : id === 'posts' ? [postsView(agent)] : profileSections(agent)));
         return panel;
       });
-      function showInner() { inner.select(profileTab); for (const panel of panels) panel.hidden = panel.id !== panelId(profileTab); }
+      function showInner() { inner.select(profileTab); for (const panel of panels) panel.hidden = panel.id !== panelId(profileTab); openTab(); }
       showInner();
       box.append(inner, ...panels);
       return box;
@@ -268,7 +276,7 @@ window.PromptboardNetwork = (() => {
       const projectNames = new Map(context.projects().map(project => [project.id, project.name]));
       const projects = agent.projectAllowlist.map(id => (agent.missingProjects.includes(id) ? `${id} (not on this board)` : projectNames.get(id) || id));
       const networks = el('span', '', agent.networks.length ? plural(agent.networks.length, 'network') : 'Not in a network yet.');
-      if (agent.networks.length) void networkNames(agent.id).then(names => { if (names.length) networks.textContent = names.join(', '); }, () => {});
+      if (agent.networks.length) void networkNames(agent.id).then(list => { if (list.length) networks.textContent = list.map(item => item.name).join(', '); }, () => {});
       const sections = [facts([
         ['Network ID', el('code', '', agent.id)],
         ['Base resource', base.kind ? `${base.name} · ${KINDS[base.kind] || base.kind} · revision ${base.revision}` : `Missing (${agent.baseResourceId})`],
@@ -300,14 +308,303 @@ window.PromptboardNetwork = (() => {
         ['Job tools', tools],
         ['Files', 'Read only. Network jobs never change files.'],
         ['Project data', projects.length ? `Only ${projects.join(', ')}` : 'None'],
+        ['Memory', 'Only notes you approved, at most 8,000 characters per job. Project lessons only for a listed project, and only when the job allows them.'],
         ['Visibility', 'Private: this computer and your paired devices.'],
       ]));
       return sections;
     }
-    const names = new Map(); // agentId → network names, read once per page visit.
+    const names = new Map(); // agentId → its networks ({ id, name }), read once per page visit.
     function networkNames(id) {
-      if (!names.has(id)) names.set(id, request(`/api/network/networks?agentId=${id}&limit=200`).then(data => data.networks.map(item => item.name)).catch(failure => { names.delete(id); throw failure; }));
+      if (!names.has(id)) names.set(id, request(`/api/network/networks?agentId=${id}&limit=200`).then(data => data.networks.map(({ id: networkId, name }) => ({ id: networkId, name }))).catch(failure => { names.delete(id); throw failure; }));
       return names.get(id);
+    }
+
+    // ---- Memory: the agent's notes. Each starts as a proposal; only approved ones can reach a job. Every change names the
+    // record revision shown here, so a note changed elsewhere is never approved unseen (the server answers 409; Reload).
+    const memory = { agentId: null, agent: null, key: '', data: null, error: null, loading: false, version: 0, focus: null, q: '', status: '', open: new Set(),
+      preview: null, previewError: '', previewKey: null, previewVersion: 0, project: '', lessons: false, network: '' };
+    const memoryRoot = el('section', 'network-memory'); memoryRoot.setAttribute('aria-label', 'Memory');
+    const memorySearch = Object.assign(el('input'), { type: 'search', placeholder: 'Find in memory…', autocomplete: 'off', maxLength: 200 }); memorySearch.id = 'network-memory-search';
+    const memoryStatus = select([['', 'All'], ['approved', 'Approved'], ['proposed', 'Proposed'], ['rejected', 'Rejected']]); memoryStatus.id = 'network-memory-status';
+    const memoryAdd = button('Add memory…', () => memoryForm(null), 'secondary-button'); memoryAdd.id = 'network-memory-add';
+    const memoryTools = el('div', 'network-memory-tools'); memoryTools.append(labelled('Search memory', memorySearch), labelled('Status', memoryStatus), memoryAdd);
+    const memoryCounts = note('', 'note network-memory-counts');
+    const memoryAlert = el('div', 'inline-error network-alert'); memoryAlert.id = 'network-memory-error'; memoryAlert.setAttribute('role', 'alert'); memoryAlert.hidden = true;
+    const memoryList = el('ul', 'network-records'); memoryList.id = 'network-memory-list'; memoryList.setAttribute('aria-label', 'Memory records');
+    const memoryEmpty = el('div', 'network-empty'); memoryEmpty.id = 'network-memory-empty';
+    const memoryMore = button('Show more records', () => loadMemory({ append: true }), 'secondary-button network-more'); memoryMore.hidden = true;
+    const previewProject = select([['', 'No project']]); previewProject.id = 'network-preview-project';
+    const previewLessons = Object.assign(el('input'), { type: 'checkbox' }); previewLessons.id = 'network-preview-lessons';
+    const previewNetwork = select([['', 'No network']]); previewNetwork.id = 'network-preview-network';
+    const lessonsRow = el('label', 'check-row'); lessonsRow.append(previewLessons, 'Allow the project’s approved lessons');
+    const previewControls = el('div', 'network-preview-controls'); previewControls.append(labelled('Project of the job', previewProject), labelled('Network it runs in', previewNetwork), lessonsRow);
+    const previewReasons = el('ul', 'network-reasons'); previewReasons.id = 'network-preview-reasons'; previewReasons.setAttribute('aria-label', 'What is included and why');
+    const previewText = el('pre', 'network-preview-text'); previewText.id = 'network-preview-text'; previewText.tabIndex = 0; previewText.setAttribute('aria-label', 'Exact text a job would receive');
+    const previewSize = note('', 'note network-preview-size'); previewSize.id = 'network-preview-size';
+    const previewBox = el('div', 'network-preview'); previewBox.setAttribute('aria-live', 'polite'); previewBox.append(previewReasons, previewText, previewSize);
+    memoryRoot.append(el('h3', '', 'Memory'),
+      note('Notes this agent can be given in a Network job. You approve each one before any job receives it, and it is given as reference data, never as instructions. Project memory stays with each Kanban project.'),
+      memoryTools, memoryCounts, memoryAlert, memoryList, memoryEmpty, memoryMore,
+      el('h3', '', 'What a job would receive'), note('The exact text added to a job’s prompt for this agent, and why each part is in it or not. Nothing runs here.'), previewControls, previewBox);
+    let memoryTimer = null;
+    memorySearch.addEventListener('input', () => { clearTimeout(memoryTimer); memoryTimer = setTimeout(() => { if (memory.q !== memorySearch.value.trim()) { memory.q = memorySearch.value.trim(); void loadMemory(); } }, 250); });
+    memoryStatus.addEventListener('change', () => { memory.status = memoryStatus.value; void loadMemory(); });
+    for (const control of [previewProject, previewLessons, previewNetwork]) control.addEventListener('change', () => {
+      Object.assign(memory, { project: previewProject.value, lessons: previewLessons.checked, network: previewNetwork.value }); void loadPreview();
+    });
+
+    /** The Memory panel of `agent` (one node kept across renders, so search text and focus survive a list reload). */
+    function memoryView(agent) {
+      if (memory.agentId !== agent.id) {
+        Object.assign(memory, { agentId: agent.id, data: null, error: null, loading: false, focus: null, q: '', status: '', open: new Set(), preview: null, previewError: '', previewKey: null, project: '', lessons: false, network: '' });
+        memory.version++; memory.previewVersion++; memorySearch.value = ''; memoryStatus.value = ''; memoryAlert.hidden = true;
+      }
+      // What decides the preview: a change of the registration (on/off, projects, networks) or of its Base agent.
+      memory.agent = agent; memory.key = JSON.stringify([agent.id, agent.revision, agent.enabled, agent.base.stale, agent.networks, agent.projectAllowlist]);
+      previewOptions(agent); renderMemory(); renderPreview();
+      return memoryRoot;
+    }
+    function openTab() {
+      if (profileTab === 'memory' && memory.agentId) { if (!memory.data && !memory.loading) void loadMemory(); if (memory.previewKey !== memory.key) void loadPreview(); }
+      if (profileTab === 'posts' && posts.agentId && !posts.data && !posts.loading) void loadPosts();
+    }
+    async function loadMemory({ append = false } = {}) {
+      const agentId = memory.agentId, version = ++memory.version;
+      memory.loading = true; renderMemory();
+      const params = new URLSearchParams({ limit: '200', offset: String(append ? memory.data.records.length : 0) });
+      if (memory.q) params.set('q', memory.q); if (memory.status) params.set('status', memory.status);
+      try {
+        const data = await request(`/api/network/agents/${agentId}/memory?${params}`);
+        if (version === memory.version) { memory.data = append ? { ...data, records: [...memory.data.records, ...data.records] } : data; memory.error = null; }
+      } catch (failure) { if (version === memory.version) { if (append) memoryFailure(failure); else Object.assign(memory, { data: null, error: failure }); } }
+      finally { if (version === memory.version) { memory.loading = false; renderMemory(); } }
+    }
+    const refreshMemory = async () => { await loadMemory(); await loadPreview(); };
+    function renderMemory() {
+      const data = memory.data, waiting = !data && !memory.error, active = document.activeElement, keep = memoryList.contains(active) ? active.id : '';
+      memoryList.setAttribute('aria-busy', String(memory.loading || waiting));
+      memoryCounts.hidden = !data;
+      if (data) memoryCounts.textContent = `${data.counts.approved} approved · ${data.counts.proposed} proposed · ${data.counts.rejected} rejected`;
+      memoryList.replaceChildren(...(data ? data.records.map(recordItem) : []));
+      memoryEmpty.replaceChildren(); memoryEmpty.hidden = Boolean(data?.records.length);
+      if (waiting) memoryEmpty.append(note('Loading memory…'));
+      else if (memory.error) { const failure = el('p', 'inline-error', `Could not load this memory. ${memory.error.message}`); failure.setAttribute('role', 'alert'); memoryEmpty.append(failure, button('Retry', () => loadMemory(), 'secondary-button')); }
+      else if (!data.records.length && (memory.q || memory.status)) memoryEmpty.append(note('No records match.'), button('Clear search', () => { memory.q = ''; memory.status = ''; memorySearch.value = ''; memoryStatus.value = ''; void loadMemory(); }, 'secondary-button'));
+      else if (!data.records.length) memoryEmpty.append(el('p', 'network-empty-title', 'No memory yet.'), note('Add facts, preferences or procedures this agent should know. Approve them before any job may use them.'));
+      memoryMore.hidden = !data || data.next === null;
+      // Focus follows the record an action changed (its first action) once the list is read again, or stays where it was;
+      // a deleted record's focus goes to Add.
+      if (memory.focus && data && !memory.loading) { const id = memory.focus; memory.focus = null; (document.querySelector(`#network-memory-${id} .network-record-actions button`) || memoryAdd).focus(); }
+      else if (keep) document.getElementById(keep)?.focus();
+    }
+    function recordItem(record) {
+      const item = el('li', 'lesson network-record'); item.id = `network-memory-${record.id}`; item.dataset.id = record.id; item.dataset.status = record.status;
+      const [stateText, tone] = MEMORY_STATES[record.status], head = el('div', 'lesson-head');
+      head.append(el('span', 'lesson-kind', KIND_NAMES[record.kind] || record.kind), el('small', `base-status tone-${tone}`, stateText));
+      const text = el('p', 'lesson-text network-record-text', record.text); text.id = `network-memory-${record.id}-text`;
+      const when = record.status === 'proposed' ? `proposed ${ago(record.createdAt)}` : `${stateText.toLowerCase()} ${ago(record.decidedAt)}`;
+      const meta = note(`Written by you · ${when}${record.editedAt ? ` · edited ${ago(record.editedAt)}` : ''} · revision ${record.revision}`, 'note network-record-meta');
+      const actions = el('div', 'network-record-actions');
+      const act = (label, run, name) => {
+        const node = button(label, async () => { node.disabled = true; try { await run(); } finally { node.disabled = false; } }, 'text-button');
+        node.id = `network-memory-${record.id}-${name}`; node.setAttribute('aria-describedby', text.id);
+        return node;
+      };
+      if (record.status !== 'approved') actions.append(act('Approve', () => decide(record, 'approve'), 'approve'));
+      if (record.status !== 'rejected') actions.append(act(record.status === 'approved' ? 'Withdraw' : 'Reject', () => decide(record, 'reject'), 'reject'));
+      actions.append(act('Edit…', () => memoryForm(record), 'edit'), act('Delete…', () => deleteRecord(record), 'delete'));
+      const history = el('details', 'network-history'); history.open = memory.open.has(record.id);
+      history.addEventListener('toggle', () => { if (history.open) memory.open.add(record.id); else memory.open.delete(record.id); });
+      const steps = el('ol', 'network-history-list');
+      for (const entry of [...record.history].reverse()) {
+        const step = el('li', '', `${HISTORY[entry.action] || entry.action} ${ago(entry.at)} · revision ${entry.revision}`);
+        if (entry.previous) step.append(el('span', 'network-history-before', `Before (${KIND_NAMES[entry.previous.kind] || entry.previous.kind}): ${entry.previous.text}`));
+        steps.append(step);
+      }
+      history.append(el('summary', '', `History (${record.history.length})`), steps);
+      item.append(head, text, meta, actions, history);
+      return item;
+    }
+    /** A refused change: its message; a conflict or a gone record offers Reload, which reads the memory again. */
+    function memoryFailure(failure) {
+      memoryAlert.replaceChildren(el('span', '', failure.message));
+      if (['REVISION_CONFLICT', 'MEMORY_STATE', 'NOT_FOUND'].includes(failure.code)) memoryAlert.append(button('Reload', async () => { memoryAlert.hidden = true; await refreshMemory(); say('Reloaded the current memory. Make your change again.'); }, 'secondary-button network-reload'));
+      memoryAlert.hidden = false;
+    }
+    async function decide(record, decision) {
+      memoryAlert.hidden = true;
+      try {
+        await request(`/api/network/agents/${memory.agentId}/memory/${record.id}/approve`, { method: 'POST', body: { expectedRevision: record.revision, decision } });
+        say(decision === 'approve' ? 'Approved. Jobs of this agent may now receive it.' : 'No job receives it now.');
+        memory.focus = record.id; await refreshMemory();
+      } catch (failure) { memoryFailure(failure); }
+    }
+    /** Add (a proposal) or edit one record in the dialog. A conflict closes nothing until Reload shows the current version. */
+    function memoryForm(record) {
+      const form = el('form', 'network-form'); form.noValidate = true;
+      const kind = select(MEMORY_KINDS); kind.id = 'network-memory-form-kind'; kind.value = record?.kind || 'fact';
+      const text = Object.assign(el('textarea'), { rows: 7, maxLength: 4000, value: record?.text || '' }); text.id = 'network-memory-form-text';
+      const count = note('', 'note network-chars'); const counted = () => { count.textContent = `${text.value.length.toLocaleString('en-US')} of 4,000 characters`; }; counted();
+      text.addEventListener('input', counted);
+      form.append(labelled('Kind', kind), labelled('Text', text), count,
+        note(!record ? 'Saved as a proposal. Approve it before any job may receive it.' : record.status === 'approved' ? 'It stays approved; the earlier text is kept in its history.' : 'Its status stays as it is; the earlier text is kept in its history.'),
+        note('Local folders are cut to their last name and secret-looking values are masked before saving.'));
+      const failure = el('div', 'inline-error'); failure.setAttribute('role', 'alert'); failure.hidden = true;
+      const submit = el('button', 'dialog-done', record ? 'Save' : 'Propose'); submit.type = 'submit'; submit.id = 'network-memory-form-submit';
+      const footer = el('div', 'kanban-dialog-actions'); footer.append(button('Cancel', closeDialog, 'secondary-button'), submit);
+      form.append(failure, footer);
+      form.addEventListener('submit', async event => {
+        event.preventDefault(); submit.disabled = true; failure.hidden = true;
+        try {
+          const data = record
+            ? await request(`/api/network/agents/${memory.agentId}/memory/${record.id}`, { method: 'PATCH', body: { expectedRevision: record.revision, kind: kind.value, text: text.value } })
+            : await request(`/api/network/agents/${memory.agentId}/memory`, { method: 'POST', body: { expectedRevision: memory.data?.revision ?? 0, kind: kind.value, text: text.value } });
+          closeDialog(); say(record ? 'Saved the memory record.' : 'Proposed. Approve it when it is right.');
+          memory.focus = data.record.id; await refreshMemory();
+        } catch (error) {
+          failure.replaceChildren(el('span', '', error.message)); failure.hidden = false;
+          if (['REVISION_CONFLICT', 'NOT_FOUND'].includes(error.code)) failure.append(button('Reload', async () => { closeDialog(); await refreshMemory(); say('Reloaded the current memory. Make your change again.'); }, 'secondary-button network-reload'));
+        } finally { submit.disabled = false; }
+      });
+      openDialog(record ? 'Edit memory' : 'Add memory', [form]);
+      text.focus();
+    }
+    function deleteRecord(record) {
+      confirmDialog('Delete memory?', [note(`“${clip(record.text, 200)}”`, 'note network-quote'), note('Jobs stop receiving it. It is deleted for good, with its history.')], async () => {
+        await request(`/api/network/agents/${memory.agentId}/memory/${record.id}`, { method: 'DELETE', body: { expectedRevision: record.revision } });
+        say('Deleted the memory record.'); memory.focus = record.id; opener = memoryAdd;
+      }, refreshMemory);
+    }
+    function previewOptions(agent) {
+      const options = [['', 'No project'], ...context.projects().map(project => [project.id, agent.projectAllowlist.includes(project.id) ? project.name : `${project.name} (not on its project list)`])];
+      if (!options.some(([id]) => id === memory.project)) memory.project = '';
+      previewProject.replaceChildren(...select(options).children); previewProject.value = memory.project;
+      previewLessons.checked = memory.lessons;
+      const fill = list => { previewNetwork.replaceChildren(...select([['', 'No network'], ...list]).children); if (!list.some(([id]) => id === memory.network)) memory.network = ''; previewNetwork.value = memory.network; };
+      fill(agent.networks.map(id => [id, id]));
+      if (agent.networks.length) void networkNames(agent.id).then(list => { if (memory.agentId === agent.id) fill(list.map(item => [item.id, item.name])); }, () => {});
+    }
+    async function loadPreview() {
+      const agentId = memory.agentId, key = memory.key, version = ++memory.previewVersion;
+      const params = new URLSearchParams({ memory: memory.network ? 'agent+network' : 'agent', projectLessons: String(memory.lessons) });
+      if (memory.project) params.set('projectId', memory.project); if (memory.network) params.set('networkId', memory.network);
+      previewBox.setAttribute('aria-busy', 'true');
+      try { const data = await request(`/api/network/agents/${agentId}/memory/preview?${params}`); if (version === memory.previewVersion) Object.assign(memory, { preview: data, previewError: '', previewKey: key }); }
+      catch (failure) { if (version === memory.previewVersion) Object.assign(memory, { preview: null, previewError: failure.message, previewKey: key }); }
+      if (version === memory.previewVersion) { previewBox.setAttribute('aria-busy', 'false'); renderPreview(); }
+    }
+    /** Each part of the block: [included, why], in words. */
+    function reasons(preview) {
+      const access = preview.access, count = kind => preview.memory.included.filter(item => item.scope.kind === kind).length;
+      if (access.blocked) return [[false, access.blocked === 'REGISTRATION_DISABLED' ? 'Nothing: this registration is switched off in Network, so no job can start.' : 'Nothing: its Base agent cannot be used (stale), so no job can start.']];
+      const project = context.projects().find(item => item.id === preview.request.projectId)?.name || preview.request.projectId;
+      return [
+        access.agent === 'allowed' ? [count('agent') > 0, count('agent') ? `This agent’s approved memory: ${plural(count('agent'), 'record')}.` : 'This agent’s approved memory: nothing approved yet.'] : [false, 'This agent’s memory: not asked for.'],
+        { 'not-requested': [false, 'Network memory: only when the job runs in one of this agent’s networks.'], 'not-a-member': [false, 'Network memory: this agent is not in that network.'],
+          allowed: [count('network') > 0, `Memory of the network “${preview.network?.name}”: ${count('network') ? plural(count('network'), 'record') : 'nothing approved yet'}.`] }[access.network],
+        { 'no-project': [false, 'Project lessons: no project chosen.'], 'not-permitted': [false, `Project lessons of ${project}: not given unless the job allows them.`],
+          'project-not-allowed': [false, `Project lessons of ${project}: never given, because the project is not on this agent’s project list.`], 'project-missing': [false, `Project lessons of ${project}: the project is no longer on the board.`],
+          allowed: [preview.lessons.chars > 0, preview.lessons.chars ? `Project lessons of ${project}: its approved lessons, read from Project memory (unchanged).` : `Project lessons of ${project}: none approved yet.`] }[access.lessons],
+        ...(preview.memory.omitted ? [[false, `${plural(preview.memory.omitted, 'older approved record')} left out: memory is limited to ${preview.memory.limit.toLocaleString('en-US')} characters, newest first.`]] : []),
+      ];
+    }
+    function renderPreview() {
+      const preview = memory.preview;
+      previewReasons.replaceChildren(...(preview ? reasons(preview) : []).map(([included, text]) => {
+        const item = el('li', included ? 'is-in' : 'is-out'); const mark = el('span', 'network-reason-mark', included ? '✓' : '–'); mark.setAttribute('aria-hidden', 'true');
+        item.append(mark, el('span', 'sr-only', included ? 'Included: ' : 'Not included: '), text); return item;
+      }));
+      if (!preview && memory.previewError) previewReasons.replaceChildren(Object.assign(el('li', 'inline-error'), { textContent: `Could not build the preview. ${memory.previewError}` }));
+      previewText.textContent = preview?.text || ''; previewText.hidden = !preview?.text;
+      previewSize.textContent = !preview ? (memory.previewError ? '' : 'Loading the preview…') : preview.text ? `${preview.chars.toLocaleString('en-US')} characters in all (memory ${preview.memory.chars.toLocaleString('en-US')} of ${preview.memory.limit.toLocaleString('en-US')}).` : 'Nothing would be added to the job’s prompt.';
+      previewLessons.disabled = !memory.project; previewLessons.title = memory.project ? '' : 'Choose a project first.';
+    }
+
+    // ---- Posts: reports you write on the agent's profile. They are your notes, never events from a run.
+    const posts = { agentId: null, data: null, error: null, loading: false, version: 0, focus: null };
+    const postsRoot = el('section', 'network-posts-panel'); postsRoot.setAttribute('aria-label', 'Posts');
+    const postsWrite = button('Write a report…', () => postForm(null), 'secondary-button'); postsWrite.id = 'network-post-write';
+    const postsAlert = el('div', 'inline-error network-alert'); postsAlert.id = 'network-post-error'; postsAlert.setAttribute('role', 'alert'); postsAlert.hidden = true;
+    const postsList = el('ul', 'network-posts'); postsList.id = 'network-post-list'; postsList.setAttribute('aria-label', 'Reports');
+    const postsEmpty = el('div', 'network-empty'); postsEmpty.id = 'network-post-empty';
+    const postsMore = button('Show more reports', () => loadPosts({ append: true }), 'secondary-button network-more'); postsMore.hidden = true;
+    const postsHead = el('div', 'network-posts-head'); postsHead.append(note('Reports you write about this agent, in Markdown. They are your own notes: not events from a run, and nothing checks them.'), postsWrite);
+    postsRoot.append(el('h3', '', 'Posts'), postsHead, postsAlert, postsList, postsEmpty, postsMore);
+    function postsView(agent) {
+      if (posts.agentId !== agent.id) { Object.assign(posts, { agentId: agent.id, data: null, error: null, loading: false, focus: null }); posts.version++; postsAlert.hidden = true; }
+      renderPosts();
+      return postsRoot;
+    }
+    async function loadPosts({ append = false } = {}) {
+      const agentId = posts.agentId, version = ++posts.version;
+      posts.loading = true; renderPosts();
+      try {
+        const data = await request(`/api/network/agents/${agentId}/posts?limit=50&offset=${append ? posts.data.posts.length : 0}`);
+        if (version === posts.version) { posts.data = append ? { ...data, posts: [...posts.data.posts, ...data.posts] } : data; posts.error = null; postsAlert.hidden = true; }
+      } catch (failure) {
+        if (version !== posts.version) return;
+        if (append) { postsAlert.replaceChildren(el('span', '', failure.message)); postsAlert.hidden = false; } else Object.assign(posts, { data: null, error: failure });
+      } finally { if (version === posts.version) { posts.loading = false; renderPosts(); } }
+    }
+    function renderPosts() {
+      const data = posts.data, waiting = !data && !posts.error, active = document.activeElement, keep = postsList.contains(active) ? active.id : '';
+      postsList.setAttribute('aria-busy', String(posts.loading || waiting));
+      postsList.replaceChildren(...(data ? data.posts.map(postItem) : []));
+      postsEmpty.replaceChildren(); postsEmpty.hidden = Boolean(data?.posts.length);
+      if (waiting) postsEmpty.append(note('Loading reports…'));
+      else if (posts.error) { const failure = el('p', 'inline-error', `Could not load the reports. ${posts.error.message}`); failure.setAttribute('role', 'alert'); postsEmpty.append(failure, button('Retry', () => loadPosts(), 'secondary-button')); }
+      else if (!data.posts.length) postsEmpty.append(el('p', 'network-empty-title', 'No reports yet.'), note('Write what this agent did well, what to watch, or where its work lives. Only you see it.'));
+      postsMore.hidden = !data || data.next === null;
+      if (posts.focus && data && !posts.loading) { const id = posts.focus; posts.focus = null; (document.querySelector(`#network-post-${id} .network-record-actions button`) || postsWrite).focus(); }
+      else if (keep) document.getElementById(keep)?.focus();
+    }
+    function postItem(post) {
+      const item = el('li', 'network-post'); item.id = `network-post-${post.id}`; item.dataset.id = post.id;
+      const head = el('header', 'network-post-head'), badge = el('span', 'lesson-kind network-report', 'Report');
+      head.append(badge, el('span', 'note', `Written by you · ${ago(post.createdAt)}${post.editedAt ? ` · edited ${ago(post.editedAt)}` : ''}`));
+      const body = el('div', 'md-view network-post-body'); body.id = `network-post-${post.id}-body`;
+      body.append(window.PromptboardMarkdown.render(post.markdown));
+      item.append(head, body);
+      if (post.references.length) { const sources = el('ul', 'network-sources'); sources.setAttribute('aria-label', 'Sources'); sources.append(...post.references.map(text => el('li', '', text))); item.append(el('p', 'note network-sources-label', 'Sources'), sources); }
+      const actions = el('div', 'network-record-actions');
+      for (const [label, run, name] of [['Edit…', () => postForm(post), 'edit'], ['Delete…', () => deletePost(post), 'delete']]) {
+        const node = button(label, run, 'text-button'); node.id = `network-post-${post.id}-${name}`; node.setAttribute('aria-describedby', body.id); actions.append(node);
+      }
+      item.append(actions);
+      return item;
+    }
+    function postForm(post) {
+      const form = el('form', 'network-form'); form.noValidate = true;
+      const markdown = Object.assign(el('textarea'), { rows: 10, maxLength: 16384, value: post?.markdown || '' }); markdown.id = 'network-post-form-markdown';
+      const references = Object.assign(el('textarea'), { rows: 3, value: (post?.references || []).join('\n') }); references.id = 'network-post-form-references';
+      form.append(labelled('Report (Markdown)', markdown), note('Headings, lists, links, code and tables. HTML is shown as text and images are not loaded. Local folders are cut to their last name and secret-looking values are masked.'),
+        labelled('Sources (optional, one per line)', references), note('Where this report comes from: a card, a page, a run you watched. They are shown as text.'));
+      const failure = el('div', 'inline-error'); failure.setAttribute('role', 'alert'); failure.hidden = true;
+      const submit = el('button', 'dialog-done', post ? 'Save' : 'Publish to the profile'); submit.type = 'submit'; submit.id = 'network-post-form-submit';
+      const footer = el('div', 'kanban-dialog-actions'); footer.append(button('Cancel', closeDialog, 'secondary-button'), submit);
+      form.append(failure, footer);
+      form.addEventListener('submit', async event => {
+        event.preventDefault(); submit.disabled = true; failure.hidden = true;
+        const body = { markdown: markdown.value, references: references.value.split('\n').map(line => line.trim()).filter(Boolean) };
+        try {
+          const data = post
+            ? await request(`/api/network/agents/${posts.agentId}/posts/${post.id}`, { method: 'PATCH', body: { expectedRevision: post.revision, ...body } })
+            : await request(`/api/network/agents/${posts.agentId}/posts`, { method: 'POST', body: { expectedRevision: posts.data?.revision ?? 0, ...body } });
+          closeDialog(); say(post ? 'Saved the report.' : 'Published the report to this agent’s profile.');
+          posts.focus = data.post.id; await loadPosts();
+        } catch (error) {
+          failure.replaceChildren(el('span', '', error.message)); failure.hidden = false;
+          if (['REVISION_CONFLICT', 'NOT_FOUND'].includes(error.code)) failure.append(button('Reload', async () => { closeDialog(); await loadPosts(); say('Reloaded the current reports. Make your change again.'); }, 'secondary-button network-reload'));
+        } finally { submit.disabled = false; }
+      });
+      openDialog(post ? 'Edit report' : 'Write a report', [form]);
+      markdown.focus();
+    }
+    function deletePost(post) {
+      confirmDialog('Delete report?', [note(`“${clip(post.markdown, 200)}”`, 'note network-quote'), note('It is deleted for good.')], async () => {
+        await request(`/api/network/agents/${posts.agentId}/posts/${post.id}`, { method: 'DELETE', body: { expectedRevision: post.revision } });
+        say('Deleted the report.'); posts.focus = post.id; opener = postsWrite;
+      }, loadPosts);
     }
 
     // ---- Data
@@ -376,6 +673,22 @@ window.PromptboardNetwork = (() => {
       dialog.querySelector('select, input')?.focus();
     }
     function closeActions(...extra) { const box = el('div', 'kanban-dialog-actions'); box.append(button('Close', closeDialog, 'secondary-button'), ...extra); return box; }
+    /** Delete after a confirmation: `action` deletes, then the dialog closes and `after` reads the list again. */
+    function confirmDialog(title, nodes, action, after) {
+      const failure = el('div', 'inline-error'); failure.setAttribute('role', 'alert'); failure.hidden = true;
+      const confirm = button('Delete', async () => {
+        confirm.disabled = true; failure.hidden = true;
+        try { await action(); closeDialog(); await after(); }
+        catch (error) {
+          failure.replaceChildren(el('span', '', error.message)); failure.hidden = false;
+          if (['REVISION_CONFLICT', 'NOT_FOUND'].includes(error.code)) failure.append(button('Reload', async () => { closeDialog(); await after(); say('Reloaded. Nothing was deleted.'); }, 'secondary-button network-reload'));
+        } finally { confirm.disabled = false; }
+      }, 'secondary-button network-danger');
+      confirm.id = 'network-confirm-delete';
+      const footer = el('div', 'kanban-dialog-actions'); footer.append(button('Cancel', closeDialog, 'secondary-button'), confirm);
+      openDialog(title, [...nodes, failure, footer]);
+      confirm.focus();
+    }
     function identityForm(agent, choices) {
       const form = el('form', 'network-form'); form.noValidate = true;
       let baseSelect = null;
@@ -431,6 +744,7 @@ window.PromptboardNetwork = (() => {
     // ---- Page entry
     async function show() {
       const entering = !visible; visible = true;
+      if (entering) { memory.agentId = null; posts.agentId = null; } // Read again on every visit, as the directory is.
       render();
       if (entering) { say(''); showError(''); await load(); }
     }

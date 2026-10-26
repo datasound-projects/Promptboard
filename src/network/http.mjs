@@ -15,6 +15,18 @@
  *   GET  /api/network/networks/:id/versions/:n
  *   GET  /api/network/export
  *   POST /api/network/import                { data, expectedRevision }
+ *
+ * Memory of an agent (agents/agt_…) or a network (networks/net_…), and an agent's reports (memory.mjs, posts.mjs):
+ *   GET  …/memory                           ?q status offset limit
+ *   POST …/memory                           { expectedRevision (of the memory), kind, text }: a proposal
+ *   PATCH …/memory/:mid                     { expectedRevision (of the record), kind?, text? }
+ *   POST …/memory/:mid/approve              { expectedRevision, decision: 'approve' | 'reject' }
+ *   DELETE …/memory/:mid                    { expectedRevision }
+ *   GET  /api/network/agents/:id/memory/preview   ?projectId networkId memory=none|agent|agent+network projectLessons=true|false
+ *   GET  /api/network/agents/:id/posts      ?offset limit
+ *   POST /api/network/agents/:id/posts      { expectedRevision, markdown, references? }
+ *   PATCH /api/network/agents/:id/posts/:pid  { expectedRevision, markdown?, references? }
+ *   DELETE /api/network/agents/:id/posts/:pid { expectedRevision }
  */
 import { NETWORK_LIMITS } from './registry.mjs';
 import { NetworkError } from './storage.mjs';
@@ -23,6 +35,9 @@ import { NetworkError } from './storage.mjs';
 const BODY = { small: 64 * 1024, network: NETWORK_LIMITS.draftBytes + 64 * 1024, import: 32 * 1024 * 1024 };
 const integer = (value, fallback) => value === null ? fallback : /^\d{1,9}$/.test(value) ? Number(value) : NaN; // NaN is refused by the registry.
 const query = (params, keys) => ({ ...Object.fromEntries(keys.map(key => [key, params.get(key) || undefined])), offset: integer(params.get('offset'), 0), limit: integer(params.get('limit'), 50) });
+// The preview's question as resolve() takes it; a value it does not know is passed on and refused there.
+const preview = params => ({ projectId: params.get('projectId') || null, networkId: params.get('networkId') || null, memory: params.get('memory') || 'agent',
+  projectLessons: ({ true: true, false: false, null: false })[params.get('projectLessons')] ?? params.get('projectLessons') });
 
 export async function networkRoute({ network, req, res, pathname, searchParams, jsonBody, send }) {
   const method = req.method;
@@ -45,6 +60,24 @@ export async function networkRoute({ network, req, res, pathname, searchParams, 
     const agent = pathname.match(/^\/api\/network\/agents\/(agt_[0-9a-f]{20})$/);
     if (agent && method === 'GET') return send(res, 200, await network.agent(agent[1]));
     if (agent && method === 'PATCH') return send(res, 200, await network.updateAgent(agent[1], await body(BODY.small)));
+    const memory = pathname.match(/^\/api\/network\/(?:agents\/(agt_[0-9a-f]{20})|networks\/(net_[0-9a-f]{20}))\/memory(?:\/(mem_[0-9a-f]{20})(\/approve)?|\/(preview))?$/);
+    if (memory) {
+      const [, agentId, networkId, recordId, approve, forJob] = memory, kind = agentId ? 'agent' : 'network', id = agentId || networkId;
+      if (forJob && agentId && method === 'GET') return send(res, 200, await network.memory.resolve(agentId, preview(searchParams)));
+      if (!recordId && !forJob && method === 'GET') return send(res, 200, await network.memory.list(kind, id, query(searchParams, ['q', 'status'])));
+      if (!recordId && !forJob && method === 'POST') return send(res, 200, await network.memory.propose(kind, id, await body(BODY.small)));
+      if (recordId && approve && method === 'POST') return send(res, 200, await network.memory.decide(kind, id, recordId, await body(BODY.small)));
+      if (recordId && !approve && method === 'PATCH') return send(res, 200, await network.memory.edit(kind, id, recordId, await body(BODY.small)));
+      if (recordId && !approve && method === 'DELETE') return send(res, 200, await network.memory.remove(kind, id, recordId, await body(BODY.small)));
+    }
+    const posts = pathname.match(/^\/api\/network\/agents\/(agt_[0-9a-f]{20})\/posts(?:\/(pst_[0-9a-f]{20}))?$/);
+    if (posts) {
+      const [, agentId, postId] = posts;
+      if (!postId && method === 'GET') return send(res, 200, await network.posts.list(agentId, query(searchParams, [])));
+      if (!postId && method === 'POST') return send(res, 200, await network.posts.create(agentId, await body(BODY.small)));
+      if (postId && method === 'PATCH') return send(res, 200, await network.posts.update(agentId, postId, await body(BODY.small)));
+      if (postId && method === 'DELETE') return send(res, 200, await network.posts.remove(agentId, postId, await body(BODY.small)));
+    }
     const match = pathname.match(/^\/api\/network\/networks\/(net_[0-9a-f]{20})(?:\/(publish)|\/versions\/([1-9]\d{0,8}))?$/);
     if (match) {
       const [, id, action, number] = match;

@@ -26,7 +26,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 | 01 | 01-audit-and-contracts.md | done | 27646ef |
 | 02 | 02-registry-and-storage.md | done | 7771788 |
 | 03 | 03-network-page-and-agent-profiles.md | done | 9edf549 |
-| 04 | 04-agent-memory-and-feed.md | pending | |
+| 04 | 04-agent-memory-and-feed.md | done | (filled at commit) |
 | 05 | 05-graph-designer-and-subnetworks.md | pending | |
 | 06 | 06-general-purpose-job-engine.md | pending | |
 | 07 | 07-local-worker-runtime.md | pending | |
@@ -38,7 +38,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 | 13 | 13-a2a-federation.md | pending | |
 | 14 | 14-verification-and-release.md | pending | |
 
-**Next task:** 04
+**Next task:** 05
 
 ## Live provider runs
 
@@ -316,3 +316,137 @@ updated yet (release notes and README are Task 14). Paid CLI runs: 0.
 
 **Next task: 04.**
 
+### Task 04 — Agent memory and profile posts (2026-10-26)
+
+**What was done.** Private, scoped memory for a registered agent or a network, and the owner's reports on an agent's
+profile. A memory record (fact, lesson, preference or procedure; text ≤ 4,000 characters) is proposed, then approved by
+the owner; it can be edited (status kept, earlier text in its history), withdrawn/rejected, approved again or deleted.
+Every change names the revision the owner saw, so a record changed elsewhere is never approved unseen (`409`). Search is
+deterministic keyword matching. A pure resolver gives the exact memory block a future job of an agent would receive:
+approved records of that agent, of a network it is a node of when the job runs in that network and asks for it, then the
+project's approved Project Memory lessons only with an explicit permission and only for a project on the registration's
+list; never another project's lessons, never an unapproved or foreign record, nothing for a disabled or stale
+registration. The owner previews that block and why each part is in it or not. Reports are limited Markdown with source
+references, labelled "Report · Written by you" and never shown as an event or a job. Project Memory (`src/lessons.mjs`,
+`docs/project-memory.md`) and Base are not changed: lessons are read only through the unchanged `lessonsPrompt`. No job,
+run or model call exists or starts.
+
+**Files.** New: `src/network/memory.mjs` (`NetworkMemory`, pure `memoryAccess`/`memoryBlock`), `src/network/posts.mjs`
+(`NetworkPosts`), `tests/network-memory.test.mjs`. Changed: `src/network/storage.mjs` (shared `only`, `requireRevision`,
+`conflict`, `object`, `page`, `cleanText`, moved out of `registry.mjs`), `src/network/registry.mjs` (uses them; creates
+`this.memory` and `this.posts`; export comment), `src/network/http.mjs` (routes), `public/network.js` (Memory and Posts
+tabs, a "Memory" line under Allowed operations), `public/styles.css` (their styles; profile labels no longer restyle
+Markdown headings), `tests/network-ui.test.mjs` (3 tests; the Task 03 tab assertion now expects working Memory/Posts),
+`tests/network-browser.test.mjs` (1 test), `tests/helpers/ui-harness.mjs` (evaluates `markdown-view.js` before
+`network.js`, as the page does), `tests/remote-access.test.mjs` (every new route), `docs/network/architecture.md`
+(§4.7, §5 shapes, §10.1 row 04, §12.1 item 4), this file. `src/server.mjs` is unchanged (the registry owns both stores).
+
+**Data layout** (created on the first save): `<data>/network/memory/agent-<escapeId(agt_…)>.json` and
+`network-<escapeId(net_…)>.json` (`promptboard.network-memory` v1: `{ scope, revision, records }` + `.bak`),
+`<data>/network/posts/<escapeId(agt_…)>.json` (`promptboard.network-posts` v1: `{ agentId, revision, posts }` + `.bak`),
+all through `durable.mjs` with the Task 02 discipline (damaged copy set aside when the backup loads, no usable copy
+`NETWORK_DATA_DAMAGED`, newer version `NETWORK_VERSION_UNSUPPORTED` and never rewritten, a record that is not exactly what
+the module writes counts as damaged). Text is cleaned before saving (`cleanText`: CRLF, control characters, `noPaths`,
+`redactLocal`). Ceilings: 4,000 characters per record (413), 500 approved / 1,000 records per scope, 20 history entries
+per record, 8 MiB per memory file; a report 16 KiB in bytes (413), 2,000 per agent, 10 references × 300 characters.
+
+**Routes** (behind `handle()`, all allowed from a paired device, none local-only): `GET/POST
+/api/network/{agents|networks}/:id/memory` (`?q status offset limit`; propose with the scope revision),
+`PATCH/DELETE …/memory/:mid` (record revision), `POST …/memory/:mid/approve` (`{ expectedRevision, decision:
+'approve'|'reject' }`), `GET /api/network/agents/:id/memory/preview?projectId&networkId&memory=none|agent|agent+network&projectLessons=true|false`,
+`GET/POST /api/network/agents/:id/posts`, `PATCH/DELETE /api/network/agents/:id/posts/:pid`. Task 07 calls
+`registry.memory.resolve(agentId, request)` and puts its `text` into `prompt.md`.
+
+**UI.** Agent profile tabs: Profile · Tasks (soon) · Activity (soon) · **Memory** · **Posts**. Memory: search (server
+keywords) and status filter, counts, "Add memory…" dialog (kind, text, character count, what happens to it), each record
+with kind and status chips, its text as text, "Written by you · approved … · revision n", Approve / Reject or Withdraw /
+Edit… / Delete… (confirmation), and a native `<details>` history with earlier texts; then "What a job would receive":
+project (marked when not on the agent's list), network (the agent's networks), "Allow the project's approved lessons",
+a ✓/– list of why each part is in or out, the exact text and its size against 8,000. Posts: "Write a report…" dialog
+(Markdown, sources one per line), each report as "Report · Written by you · time · edited", drawn by
+`PromptboardMarkdown` (HTML shown as text, only http(s) links, no images), Edit… and Delete…. Conflicts show the
+server's message with Reload (nothing re-sent); empty, loading and error (Retry) states; focus follows the changed record
+or returns to Add/Write; memory and reports are read again on every page visit and per agent (a load for a previous agent
+is discarded).
+
+**Tests** (temporary data folders, no CLI, no network beyond the local test server):
+
+- `tests/network-memory.test.mjs` 11 tests: (1) propose → edit → stale approval `409` (nothing approved) → approve →
+  `MEMORY_STATE` → edit approved (stays approved, history with earlier texts) → reject; keyword search, status filter,
+  counts, paging; delete under its revision; strict input; unknown agent and path-like IDs `NOT_FOUND`; (2) restart
+  (same list, preview and posts from new instances), damaged file → backup + set aside, no usable copy refused for list
+  and preview, newer file refused and byte-unchanged (memory and posts), a hand-edited foreign-scope record = damaged;
+  (3) scope isolation: B never sees A's memory, network memory only with `agent+network` and membership, unapproved never,
+  lessons only with permission for an allowed project (equal to `lessonsPrompt`), another project's lessons never, bad
+  query values refused; (4) the pure block drops unapproved and foreign-scope records it is handed, disabled gets
+  nothing even with records and lessons, stale and project-missing decisions; (5) revocation: disabled → nothing,
+  re-enabled → back, removed from the project → no lessons, project off the board → `project-missing`, Base agent switched
+  off → stale → nothing; (6) limits: 4,001 characters `413` (propose and edit), block ≤ 8,000 with 4 of 6 newest records
+  and `omitted: 2`, report 16 KiB in bytes, references bounds; (7) injected `=== END NETWORK MEMORY ===` and instructions
+  stay indented inside the one section, nothing approved or granted, HTML kept as text; (8) secrets and local folders
+  masked in memory, edits, previews and reports, and absent from every file under `network/`; (9) `state.json` and Base
+  revision unchanged, every Project Memory file byte-identical and none added, `lessonsPrompt` unchanged, `network/` holds
+  only agents, memory, networks, posts; (10) posts create/edit/delete under revisions, `jobId` refused, machine source
+  refused, newest first, per agent, restart, not part of the registration view, no events/jobs folder; (11) every route
+  over the real server: token checks, 64 KiB body 413, 4,001-character 413, 404s, stale approval 409, network memory
+  routes, the preview query (all three parts), a preview for a network 404, reports, no data-folder path in answers, a
+  restart answering the same.
+- `tests/network-ui.test.mjs` +3 (jsdom, real server): the Memory tab flow (labels, empty state, propose with HTML shown
+  as text, approve → exact preview text, stale approval → message → Reload, edit with history, search and filter, lessons
+  only after ticking and never for the other project, withdraw, delete with confirmation and focus, revocation shown
+  after switching the registration off; Base and `lessons/` byte-identical; only memory routes and the switch wrote; no
+  job/run/generation request, zero runner calls and runs); the Posts tab (Markdown drawn, `<script>`/`<img onerror>`
+  shown as text, no script/img element, `javascript:` not a link, `window.__pwned` undefined, sources, "Report · Written
+  by you", edit conflict → Reload, edit, delete, focus); switching agents while memory and reports load shows only the new
+  agent's. Task 03 test 6 now expects Memory and Posts to work and Tasks/Activity to stay unavailable.
+- `tests/network-browser.test.mjs` +1 (Chrome): light and dark at 1440 and 390 px, Memory (3 records, preview with the
+  lessons allowed) and Posts, no sideways scroll, no img/script from a report, `window.__pwned` undefined, profile tabs by
+  ArrowRight with a visible focus ring, Add memory by Enter and typing, Escape returns focus, the report dialog fits a
+  phone, no exception or CSP message.
+- `tests/remote-access.test.mjs`: 17 new rows in `ALLOWED` (agents: memory list/propose/preview/edit/delete/approve, posts
+  list/create/edit/delete; networks: memory list/propose/edit/delete/approve).
+- Mutation check (`$TMPDIR/network-logs/task-04-mutations.log`): 37 mutations, each makes a test fail (record and propose
+  CAS, approved-only and scope filters in the block, allowlist, permission, disabled, stale, membership, `agent+network`,
+  indentation, 8,000 budget, newest first, 4,000 limit, history text, already decided, strict stored record, delete,
+  masking, writing into `lessons/`, `jobId`, report CAS, 16 KiB, preview route, network memory route, record text as
+  HTML, report as HTML, both Reloads, approving with another revision, the lessons permission in the UI, the preview
+  refresh after revocation, focus after an action, the renderer in the harness, the phone CSS, both loading resets).
+- Runs: `npm run check` pass; new and touched Network tests twice on the final code: 54/54 non-browser
+  (`network-memory`, `network-ui`, `network-registry`, `network-http`, `remote-access`) and 2/2 browser, both times
+  (`task-04-new-twice.log`); touched modules `lessons`, `lessons-ui`, `remote-access`, `ui`, `ui-2`, `ui-3`, `sandbox-ui`,
+  `project-explorer-ui`, `server` 189/189 and `lessons-browser`, `app-fixes-browser`, `browser` 14/14
+  (`task-04-touched.log`, run before the last UI fix; the Network files were rerun after it).
+- Full `npm test` on the final code (log `$TMPDIR/network-logs/task-04-suite.log`, 2026-10-26 06:09–06:36): non-browser
+  1,543 tests, 1,542 pass, 0 fail, 0 cancelled, 1 skipped (the win32-only `editors.test.mjs` test); browser 148/148.
+  Exit 0, no reruns needed. Task 03's 1,529 + 11 memory + 3 UI = 1,543; 147 + 1 = 148. (An earlier run was stopped
+  before it finished because two UI fixes landed after it started; it is not counted.)
+- No isolated app instance outside the tests was needed (port 4904 unused): the screenshots come from the Chrome test's
+  own temporary server. Paid CLI runs: 0.
+
+**Acceptance criteria and evidence** (screenshots in `$TMPDIR/network-logs/task-04-screens/`, all looked at):
+
+- *Agent notes survive restart and are only retrieved within their allowed scope:* memory tests 2, 3, 4, 5, 11; UI
+  "moving to another agent"; `memory-1440-{light,dark}.png`, `memory-390-{light,dark}.png`.
+- *Approved Project Memory remains authoritative; Network neither re-suggests nor modifies it:* memory test 9 (files
+  byte-identical, none added, same `lessonsPrompt`), test 3 (the block ends with exactly `lessonsPrompt`'s section), UI
+  Memory test (`lessons/` byte-identical); `lessons*` tests unchanged and green; `docs/project-memory.md` and
+  `src/lessons.mjs` untouched.
+- *Owner can publish a report to the agent's private feed; posts are not mislabeled as verified tool events:* memory
+  test 10, UI Posts test, Chrome test; `posts-1440-{light,dark}.png`, `posts-390-{light,dark}.png`,
+  `post-write-390-dark.png`.
+- *All published/injected context is bounded, attributable, redacted and previewable:* memory tests 6, 7, 8 and 3 (record
+  lines with ID and scope), 11 (preview route); UI Memory test (exact preview text, reasons); `memory-preview-1440-{light,dark}.png`,
+  `memory-preview-390-{light,dark}.png`, `memory-add-1440-dark.png`.
+- acceptance.md Task 04 rows: 1 → memory tests 1, 11; 2 → tests 2, 3, 5; 3 → test 6 (413 with code `NETWORK_LIMIT`);
+  4 → tests 7, 8 and the UI tests; 5 → test 9 and the lessons tests; 6 → test 10, UI Posts test, Chrome test.
+
+**Known limits.** Network memory has routes but no screen yet (Graph/Library, Task 05); the agent's preview shows it.
+Membership for network memory is the network's current draft (Task 09 may use the pinned version). The Network export
+carries neither memory nor reports (§4.4 options not built). History keeps the newest 20 entries per record. One queue
+for all memory files and one for all report files; a report file is rewritten whole on each change (≤ 2,000 × 16 KiB).
+Job references on reports are refused until Task 06; machine-written reports wait for Task 11. Agent proposals of memory
+(`source.kind: 'job'`) arrive with Task 07. The memory list and reports are read again per visit, not pushed live.
+
+**Commit.** (filled at commit)
+
+**Next task: 05.**
