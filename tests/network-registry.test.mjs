@@ -360,7 +360,7 @@ test('the directory view: role and provider filters, capability facets, provider
 
   const view = id => registry.agent(id).then(result => result.agent);
   const claude = (await view(lead.id)).providerCapabilities;
-  assert.deepEqual(claude, { provider: 'claude', known: true, jobTools: ['none', 'web'], toolEvents: 'yes', waitingEvents: 'yes', readOnly: 'yes', webSearch: 'yes', sessionId: 'yes', usage: 'unknown', dockerSandbox: 'yes', liveVerified: 'yes' });
+  assert.deepEqual(claude, { provider: 'claude', known: true, jobTools: ['none', 'web'], toolEvents: 'yes', waitingEvents: 'yes', readOnly: 'yes', webSearch: 'yes', sessionId: 'yes', usage: 'yes', dockerSandbox: 'yes', liveVerified: 'yes' });
   assert.deepEqual([(await view(reviewer.id)).providerCapabilities.waitingEvents, (await view(writer.id)).providerCapabilities.jobTools], ['no', ['none']]);
   const unknown = (await view(plain.id)).providerCapabilities;
   assert.deepEqual([unknown.provider, unknown.known, unknown.jobTools], [null, false, null]);

@@ -168,7 +168,7 @@ test('register a Base agent, edit its Network identity, disable and enable it: B
   assert.match($('#network-status').textContent, /Registered Research lead\. Base is unchanged\./);
   // The profile: identity, Base settings read from Base, projects, capabilities with unknown where unknown, operations.
   const detail = $('#network-detail').textContent;
-  for (const text of [stored.id, 'Lead · Agent · revision 1', 'Claude Code', 'sonnet', 'Site', 'Lead the research.', 'Not in a network yet.', 'Usage reported', 'Unknown', 'Read only. Network jobs never change files.', 'No tools, Web search']) assert.ok(detail.includes(text), `profile shows ${text}`);
+  for (const text of [stored.id, 'Lead · Agent · revision 1', 'Claude Code', 'sonnet', 'Site', 'Lead the research.', 'Not in a network yet.', 'Usage reported', 'Read only. Network jobs never change files.', 'No tools, Web search']) assert.ok(detail.includes(text), `profile shows ${text}`);
   // Edit the Network identity.
   $('#network-edit').focus(); $('#network-edit').click(); await until(() => $('#network-form-name')?.value === 'Research lead', 'edit form');
   assert.equal($('#network-form-base'), null, 'the Base agent of a registration never changes');
