@@ -102,7 +102,8 @@ window.PromptboardNetworkActivity = (() => {
 
     // ---- Live: one stream while Activity or an agent's Activity tab shows.
     const live = { wanted: false, generation: 0, controller: null, last: null, state: 'off', attempts: 0, wake: null };
-    const setLive = (state, extra = '') => { live.state = state; liveLine.dataset.state = state; liveLine.textContent = extra || LIVE[state]; };
+    // `host.onLive(state, was)` hears every change, so a view that relies on the stream (the Tasks tab) can poll again when it drops.
+    const setLive = (state, extra = '') => { const was = live.state; live.state = state; liveLine.dataset.state = state; liveLine.textContent = extra || LIVE[state]; if (was !== state) { try { host.onLive?.(state, was); } catch {} } }; // A listener never stops the stream.
     const sleep = ms => new Promise(resolve => { const timer = setTimeout(resolve, ms); live.wake = () => { clearTimeout(timer); resolve(); }; });
     function want(on) {
       if (on === live.wanted) return;
@@ -162,6 +163,7 @@ window.PromptboardNetworkActivity = (() => {
       live.last = item.seq;
       add([item]);
       scheduleSummary();
+      try { host.onEvent?.(item); } catch {}
     }
     function add(events, { older: isOlder = false } = {}) {
       const fresh = events.filter(event => !data.seqs.has(event.seq));
@@ -208,7 +210,7 @@ window.PromptboardNetworkActivity = (() => {
       if (shown?.jobId) { overview.hidden = true; jobView.hidden = false; renderJob(); return; }
       overview.hidden = false; jobView.hidden = true;
       keepFocus(panel, () => { renderSummary(); renderFeed(); });
-      if (focusJob) { panel.querySelector(`[data-open-job="${focusJob}"]`)?.focus(); focusJob = null; }
+      if (focusJob) { panel.querySelector(focusJob === 'search' ? '#network-activity-search' : `[data-open-job="${focusJob}"]`)?.focus(); focusJob = null; }
     }
     function renderSummary() {
       const summary = data.summary;
@@ -249,7 +251,7 @@ window.PromptboardNetworkActivity = (() => {
         : row.status === 'preparing' ? 'preparing to start' : row.waiting?.message || row.reason || (row.status === 'waiting_for_input' ? 'It asked for input. Open its record.' : '');
       const open = openJob(row.id); open.dataset.openJob = row.id; open.dataset.focusKey = `queue:${row.id}`; open.setAttribute('aria-label', `Details of job ${short(row.id)} (${agentName(row.agentId)})`);
       const head = el('div', 'network-activity-row-head'); head.append(chip(row.status), el('strong', '', agentName(row.agentId)), el('span', 'note', `Job ${short(row.id)}`));
-      item.append(head, note([since, row.waiting?.position ? `position ${row.waiting.position}` : '', level ? `reports ${coverageName(level)}` : ''].filter(Boolean).join(' · ')),
+      item.append(head, note([since, row.waiting?.position ? `position ${row.waiting.position}` : '', level ? `reports ${coverageName(level)}` : '', row.pipelineRunId ? `pipeline run ${short(row.pipelineRunId)}, step ${row.nodeId || '?'}` : ''].filter(Boolean).join(' · ')),
         note(usageText(row.attempt?.usage), 'note network-usage'), open);
       return item;
     }
@@ -272,7 +274,8 @@ window.PromptboardNetworkActivity = (() => {
       return !q || [describe(event), event.message, event.errorCode, event.jobId, event.pipelineRunId, event.nodeId, agentName(event.agentId)].some(text => text && String(text).toLowerCase().includes(q));
     }
     function describe(event) {
-      const jobText = event.jobId ? `Job ${short(event.jobId)}` : '', run = `Pipeline run ${short(event.pipelineRunId)}`;
+      // A pipeline step's job names its run and step, so its events read as part of that run.
+      const jobText = event.jobId ? `Job ${short(event.jobId)}${event.pipelineRunId ? ` (pipeline run ${short(event.pipelineRunId)}, step ${event.nodeId || '?'})` : ''}` : '', run = `Pipeline run ${short(event.pipelineRunId)}`;
       if (event.type === 'job.status') return `${jobText}: ${event.from ? `${stateOf(event.from)[0]} → ` : ''}${stateOf(event.status)[0]}`;
       if (event.type === 'job.activity') return `${jobText} · ${ACTIVITY[event.kind] || 'Activity'}`;
       if (event.type === 'job.result') return `${jobText} · result saved`;
@@ -328,6 +331,12 @@ window.PromptboardNetworkActivity = (() => {
       } catch (failure) { if (job?.id === id) Object.assign(job, { error: failure.message, loading: false }); }
       scheduleRender();
     }
+    /** A step job's run: the timeline filtered to that run's events (its steps, their jobs and their activity). */
+    function runLink(id) {
+      const node = button(`Run ${short(id)}: show its events`, () => { agentFilter.value = ''; kindFilter.value = ''; search.value = id; focusJob = 'search'; host.go('#/network/activity'); }, 'text-button');
+      node.id = 'network-activity-run-events'; node.title = id;
+      return node;
+    }
     function renderJob() {
       const back = button('Back to Activity', () => { focusJob = job?.id; host.go('#/network/activity'); }, 'text-button network-back-activity'); back.id = 'network-activity-back';
       if (!job || job.loading) { jobView.replaceChildren(back, note('Loading the job…')); return; }
@@ -340,7 +349,8 @@ window.PromptboardNetworkActivity = (() => {
         ...(record.outcome ? [['Outcome', { completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', uncertain: 'Uncertain: it may have done its work', not_started: 'Nothing ran' }[record.outcome] || record.outcome]] : []),
         ...(record.errorCode ? [['Error', record.errorCode]] : []), ['Submitted', `${new Date(record.createdAt).toLocaleString()} (${ago(record.createdAt)})`], ['Updated', ago(record.updatedAt)],
         ...(request ? [['Tools', request.tools === 'web' ? 'Read-only web search' : 'None'], ['Time limit', `${Math.round(request.limits.timeoutMs / 60000) || '<1'} min`], ['Input', clip(request.input.text, 280)]] : [['Request', 'Its accepted request failed its integrity check.']]),
-        ...['projectId', 'networkId', 'pipelineRunId', 'parentJobId'].filter(key => record[key]).map(key => [{ projectId: 'Project', networkId: 'Network', pipelineRunId: 'Pipeline run', parentJobId: 'Parent job' }[key], el('code', '', record[key])])];
+        ...['projectId', 'networkId', 'parentJobId'].filter(key => record[key]).map(key => [{ projectId: 'Project', networkId: 'Network', parentJobId: 'Parent job' }[key], el('code', '', record[key])]),
+        ...(record.pipelineRunId ? [['Pipeline run', runLink(record.pipelineRunId)], ['Pipeline step', el('code', '', record.nodeId || '?')]] : [])];
       const facts = el('dl', 'network-facts');
       for (const [label, value] of rows) { const dd = el('dd'); dd.append(value); facts.append(el('dt', '', label), dd); }
       const attempts = el('ol', 'network-activity-attempts');
@@ -419,7 +429,7 @@ window.PromptboardNetworkActivity = (() => {
     }
     // `live(on)`: the stream runs while Activity or an agent's Activity tab shows. Off and on again, it replays what it
     // missed from the last seq it saw, so the timeline and the agent's events stay whole.
-    return { panel, show, agentPanel, loadAgent, live: want };
+    return { panel, show, agentPanel, loadAgent, live: want, streaming: () => live.state === 'live' };
   }
   return { create };
 })();

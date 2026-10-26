@@ -483,7 +483,9 @@ export class NetworkJobs {
     const label = oneLine(item.label).slice(0, 160);
     live.lastActivity = { at: this.now(), kind: item.kind, label };
     let coverage; try { coverage = this.worker?.getStatus(own)?.coverage; } catch {}
-    const event = { type: 'job.activity', jobId: job.id, attemptId: own.attemptId, agentId: job.agentId, projectId: job.projectId, networkId: job.networkId, status: job.status, ...(coverage ? { coverage } : {}), message: label };
+    // kind names it in the timeline ("Web search", "Tool"); the pipeline link lets a run's filter find its steps' activity.
+    const event = { type: 'job.activity', jobId: job.id, attemptId: own.attemptId, agentId: job.agentId, projectId: job.projectId, networkId: job.networkId, pipelineRunId: job.pipelineRunId, nodeId: job.nodeId,
+      status: job.status, kind: item.kind, ...(coverage ? { coverage } : {}), message: label };
     Promise.resolve().then(() => this.events?.append(event)).catch(() => {}); // The journal never holds the attempt up.
     return { applied: true };
   }

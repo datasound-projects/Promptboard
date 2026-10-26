@@ -1205,7 +1205,9 @@ Refinements made while building `src/network/worker-local.mjs`, the shared chang
    started"; while it runs, the Tasks tab marks running jobs of a stale agent and offers Cancel.
 10. **Activity (§17 item 3).** `NetworkJobs.activity(own, { kind, label })` (also `own.activity`) checks the lease like
     `spawned`, cleans the label (`oneLine`, ≤ 160), keeps it as the view's `lastActivity` (memory only) and calls
-    `this.events?.append({ type: 'job.activity', jobId, attemptId, agentId, projectId, networkId, status, coverage?, message })`.
+    `this.events?.append({ type: 'job.activity', jobId, attemptId, agentId, projectId, networkId, pipelineRunId?, nodeId?, status, kind,
+    coverage?, message })` (`kind` and the pipeline link added in the wave A integration, so the timeline names the activity and a
+    run's filter finds its steps' activity).
     The worker's labels name what happened, never its arguments: "Claude Code started.", "Searched the web.", "Read a web
     page.", "Writing the answer.". `stream.jsonl` (≤ 2,000 lines) keeps `{ at, kind, label, detail }`, where `detail` is the CLI's
     own short label (the search query or URL, cleaned) as local evidence; it is never an event. Gemini reports no tool events.
@@ -1235,8 +1237,11 @@ Refinements made while building `src/network/worker-local.mjs`, the shared chang
     "May have run", waiting message and position, live process and last activity, the coverage label, reported usage, the
     reason and code, and Cancel / Approve / Reject / Retry… (with the "may have done its work" confirmation when the outcome is
     uncertain or it read the web) / Close…; details show the result as Markdown (HTML as text), its json, the input and the
-    attempt facts. Polling: every 2 s while a job is open, every 10 s otherwise, only while the tab shows; Task 08 replaces it
-    with the event stream. A blocked agent (switched off, stale, refused CLI) shows why and disables the form.
+    attempt facts. While the tab shows, the page's one event stream (§19 item 12) runs and every `job.status` event, or a job
+    event of this agent, reads the list again (debounced 250 ms), with a 30 s safety read for what is not journaled (a sign-in
+    wait, the slot count); when the stream is not live (refused at its ceiling, reconnecting) it polls as before: every 2 s while
+    a job is open, every 10 s otherwise, and a stream that drops from live reads the list at once (wave A integration). A blocked
+    agent (switched off, stale, refused CLI) shows why and disables the form.
 16. **Known limits.** Claude and Codex results are cut at 100,000 characters by `streamResearch` (its existing ceiling);
     Gemini's at the runner's 2 MiB output and the engine's 1 MiB result. Base MCP servers, command recipes and supporting agents
     are never delivered to jobs; workspace-write and repository access stay refused (§14 item 14). Gemini Network jobs are
@@ -1327,7 +1332,9 @@ statuses, Kanban runs) and `public/network-activity.js` (the UI). None changes a
     waiting ⏸ amber, unknown ? dashed), so waiting and unknown differ without colour. A job's record uses Task 06's
     `GET /jobs/:id` and the journal; its result text comes from Task 07's `GET /jobs/:id/result` when that route exists
     (otherwise "not shown here in this version"). Live redraws keep keyboard focus (by id or `data-focus-key`). The Tasks
-    tab stays Task 07's.
+    tab stays Task 07's but follows the same stream (`create(host)` takes `onEvent(event)` and `onLive(state, was)`, and answers
+    `streaming()`; a throwing listener never stops the stream). A pipeline step job's events and queue row name its run and step,
+    and its record links to the timeline filtered to that run (wave A integration; Task 10's run view may replace that link).
 13. **For Tasks 07 and 09.** Append `{ type, …fields }` as §17 says; unknown fields are dropped silently, invalid ones
     left out, an unusable type refused (`append` answers null and the journal counts it). A `job.activity` may carry
     `kind` (`turn|tool|web|mcp|text|status`), which the timeline shows ("Web search", "Tool"); without it the event shows

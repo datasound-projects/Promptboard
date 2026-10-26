@@ -166,7 +166,8 @@ window.PromptboardNetwork = (() => {
       memoryPanel: networkId => memoryView(null, networkId), openAgent: id => go(hashFor('agents', id)) }) || null;
     // Activity (network-activity.js): agents' job status, the open jobs, Kanban runs and the live timeline.
     const activity = window.PromptboardNetworkActivity?.create({ request, say, go, stream: context.stream, openTask: context.openTask,
-      openAgent: id => { profileTab = 'activity'; focusDetail = 'always'; go(hashFor('agents', id)); } }) || null;
+      openAgent: id => { profileTab = 'activity'; focusDetail = 'always'; go(hashFor('agents', id)); }, onEvent: event => tasksEvent(event), onLive: (state, was) => tasksLive(state, was) }) || null;
+    const STREAM_TABS = ['activity', 'tasks']; // The profile tabs that follow the event stream (Tasks reads its list again on job events).
     view.append(head, privacy, sections, status, alert, agentsPanel, soonPanel, ...(graphs ? [graphs.library, graphs.graph] : []), ...(activity ? [activity.panel] : []));
 
     // The sidebar lists the same sections as links, so the phone drawer and the keyboard both reach them.
@@ -189,7 +190,7 @@ window.PromptboardNetwork = (() => {
       register.hidden = section !== 'agents';
       graphs?.show(own ? where : null);
       activity?.show(watching ? where : null);
-      activity?.live(watching || (section === 'agents' && Boolean(where.agentId) && profileTab === 'activity'));
+      activity?.live(watching || (section === 'agents' && Boolean(where.agentId) && STREAM_TABS.includes(profileTab)));
       if (own || watching) return;
       if (section !== 'agents') {
         const [, label, text] = SECTIONS.find(([id]) => id === section);
@@ -290,7 +291,7 @@ window.PromptboardNetwork = (() => {
         else panel.append(...(id === 'memory' ? [memoryView(agent)] : id === 'posts' ? [postsView(agent)] : id === 'tasks' ? [tasksView(agent)] : id === 'activity' ? (activity ? [activity.agentPanel(agent)] : []) : profileSections(agent)));
         return panel;
       });
-      function showInner() { inner.select(profileTab); for (const panel of panels) panel.hidden = panel.id !== panelId(profileTab); activity?.live(profileTab === 'activity'); openTab(); }
+      function showInner() { inner.select(profileTab); for (const panel of panels) panel.hidden = panel.id !== panelId(profileTab); activity?.live(STREAM_TABS.includes(profileTab)); openTab(); }
       showInner();
       box.append(inner, ...panels);
       return box;
@@ -557,7 +558,7 @@ window.PromptboardNetwork = (() => {
     }
 
     // ---- Tasks: this agent's Network jobs. "Run a job" asks for a confirmation that says what the job may use; the list reads
-    // the job routes again while the tab shows it (polling; the event stream comes with Network Activity).
+    // the job routes again while the tab shows it: on the event stream's job events while that is live, otherwise by polling.
     // A job only reads: the local worker gives it an empty folder of its own, never a project or a repository.
     const tasks = { agent: null, data: null, error: null, loading: false, version: 0, timer: null, requests: new Map(), results: new Map(), open: new Set(),
       preview: null, previewError: '', previewKey: null, previewVersion: 0, timeoutMinutes: null, focus: null };
@@ -707,9 +708,18 @@ window.PromptboardNetwork = (() => {
       } catch (failure) { if (version === tasks.version && !tasks.data) tasks.error = failure; else if (version === tasks.version) jobFailure(failure); }
       if (version !== tasks.version) return;
       tasks.loading = false; renderJobs();
-      // Read again while this tab shows it: every 2 seconds while a job is open, every 10 otherwise (jobs from elsewhere).
-      if (visible && profileTab === 'tasks' && route().agentId === agentId) tasks.timer = setTimeout(() => void loadJobs(), tasks.data?.jobs.some(job => JOB_OPEN.has(job.status)) ? 2000 : 10000);
+      // Read again while this tab shows it: on job events while the stream is live (every 30 s besides, for what is not journaled:
+      // a sign-in wait, the slot count), otherwise every 2 seconds while a job is open and every 10 otherwise (jobs from elsewhere).
+      if (tasksShown(agentId)) tasks.timer = setTimeout(() => void loadJobs(), activity?.streaming() ? 30000 : tasks.data?.jobs.some(job => JOB_OPEN.has(job.status)) ? 2000 : 10000);
     }
+    function tasksShown(agentId) { return visible && profileTab === 'tasks' && route().agentId === agentId; }
+    /** A job event while the Tasks tab shows: any job's status (queue positions move) or this agent's activity reads the list again. */
+    function tasksEvent(event) {
+      if (!tasks.agent || !tasksShown(tasks.agent.id) || !(event.type === 'job.status' || (event.type?.startsWith('job.') && event.agentId === tasks.agent.id))) return;
+      clearTimeout(tasks.timer); tasks.timer = setTimeout(() => void loadJobs(), 250);
+    }
+    /** The stream dropped: read now, which goes back to polling until it is live again. */
+    function tasksLive(state, was) { if (was === 'live' && state !== 'live' && tasks.agent && tasksShown(tasks.agent.id) && tasks.data && !tasks.loading) void loadJobs(); }
     function stopPolling() { clearTimeout(tasks.timer); tasks.timer = null; }
     async function loadResult(id) {
       try { tasks.results.set(id, await request(`/api/network/jobs/${id}/result`)); }

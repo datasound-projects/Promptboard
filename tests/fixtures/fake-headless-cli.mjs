@@ -3,7 +3,8 @@
 // prompt choose a scenario: [[hang]] (starts a helper process in its own group, then waits for ever), [[noresult]] (exit 0
 // without the structured final answer), [[rate]] (a structured rate limit), [[auth]] (signed out), [[crash]] (exit 3), [[big]] (output over the
 // limit), [[usage]] (token counts and cost), [[nosession]] (no session or thread ID), [[json]] (a fenced json block),
-// [[slow:<ms>]] (a pause before answering). FAKE_HEADLESS_LOG names a folder for one <pid>.json per run and <pid>.end.
+// [[slow:<ms>]] (a pause before answering), [[barrier:<name>:<n>]] (wait until n runs carrying it have started, so a test proves
+// they ran at the same time without timing; exit 4 after 30 s). FAKE_HEADLESS_LOG names a folder for one <pid>.json per run and <pid>.end.
 import { spawn } from 'node:child_process';
 import { readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -18,6 +19,11 @@ const record = extra => log && writeFileSync(join(log, `${process.pid}.json`), J
 let helper = null;
 if (has('hang')) helper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }).pid; // Same process group as this CLI.
 record(helper ? { helper } : {});
+const barrier = /\[\[barrier:([a-z]+):(\d+)\]\]/.exec(input), tag = barrier && `barrier-${barrier[1]}-`;
+if (barrier && log) {
+  writeFileSync(join(log, `${tag}${process.pid}`), '');
+  for (const until = Date.now() + 30000; readdirSync(log).filter(name => name.startsWith(tag)).length < Number(barrier[2]); await pause(20)) if (Date.now() > until) { process.stderr.write('barrier timeout'); process.exit(4); }
+}
 const slow = /\[\[slow:(\d+)\]\]/.exec(input);
 if (slow) await pause(Number(slow[1]));
 const text = `Answer from ${cli}.${has('json') ? '\n\n```json\n{ "verdict": "ok", "items": [1, 2] }\n```' : ''}`;
