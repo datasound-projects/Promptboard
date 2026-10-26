@@ -48,6 +48,7 @@ import { projectInsights } from './insights.mjs';
 import { Lessons, LessonsError, lessonsRoute } from './lessons.mjs';
 import { Sandbox, sandboxRoute } from './sandbox.mjs';
 import { NetworkRegistry } from './network/registry.mjs';
+import { NetworkJobs } from './network/jobs.mjs';
 import { networkRoute } from './network/http.mjs';
 import { NetworkError } from './network/storage.mjs';
 
@@ -362,7 +363,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch } = {}) {
+export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker = null } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   // One app per data folder; the board itself loads lazily, so starting never reads or writes board files.
   const lock = await lockDataDir(dataDir);
@@ -415,6 +416,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     // Changing sign-in under a running agent session would break it.
     if (kind === 'auth' && (board.executor?.pendingCount?.() ?? board.executor?.activeCount?.()) > 0) throw Object.assign(new ProviderError('Agent sessions are running. Stop them before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
     if (kind === 'auth' && batches.activeCount() > 0) throw Object.assign(new ProviderError('Compose Batch is running. Wait for it or cancel it before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
+    if (kind === 'auth' && networkJobs.activeCount() > 0) throw Object.assign(new ProviderError('Network jobs are running. Wait for them or cancel them before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
     // Project memory runs in the background: the owner's own CLI work, once allowed, stops it (it is queued again) and
     // gets the slot as soon as that run has stopped (src/lessons.mjs), never a BUSY refusal.
     if (busy?.kind === 'lessons' && kind !== 'lessons') { busy.controller.abort('yield'); await busy.done; }
@@ -426,7 +428,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     busy = { kind, provider, stage: 'starting', startedAt: Date.now(), controller: new AbortController(), done };
     const job = busy;
     return { job, release: () => {
-      const free = () => { if (busy === job) busy = null; release(); if (job.kind === 'auth') board.executor?.wake?.(); };
+      const free = () => { if (busy === job) busy = null; release(); if (job.kind === 'auth') { board.executor?.wake?.(); networkJobs.wake(); } };
       // The lessons worker releases only after its own CLI call has settled, so it waits for no unrelated work.
       if (!job.controller.signal.aborted || closing || job.kind === 'lessons') { free(); return; }
       // The UI can finish cancelling before provider pipes have closed. Keep the
@@ -456,6 +458,8 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const coordinator = new Coordinator({ dataDir, board, origin });
   // Network registrations and networks live in <dataDir>/network/ (created on the first save); Base is only read.
   const network = new NetworkRegistry({ dataDir, base: board.base, projects: async () => (await board.state()).projects.map(project => project.id) });
+  // Network jobs run only through an injected worker (none yet: they stay queued); their own pool, never the CLI slot above.
+  const networkJobs = new NetworkJobs({ dataDir, registry: network, worker: networkWorker, authBusy: () => busy?.kind === 'auth' });
   // Project memory: a merged card queues one lessons job (Board.completeTask); the worker starts once the app listens.
   const lessons = new Lessons({ dataDir, board, claim, runner: call => track(runner(call)) });
   board.lessons = lessons;
@@ -529,7 +533,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       catch (error) { return sendFailure(res, error, 'The Coordinator request failed. Project data is unchanged.', { status: 500, code: 'COORDINATOR_FAILED' }); }
     }
     if (/^\/api\/network(?:\/|$)/.test(pathname)) {
-      try { return await networkRoute({ network, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
+      try { return await networkRoute({ network, jobs: networkJobs, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The Network request failed. Nothing was changed.', { status: 500, code: 'NETWORK_FAILED' }); }
     }
     if (/^\/api\/sandbox(?:\/|$)/.test(pathname)) {
@@ -793,6 +797,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   // Remote access stays off unless it was turned on; a listener that cannot start is reported in Settings.
   remoteAccess = await new RemoteAccess({ dataDir, localPort: server.address().port, handle: (req, res, who) => handle(req, res, who) }).load();
   lessons.start(); // Queued lessons jobs, also those a restart interrupted, run now (one at a time, through the job slot).
+  void networkJobs.start().catch(() => {}); // Reconciles jobs a stop interrupted (never relaunched); queued ones start only with a worker.
   let closed;
   // Idempotent and bounded: stop accepting, cancel owned work, close sockets, then
   // SIGKILL any owned CLI process group that is still alive.
@@ -803,7 +808,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     notifications.close();
     const listening = new Promise(resolve => server.close(() => resolve()));
     busy?.controller.abort();
-    const batchesClosed = batches.close();
+    const batchesClosed = batches.close(), networkJobsClosed = networkJobs.close();
     baseRoutes.close();
     if (composeContext) (await composeContext).close();
     catalogAbort.abort();
@@ -817,7 +822,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     board.githubLogin.cancel('The app stopped.');
     board.delivery.stopAllTests();
     board.previews.stopAll();
-    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents, batchesClosed, lessonsClosed].filter(Boolean));
+    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents, batchesClosed, networkJobsClosed, lessonsClosed].filter(Boolean));
     // An accepted shutdown must keep Node alive even when a broken adapter has
     // no remaining handles. Observe cleanup or reach this bounded terminal state.
     let cleanupTimer;

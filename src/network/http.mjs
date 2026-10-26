@@ -1,7 +1,8 @@
 /**
  * Owner Network routes (/api/network/*), mounted in src/server.mjs behind its unchanged token, Host, Origin, proxy and
  * fetch-site checks. Every route here is also allowed from a paired device (architecture §10.2): none of them creates a
- * way in, shows a secret or changes trust, and none starts work. tests/remote-access.test.mjs scans this file.
+ * way in, shows a secret or changes trust (a paired device has the owner's control, so it may submit and cancel jobs too).
+ * Only the job routes lead to work, and only through the job engine's worker. tests/remote-access.test.mjs scans this file.
  *
  *   GET  /api/network/agents                ?q tag capability status kind provider baseResourceId projectId networkId offset limit
  *   POST /api/network/agents                { baseResourceId, expectedRevision, displayName?, tags?, capabilities?, enabled?, projectAllowlist? }
@@ -29,7 +30,20 @@
  *   POST /api/network/agents/:id/posts      { expectedRevision, markdown, references? }
  *   PATCH /api/network/agents/:id/posts/:pid  { expectedRevision, markdown?, references? }
  *   DELETE /api/network/agents/:id/posts/:pid { expectedRevision }
+ *
+ * Jobs (jobs.mjs). None starts a process by itself: a job runs only when the injected worker claims it.
+ *   GET  /api/network/settings              maxConcurrentJobs, defaultTimeoutMs, outputRetentionDays, limits
+ *   PATCH /api/network/settings             { expectedRevision, …settings }
+ *   GET  /api/network/jobs                  ?status agentId projectId networkId parentJobId offset limit
+ *   POST /api/network/jobs                  { agentId, input: { text, json? }, instructions?, tools?, permissions?, limits?, requireApproval?, projectId?, networkId?, parentJobId?, idempotencyKey? }
+ *   GET  /api/network/jobs/:id              the job, its accepted request and child jobs
+ *   DELETE /api/network/jobs/:id            { expectedRevision }: a finished job only
+ *   POST /api/network/jobs/:id/cancel       {}
+ *   POST /api/network/jobs/:id/approve      { expectedRevision, decision: 'approve' | 'reject' }
+ *   POST /api/network/jobs/:id/retry        { expectedRevision, confirm: true, confirmUncertain? }
+ *   POST /api/network/jobs/:id/close        { expectedRevision }
  */
+import { JOB_LIMITS } from './jobs.mjs';
 import { NETWORK_LIMITS } from './registry.mjs';
 import { NetworkError } from './storage.mjs';
 
@@ -41,7 +55,7 @@ const query = (params, keys) => ({ ...Object.fromEntries(keys.map(key => [key, p
 const preview = params => ({ projectId: params.get('projectId') || null, networkId: params.get('networkId') || null, memory: params.get('memory') || 'agent',
   projectLessons: ({ true: true, false: false, null: false })[params.get('projectLessons')] ?? params.get('projectLessons') });
 
-export async function networkRoute({ network, req, res, pathname, searchParams, jsonBody, send }) {
+export async function networkRoute({ network, jobs, req, res, pathname, searchParams, jsonBody, send }) {
   const method = req.method;
   const body = async limit => {
     const value = await jsonBody(req, limit);
@@ -79,6 +93,21 @@ export async function networkRoute({ network, req, res, pathname, searchParams, 
       if (!postId && method === 'POST') return send(res, 200, await network.posts.create(agentId, await body(BODY.small)));
       if (postId && method === 'PATCH') return send(res, 200, await network.posts.update(agentId, postId, await body(BODY.small)));
       if (postId && method === 'DELETE') return send(res, 200, await network.posts.remove(agentId, postId, await body(BODY.small)));
+    }
+    if (pathname === '/api/network/settings') {
+      if (method === 'GET') return send(res, 200, await jobs.settings());
+      if (method === 'PATCH') return send(res, 200, await jobs.updateSettings(await body(BODY.small)));
+    }
+    if (pathname === '/api/network/jobs') {
+      if (method === 'GET') return send(res, 200, await jobs.list(query(searchParams, ['status', 'agentId', 'projectId', 'networkId', 'parentJobId'])));
+      if (method === 'POST') { const accepted = await jobs.submit(await body(JOB_LIMITS.submitBody)); return send(res, accepted.deduplicated ? 200 : 202, accepted); }
+    }
+    const job = pathname.match(/^\/api\/network\/jobs\/(job_[0-9a-f]{20})(?:\/([a-z]+))?$/);
+    if (job) {
+      const [, id, action] = job;
+      if (method === 'GET' && !action) return send(res, 200, await jobs.read(id));
+      if (method === 'DELETE' && !action) return send(res, 200, await jobs.remove(id, await body(BODY.small)));
+      if (method === 'POST' && ['cancel', 'approve', 'retry', 'close'].includes(action)) return send(res, 200, await jobs[action === 'close' ? 'closeJob' : action](id, await body(BODY.small)));
     }
     const match = pathname.match(/^\/api\/network\/networks\/(net_[0-9a-f]{20})(?:\/(publish|duplicate)|\/versions\/([1-9]\d{0,8}))?$/);
     if (match) {

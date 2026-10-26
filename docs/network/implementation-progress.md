@@ -28,7 +28,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 | 03 | 03-network-page-and-agent-profiles.md | done | 9edf549 |
 | 04 | 04-agent-memory-and-feed.md | done | 1fc58b6 |
 | 05 | 05-graph-designer-and-subnetworks.md | done | 47447fc |
-| 06 | 06-general-purpose-job-engine.md | pending | |
+| 06 | 06-general-purpose-job-engine.md | done | |
 | 07 | 07-local-worker-runtime.md | pending | |
 | 08 | 08-live-activity-and-observability.md | pending | |
 | 09 | 09-pipeline-dag-engine.md | pending | |
@@ -38,7 +38,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 | 13 | 13-a2a-federation.md | pending | |
 | 14 | 14-verification-and-release.md | pending | |
 
-**Next task:** 06
+**Next task:** 07
 
 ## Live provider runs
 
@@ -603,3 +603,155 @@ look and two perf experiments on port 4905 (temporary folders, removed). Paid CL
 **Commit.** 47447fc (Task 05), then this log entry.
 
 **Next task: 06.**
+
+### Task 06 — General-purpose job engine (2026-10-26)
+
+**What was done.** Durable Network jobs outside Kanban, with a fake worker only (no live CLI; Task 07 adds the worker).
+An owner submits a job for one registered agent and at once gets a durable `jobId` with status `queued` (or
+`waiting_for_approval` with `requireApproval`), never `completed`. The accepted request is written once (`request.json`,
+its SHA-256 kept in `job.json` and checked on every read) and pins the registration and the Base revision. A FIFO pool
+(`maxConcurrentJobs`, default 2, 1–4) claims queued jobs, saves the attempt with a new ID before the worker hears of it,
+and holds a lease token in memory only; a worker report counts only while that lease owns the job's current attempt.
+`completed` needs result text from a running attempt, saved to `result.md` before the status. Anything that may have run
+without a trusted receipt ends `unknown` or `interrupted` and waits for the owner (retry with `confirm`, plus
+`confirmUncertain` when it may have done its work, or close). Without a worker, jobs stay queued and inert and their view
+says so (`waiting: { for: 'worker', message }`). Sign-in changes wait for running jobs (R3), and jobs wait for a sign-in
+change. Shutdown stops claiming, stops attempts and saves them `interrupted`. No job needs or touches a card, branch,
+worktree, repository, `state.json`, Base or lessons.
+
+**Files.** New: `src/network/jobs.mjs` (engine, store, settings), `tests/network-jobs.test.mjs`,
+`tests/helpers/network-worker.mjs` (the deterministic fake worker). Changed: `src/network/http.mjs` (job and settings
+routes), `src/server.mjs` (`NetworkJobs` created beside the registry; `networkWorker` option, default null; R3 in
+`claim('auth')`; the end of a sign-in change wakes the pool; `start()` after listening; `close()` in shutdown),
+`src/network/storage.mjs` (`writeImmutable` names what failed), `tests/remote-access.test.mjs` (10 rows),
+`docs/network/architecture.md` (§3 row, new §4.9, §5 `Job`/`Attempt`/`JobRequest`, §10.1 row 06), `docs/network/acceptance.md`
+(test file names), this file. No UI.
+
+**Data layout** (created on the first submit; reading creates nothing): `<data>/network/jobs/<escapeId(job_…)>/request.json`
+(`promptboard.network-job-request` v1, written once without backup), `jobs/<id>/job.json` (`promptboard.network-job` v1 +
+`.bak`: status, requester/source, agent/project/network/parent IDs, idempotency key and `submissionSha256`,
+`requestSha256`, `queuedAt`, attempts, `currentAttemptId`, outcome, error code, reason, result reference, history ≤ 200,
+`outputsRemovedAt`), `jobs/<id>/attempts/<escapeId(att_…)>/result.md` (≤ 1 MiB), `result.json` (≤ 64 KiB),
+`late-result.md`, and `network/settings.json` (`promptboard.network-settings` v1, on the first settings change). Input
+ceilings: text 256 KiB, JSON 64 KiB, instructions 32 KiB, submit body 1 MiB, other bodies 64 KiB. No limit on the number
+of jobs. Index: one scan at the first access (16 files at a time).
+
+**State machine** (`JOB_TRANSITIONS`, every change through one checked function, history records `by`):
+`queued → preparing | failed (claim-time check) | cancelled`; `waiting_for_approval → queued (approve) | cancelled
+(reject/cancel)`; `preparing → running | failed | unknown | cancelled | interrupted`; `running → completed | failed | unknown
+| waiting_for_input | cancelled | interrupted`; `waiting_for_input → queued | cancelled`; `interrupted | unknown → queued
+(retry) | failed (close)`; any non-terminal → `interrupted` (restart, shutdown, restored from backup); `completed`,
+`failed`, `cancelled` are final. Attempt: `claimed → launching → running → completed | failed | cancelled | unknown |
+interrupted`. Outcome: `completed | failed | cancelled | uncertain | not_started`.
+
+**Routes** (behind `handle()`, all allowed from a paired device, `localOnly()` unchanged): `GET/PATCH
+/api/network/settings`; `GET /api/network/jobs` (`?status agentId projectId networkId parentJobId offset limit`);
+`POST /api/network/jobs` (202 new, 200 deduplicated); `GET /api/network/jobs/:id` (job, request, children);
+`DELETE /api/network/jobs/:id` (`{ expectedRevision }`, finished jobs only); `POST …/:id/cancel` (`{}`),
+`…/approve` (`{ expectedRevision, decision }`), `…/retry` (`{ expectedRevision, confirm, confirmUncertain? }`), `…/close`
+(`{ expectedRevision }`).
+
+**Settings** (`network/settings.json`, revisioned): `maxConcurrentJobs` 2 (1–4, separate from Kanban's
+`maxConcurrentRuns`), `defaultTimeoutMs` 20 min (1–120 min; a request may give 1 s–120 min), `outputRetentionDays` 30
+(1–3650). Fixed: preparation 45 s, stop bound 3 s, claim retry after a storage failure 5 s, sweep 500 jobs per start.
+
+**Decisions** (architecture §4.9): the attempt's §6.2 `preparing` state is the job's `preparing` status (not stored
+twice); the pool starts with `start()`; queued jobs are claimed fresh after a restart (no attempt is in flight, so a new
+claim is safe), while a `job.json` that loaded from its backup in any non-final state becomes `interrupted`/`uncertain`
+(`RESTORED_FROM_BACKUP`); the engine itself enforces the preparation and run time limits; cancel takes no revision
+(idempotent; a running job's revision moves); a result reported after the engine ended the attempt is kept as
+`late-result.md`; idempotency keys are scoped by requester and a different submission under the same key is
+`IDEMPOTENCY_CONFLICT`; input text, instructions and JSON strings are cleaned like memory (secrets masked, local folders
+cut); the pinned agent has `manifest: null` until Task 07 builds it (R2) from the pinned revision references; attempts are
+kept out of the server's shared task list (a Compose cancel waits on that list), `close()` stops them instead; no UI in
+this task (a submit control before a worker exists would only queue jobs that cannot run; the agent's Tasks tab and
+Activity come with Tasks 07–08).
+
+**Tests** (temporary data folders; the only worker is the fake; no CLI, no network beyond the local test server):
+
+- `tests/network-jobs.test.mjs` 18 tests: (1) submit answers queued after both files exist, the request's hash matches,
+  no worker → stays queued with the reason (also after `start()`), then the fake worker: history `queued → preparing →
+  running → completed`, attempt fields, `result.md`, the lease neither in a view nor on disk; (2) the pinned request and
+  default permissions (`read_only`, `agent` memory, no lessons, no tools, 20 min, 1 MiB output), the Base revision
+  reference, a Base edit leaves `request.json` byte-identical, secrets masked in text and JSON, no project needed, explicit
+  choices kept; (3) 27 malformed or unrunnable submissions (fields, sizes, IDs, agent missing/off/stale, no provider, tool
+  mode, write access, memory and lessons rules, project, network, parent, key) → 400/409/413 and no `jobs/` folder;
+  (4) idempotency sequential, 8 concurrent, conflict, other requester, keyless, after a restart; (5) 20 concurrent submits
+  with distinct FIFO stamps and positions, 3 concurrent claims → one attempt, forged lease, other job, spawn before launch,
+  malformed reports, ended and stale (after retry) ownerships change nothing, the pool claims in FIFO order; (6) ceilings
+  1, 2 and 4 (never more at once, all six run, a worker without a result never completes a job), settings ranges,
+  revisions, restart, the default timeout used by new jobs; (7) a restart after every transition (queued, waiting,
+  approved, claimed → `interrupted/not_started`, launching → `uncertain`, running with pid → `uncertain` with the pid,
+  retry needing `confirm`/`confirmUncertain`, a worker after a restart runs only the queued job, completed, unknown, closed,
+  cancelled; the full history); (8) a `job.json` loaded from its backup → `RESTORED_FROM_BACKUP`, damaged set aside, no
+  usable copy and newer version refused and unchanged, a tampered `request.json` fails at claim with no attempt;
+  (9) storage failure (a folder in the backup's place) at submit (no job, key free), claim (stays queued), launching (no
+  `launchingAt`), spawn (the fake process is killed by the engine), finish (job stays `running`, then `unknown NO_RESULT`
+  once storage works); memory equals disk after each; (10) cancel while queued (never claimed), preparing (launch refused
+  afterwards), running (killed; a later result → `late-result.md` only, status `cancelled`), completion queued before the
+  cancel (`JOB_FINISHED`), completion arriving while the cancel stops the worker (completed stands), waiting for approval,
+  the view's `live.process`; (11) uncertain effects: empty result → `unknown`, no replay after a restart, retry needs
+  `confirmUncertain`, a silent worker after launch → `unknown`, before launch → `failed`, `unknown` before launch →
+  `failed`; (12) a worker refusing at claim, registration switched off and project removed after acceptance (failed, no
+  attempt, the worker never called), preparation limit, 1-second run limit (killed); (13) retention (old logs removed,
+  results kept, recent and open-parent jobs untouched) and delete (finished only, revision, `JOB_IN_USE`, folder gone, key
+  freed); (14) HTTP: token, Origin, 202/200, conflict, a request whose answer is lost then sent again → one job, 413 body
+  and input, 400, 404, every action, settings, no data-folder path or token in answers; (15) 20 jobs through the fake
+  worker: every file outside `network/` byte-identical (including `state.json`), no card, run or session, a
+  `child_process` recorder (proven to see `git`) records zero processes; (16) sign-in: a job submitted during a sign-in
+  change waits (`sign-in`) and starts right after it, `POST /api/auth/login` → `409 RUNS_ACTIVE` while it runs, allowed
+  after; (17) queued jobs without a worker never block sign-in; (18) shutdown: the running attempt is stopped (killed) and
+  saved `interrupted`/`uncertain`/`APP_STOPPED`, the queued one stays queued and runs after the restart, the interrupted one
+  never does.
+- `tests/remote-access.test.mjs`: 10 rows (settings GET/PATCH, jobs GET/POST, job GET/DELETE, cancel, approve, retry,
+  close); the job actions are dispatched as `[…].includes(action)`, so the route scan catches a missing row (checked).
+- Mutation check (`$TMPDIR/network-logs/task-06-mutations.log`, final code, scratch copy): 52 of 52
+  mutations make a test fail (submit status, request hash, idempotency dedupe, scope and conflict, claim of a non-queued job,
+  lease checks in finish and in launching/spawned, restart reconcile and its outcome, backup copy, FIFO order, ceiling, sign-in
+  wait, start gating, R3, the wake after sign-in, shutdown wiring and stop, result-text rule, late result, saved-first rule,
+  killing an unrecorded process, unknown after launch, claim-time registration and project checks, both time limits, sweep
+  guards, delete guard, both retry confirmations, five submit refusals, input cleaning, Base pin, default memory, the no-worker
+  reason, 202, the action routes, write before effect, memory after disk, cancel of an interrupted job, settings ranges, the
+  newer-version refusal, history, queued jobs not blocking sign-in, the route-table rows). Two survived the first round and
+  led to test changes: the sign-in test now runs before any cancel (a 3-second release timer had hidden a missing wake), and
+  the claim-time test now also removes a project.
+- Runs: `npm run check` pass; the new tests twice on the final code: 35/35 and 35/35 with `remote-access`
+  (`task-06-new-twice-final.log`; also 18/18 twice before the last engine change, `task-06-new-twice.log`); touched
+  modules `auth`, `server`, `remote-access`, every `compose*` and `network-*` test 211/211, and their browser tests
+  (`compose*-browser`, `network*-browser`, `remote-access-browser`) 11/11 (`task-06-touched.log`, before the last change,
+  which only removed the engine's use of the shared task list).
+- Full `npm test` (log `$TMPDIR/network-logs/task-06-suite.log`): 2026-10-26 08:50–09:17, non-browser 1,572 tests, 1,571 pass,
+  0 fail, 0 cancelled, 1 skipped (the win32-only `editors.test.mjs` test); browser 150/150. Exit 0, no reruns needed.
+  Task 05's 1,554 + 18 = 1,572; browser unchanged.
+- Isolated app on port 4906 (temporary data and projects folders, PATH holding only a `node` symlink, no worker): a
+  registered agent, `POST /api/network/jobs` → 202 `queued` with "No job worker is available … stays queued and nothing
+  runs", no token 403, the same key → the same job, settings defaults; stopped with Ctrl+C and started again: the job is
+  still `queued`, revision 1, no attempt; stopped, folder removed. Paid CLI runs: 0.
+
+**Acceptance criteria and evidence:**
+
+- *An owner can submit a job and immediately get a durable `jobId` with `queued` status; the fake worker can finish it:*
+  tests 1, 14 (HTTP 202) and the port 4906 smoke.
+- *Job persists through restart and retains the exact state; no duplicate job or worker launch on retries:* tests 4, 7, 8,
+  14 (repeated POST, lost answer), 18; test 7 shows a worker after a restart starting only the queued job; test 5 shows one
+  claim out of three.
+- *A general job does not create Kanban cards/branches, run tests or merge code:* test 15 (files, board view, zero
+  processes) and test 2 (no project needed).
+- *Uncertain effects remain unknown/interrupted and require explicit user action; no implicit replay:* tests 7, 8, 9
+  (finish), 11, 18.
+- acceptance.md Task 06 rows: 1 → test 1; 2 → test 4 (+14); 3 → test 5; 4 → tests 7, 18; 5 → test 9; 6 → test 10;
+  7 → tests 7, 11; 8 → test 3; 9 → test 15; 10 → test 16 (+17); 11 → test 6; 12 → test 13.
+
+**Known limits.** No worker exists yet: until Task 07, submitted jobs stay queued (and say so). No UI. The Base resolution
+manifest is `null` in requests accepted now (Task 07 decides how such queued jobs get one). One queue serializes every job
+change, and the start scan reads every `job.json` (`ponytail:` notes). A process left by a hard crash is never signalled
+after a restart; its pid is shown in the reason. The stop of a worker that ignores `cancel` is bounded to 3 s; then the
+status is saved and the slot freed while that process may still run (at shutdown the server's existing
+`killOwnedProcesses('SIGKILL')` still covers processes a Task 07 worker starts through `spawnOwned`). A submit whose `job.json` write fails after `request.json` was written removes the folder; that
+clean-up is not covered by a test (the failure cannot be injected without knowing the new ID). Reports still refuse
+`jobId`. The retention guard knows parent jobs only; Task 09 adds pipeline runs. Cross-process claims are excluded by the
+instance lock, not by the job files.
+
+**Commit.** (Task 06 commit, recorded in the next commit), then this log entry.
+
+**Next task: 07.**

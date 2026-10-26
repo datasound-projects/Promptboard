@@ -62,7 +62,7 @@ Each section below makes a decision. A later task that needs to deviate records 
 | Network published version | `network/networks/<id>/v<n>-<sha256>.json` | `src/network/registry.mjs` | 02 |
 | Agent / network memory | `network/memory/<scope>.json` | `src/network/memory.mjs` | 04 |
 | Profile posts (reports) | `network/posts/<agentId>.json` | `src/network/posts.mjs` | 04 |
-| Network settings | `network/settings.json` | `src/network/settings.mjs` (or inside `registry.mjs`) | 06 |
+| Network settings | `network/settings.json` | `src/network/jobs.mjs` (job settings only so far) | 06 |
 | Job, attempts | `network/jobs/<jobId>/job.json` (+ `request.json`) | `src/network/jobs.mjs` | 06 |
 | Attempt artifacts | `network/jobs/<jobId>/attempts/<attemptId>/` | `src/network/worker-local.mjs` | 07 |
 | Event journal | `network/events/<segment>.jsonl` | `src/network/events.mjs` | 08 |
@@ -328,6 +328,93 @@ Refinements made while building Network → Graph and Network → Library (`src/
 6. **`collapsed`** stays accepted and round-trips unchanged, but the Graph does not write it: expansion is view state
    (default collapsed, lazy), because expanding must not change the draft or a version's hash.
 
+### 4.9 Jobs settled in Task 06
+
+Refinements made while building `src/network/jobs.mjs` (engine, store and settings in one module), its routes and the
+server wiring. Items 1, 4 and 6 fill in or narrow §5–§7; none changes a binding rule.
+
+1. **Files.** `network/jobs/<escapeId(job_…)>/request.json` is written first (once, no backup; `job.json.requestSha256`
+   is checked on every read, a mismatch is `REQUEST_INVALID`), then `job.json` (+ `.bak`); a failed submit removes the
+   half-made folder. Results go to `attempts/<escapeId(att_…)>/result.md` (≤ 1 MiB) and `result.json` (≤ 64 KiB), written
+   before the status says `completed`; `late-result.md` holds a result that arrived after the engine ended the attempt.
+   `network/settings.json` (`promptboard.network-settings` v1: `{ revision, maxConcurrentJobs: 2 (1–4), defaultTimeoutMs:
+   20 min (1–120 min), outputRetentionDays: 30 (1–3650) }`) appears on the first settings change. Every write goes through
+   `writeDocument`/`writeImmutable`; memory changes only after a write succeeded, so memory always equals disk.
+2. **Index.** One scan of `jobs/*/job.json` at the first access (16 at a time) builds the in-memory index (jobs,
+   idempotency keys, the FIFO stamp). A `job.json` that is damaged with no usable backup, or newer, is listed under
+   `unavailable` and refused on its own (`NETWORK_DATA_DAMAGED`, `NETWORK_VERSION_UNSUPPORTED`, never rewritten).
+3. **Submission.** Strict fields (§5 `JobRequest` as input: `agentId, input { text, json? }, instructions, tools,
+   permissions { filesystem, memory, projectLessons }, limits { timeoutMs }, requireApproval, projectId, networkId,
+   parentJobId, idempotencyKey`). Text, instructions and JSON string values pass through `cleanText` (secrets masked,
+   local folders cut) before they are hashed or saved. Defaults: `tools: 'none'`, `permissions: { filesystem: 'read_only',
+   memory: 'agent', projectLessons: false }`, the settings' timeout, no approval. Refused at submit (nothing written):
+   unknown or malformed fields (400), oversized parts (413 `NETWORK_LIMIT`), `filesystem` other than `read_only`
+   (`EXECUTION_POLICY_UNSUPPORTED`), an unregistered agent (`AGENT_NOT_FOUND` 409), a switched-off or stale registration
+   (`REGISTRATION_DISABLED`, `REGISTRATION_STALE` with `staleReason`), a provider without Network job tools or without the
+   requested tool mode (`PROVIDER_UNSUPPORTED`, `TOOLS_UNSUPPORTED`, from the §8 matrix), a project not on the board
+   (`PROJECT_NOT_FOUND`), lessons of a project not on the registration's list (`PROJECT_NOT_ALLOWED`), an unknown network
+   or parent job. A job never needs a project, card, branch or repository.
+4. **The pinned agent** (`request.json` `agent`): `registrationId, registrationRevision, baseResourceId, baseKind,
+   baseRevisionRef` (Base's immutable `{ id, revision, hash }`), `primaryAgent: { resourceId, revisionRef } | null` (an agent
+   profile), `provider, model, effort`, and `manifest: null`. The `resolveBase` manifest needs R2 and is built by Task 07
+   from exactly these revision references; Task 07 decides whether a queued job accepted before it fails at claim or gets its
+   manifest from the pinned references. Memory and lessons are pinned as the request's `permissions` (`memory`,
+   `projectLessons`), `projectId` and `networkId`, which Task 07 passes to `registry.memory.resolve`.
+5. **Idempotency.** The key (≤ 200 printable characters) is scoped by requester (`owner`, `machine:<clientId>`, …); the
+   same key and the same cleaned submission answer the existing job (`deduplicated: true`, HTTP 200); a different
+   submission is `409 IDEMPOTENCY_CONFLICT` with `details.jobId`; deleting a job frees its key. Without a key every submit is
+   a new job. Submit answers `202 { jobId, status, deduplicated: false, job }`.
+6. **Attempt states (narrows §6.2).** `claimed` (saved at claim with the attempt ID, `workerInstance`, provider tuple and
+   `sideEffects`: `read_only_web` when `tools: 'web'`, else `none`) → `launching` (`launchingAt`) → `running` (`spawnedAt`,
+   `pid`) → `completed | failed | cancelled | unknown | interrupted`. §6.2's separate `preparing` attempt state is not
+   stored: the job's `preparing` status covers claim to launch. A `waiting_for_input` job's attempt ends `completed`.
+7. **Worker interface.** `worker.claim(job, ownership)` (may throw to refuse: the job fails with the error's code, nothing
+   ran), `worker.start(job, ownership)`, `worker.cancel(ownership)`, `worker.getStatus(ownership) → { process }`
+   (synchronous; shown as the job view's `live.process`). `job` is the view plus `request`; `ownership` = `{ jobId,
+   attemptId, lease, signal, launching(), spawned({ pid }), finish(report) }`. The lease (32 random bytes) lives in memory
+   only; a report is applied only while that lease owns the job's current, open attempt. `launching` and `spawned` throw
+   `JOB_OWNERSHIP_LOST` otherwise (the worker must not start or keep a process); a `spawned` that cannot be saved also
+   makes the engine call `worker.cancel`. `finish({ status: completed | failed | unknown | waiting_for_input, errorCode?,
+   reason?, exitCode?, result?: { text, json? }, sideEffects?, coverage? })`: `completed` needs a running attempt and
+   non-empty text, otherwise it becomes `unknown` (launched) or `failed` (not launched); `unknown` before launch is `failed`;
+   an oversized result is `failed OUTPUT_LIMIT`. A worker that returns without a report leaves `unknown` (`NO_RESULT`)
+   after launch and `failed` (`WORKER_ENDED` or its own code) before. Without a worker (`startServer({ networkWorker })`
+   defaults to null until Task 07) jobs stay queued; their view says `waiting: { for: 'worker', message }`.
+8. **Pool.** Starts with `start()` (the server calls it after listening). FIFO by `queuedAt`, a stamp that strictly
+   increases (also across restarts). `activeCount()` = attempts being claimed or owned (a process may be alive); queued jobs
+   never count. While a sign-in change holds the CLI slot nothing is claimed (`waiting.for: 'sign-in'`), and the change's end
+   wakes the pool. **R3:** `claim('auth')` answers `409 RUNS_ACTIVE` while `activeCount() > 0`. A claim whose write fails
+   leaves the job queued and the pool tries again after 5 s.
+9. **Limits enforced by the engine** (whatever the worker does): preparation 45 s from claim to `launching`
+   (`PREPARE_TIMEOUT`), the request's `timeoutMs` from `launching` (`TIMEOUT`); both stop the worker and save `failed`.
+10. **Stop (cancel, time limits, shutdown).** The worker's signal is aborted and `worker.cancel` awaited for at most 3 s;
+    then the status is saved unless the worker's own report was saved first ("the one saved first wins"). Cancel takes no
+    revision (it is idempotent and a running job's revision moves) and answers `{ job, cancelled }`; a job already ended is
+    `409 JOB_FINISHED`; an interrupted or unknown job needs retry or close (`JOB_STATE`). A result reported after the engine
+    ended the attempt is kept as `late-result.md` and `attempt.lateResult = { chars, sha256, at }`; the status never changes.
+    The lease is released when the worker returns, or 3 s after the stop for a worker that never does.
+11. **Restart.** `preparing`/`running` become `interrupted` (`APP_RESTARTED`; `not_started` without `launchingAt`, else
+    `uncertain`, with "process <pid> may still be running"). A `job.json` that loaded from its `.bak` while it was `queued`,
+    `waiting_*`, `preparing` or `running` becomes `interrupted` / `uncertain` (`RESTORED_FROM_BACKUP`): the older copy cannot
+    tell whether it ran since. Queued jobs stay queued and are claimed fresh when a worker exists (a queued job has no attempt
+    in flight, so a new claim is safe ownership); approvals stay pending. Neither the board backup nor the Network export
+    carries jobs, so restoring either never runs one.
+12. **Owner decisions.** `retry` (`{ expectedRevision, confirm: true, confirmUncertain? }`) needs `confirmUncertain` when the
+    outcome is uncertain or the last attempt's `sideEffects` is not `none`; it queues the job again (`currentAttemptId: null`,
+    a new attempt at the next claim). `close` saves `failed` with `CLOSED_BY_OWNER` and keeps the outcome. `approve`
+    (`{ expectedRevision, decision: 'approve' | 'reject' }`). `DELETE` (`{ expectedRevision }`) only for a finished job
+    whose lease is gone and that no open job names as parent (`JOB_IN_USE`); the folder is renamed, then removed.
+13. **History.** `job.history` = `[{ at, status, by: owner | app | worker | <requester kind> }]`, newest 200 kept. `children`
+    is computed on read (`GET /jobs/:id`), not stored.
+14. **Retention** (§4.5), once per start: terminal jobs with attempts whose `updatedAt` is older than
+    `outputRetentionDays` lose `attempts/*/stream.jsonl` and `output.log` (500 jobs per start, oldest first), never while
+    their parent job is open; `outputsRemovedAt` is then saved so a job is swept once. Requests, results and metadata stay
+    until the owner deletes the job. Task 09 adds the pipeline-run reference to this guard.
+15. **Paired devices:** every job and settings route is allowed (no secret, listener or trust is involved; a phone has the
+    owner's control); `localOnly()` is unchanged; all rows are in `tests/remote-access.test.mjs`.
+16. **Not yet:** no UI (the Activity page and the agent's Tasks tab arrive with Tasks 07–08, once a worker can run what is
+    submitted); reports still refuse `jobId` (§4.7 item 8); no result route (Task 07).
+
 ## 5. Data shapes
 
 Field names are binding; tasks may add optional fields.
@@ -374,16 +461,18 @@ Job = { schema, version: 1, id: 'job_…', revision, status /* §6.1 */,
   source: 'owner' | 'machine' | 'pipeline' | 'delegation' | 'schedule' | 'a2a',
   requester: { kind: 'owner' | 'machine' | 'pipeline' | 'job' | 'schedule' | 'a2a', id: string|null },
   agentId, projectId: string|null, networkId: string|null, pipelineRunId: string|null, nodeId: string|null,
-  parentJobId: string|null, idempotencyKey: string|null /* ≤200 printable */, requestSha256,
-  createdAt, updatedAt, acceptedAt, attempts: [Attempt], currentAttemptId: string|null,
-  outcome: null | 'completed' | 'failed' | 'cancelled' | 'uncertain', errorCode: string|null, reason: string /* ≤500 */,
-  result: null | { textRef: 'attempts/<id>/result.md', jsonRef?: 'attempts/<id>/result.json', chars, sha256 },
-  children: [jobId] }
-Attempt = { id: 'att_…', number, status /* §6.2 */, workerInstance /* process UUID */, claimedAt, launchingAt: number|null,
+  parentJobId: string|null, idempotencyKey: string|null /* ≤200 printable */, submissionSha256 /* Task 06: idempotency */, requestSha256,
+  createdAt, updatedAt, acceptedAt, queuedAt: number|null /* Task 06: FIFO stamp */, attempts: [Attempt], currentAttemptId: string|null,
+  outcome: null | 'completed' | 'failed' | 'cancelled' | 'uncertain' | 'not_started', errorCode: string|null, reason: string /* ≤500 */,
+  result: null | { textRef: 'attempts/<escaped id>/result.md', jsonRef?: 'attempts/<escaped id>/result.json', chars, sha256 },
+  history: [ { at, status, by } ] /* ≤200, Task 06 */, outputsRemovedAt: number|null /* Task 06 */ }
+// Computed on read, never stored (Task 06): live: { process } | null, waiting: { for: 'worker' | 'sign-in' | 'slot' |
+//   'approval' | 'decision', position?, message } | null; GET /jobs/:id adds children: [jobId] (§4.9 item 13).
+Attempt = { id: 'att_…', number, status /* §4.9 item 6 */, workerInstance /* process UUID */, claimedAt, launchingAt: number|null,
   spawnedAt: number|null, endedAt: number|null, pid: number|null, provider, model, effort,
   nativeSessionId: string|null, exitCode: number|null, errorCode: string|null,
-  coverage: 'tools' | 'partial-tools' | 'final-only', sideEffects: 'none' | 'read_only_web' | 'external_unknown',
-  usage: { reported: false } | { reported: true, inputTokens?, outputTokens?, cachedTokens?, costUSD? } }
+  coverage: null /* until the worker reports */ | 'tools' | 'partial-tools' | 'final-only', sideEffects: 'none' | 'read_only_web' | 'external_unknown',
+  usage: { reported: false } | { reported: true, inputTokens?, outputTokens?, cachedTokens?, costUSD? }, lateResult: null | { chars, sha256, at } }
 // The lease token is held in memory only and never written, exported or returned.
 
 // network/jobs/<id>/request.json (immutable, the accepted snapshot)
@@ -392,8 +481,9 @@ JobRequest = { schema, version: 1, jobId, acceptedAt, input: { text /* ≤256 Ki
   permissions: { filesystem: 'read_only', memory: 'none' | 'agent' | 'agent+network', projectLessons: boolean },
   limits: { timeoutMs /* default 20 min, max 120 min */, maxOutputBytes },
   requireApproval: boolean,
-  agent: { registrationId, registrationRevision, baseResourceId, provider, model, effort,
-           manifest /* resolveBase() result with revisionRefs, §7.2 step 2 */ } }
+  projectId, networkId, parentJobId /* Task 06 */,
+  agent: { registrationId, registrationRevision, baseResourceId, baseKind, baseRevisionRef, primaryAgent /* Task 06 */, provider, model, effort,
+           manifest /* resolveBase() result with revisionRefs, §7.2 step 2; null until Task 07 (§4.9 item 4) */ } }
 
 NetworkEvent = { seq, id: 'evt_…', at, type /* e.g. job.queued, job.status, job.activity, run.node, registry.changed */,
   source: 'job' | 'worker' | 'pipeline' | 'registry' | 'memory' | 'owner' | 'machine' | 'a2a',
@@ -640,7 +730,7 @@ The token, Host, Origin, proxy and fetch-site checks before it (`:470-489`) stay
 | 03 | no new route: `GET /api/network/agents` also takes `kind` (`profile`/`agentProfile`) and `provider`, and answers `facets.capabilities`; agent views gain the computed fields of §5 |
 | 04 | `GET/POST /api/network/agents/:id/memory` (list with `?q=` keywords and `status`, propose with the scope revision), `PATCH/DELETE /api/network/agents/:id/memory/:mid` (record revision; DELETE takes it in the body), `POST /api/network/agents/:id/memory/:mid/approve` (`{ expectedRevision, decision: 'approve' \| 'reject' }`), `GET /api/network/agents/:id/memory/preview?projectId&networkId&memory&projectLessons`; the same except the preview under `/api/network/networks/:id/memory`; `GET/POST /api/network/agents/:id/posts`, `PATCH/DELETE /api/network/agents/:id/posts/:pid` (§4.7) |
 | 05 | `DELETE /api/network/networks/:id` (`{ expectedRevision }`), `POST /api/network/networks/:id/duplicate` (`{ name? }`); `GET /api/network/networks` also takes `archived=true`; `PATCH /api/network/networks/:id` also takes `archived`; network answers carry `refs`, `issues`, `usedBy` and versions `refs` (§4.8) |
-| 06 | `GET/PATCH /api/network/settings`; `POST/GET /api/network/jobs`, `GET /api/network/jobs/:id`, `POST /api/network/jobs/:id/cancel`, `POST /api/network/jobs/:id/approve`, `POST /api/network/jobs/:id/retry`, `POST /api/network/jobs/:id/close`, `DELETE /api/network/jobs/:id` (terminal only) |
+| 06 | `GET/PATCH /api/network/settings`; `POST/GET /api/network/jobs`, `GET /api/network/jobs/:id`, `POST /api/network/jobs/:id/cancel`, `POST /api/network/jobs/:id/approve`, `POST /api/network/jobs/:id/retry`, `POST /api/network/jobs/:id/close`, `DELETE /api/network/jobs/:id` (terminal only); built as listed (§4.9): submit 1 MiB body, others 64 KiB; list `?status agentId projectId networkId parentJobId offset limit` |
 | 07 | `GET /api/network/jobs/:id/result`, `GET /api/network/jobs/:id/attempts/:aid/:artifact` (`prompt`, `output`, `result`) |
 | 08 | `GET /api/network/events?after=&limit=&agentId=&jobId=&networkId=&pipelineRunId=`, `GET /api/network/events/stream?after=` |
 | 09 | `GET/POST /api/network/pipelines`, `GET/PATCH/DELETE /api/network/pipelines/:id`, `POST /api/network/pipelines/:id/validate`, `POST /api/network/pipelines/:id/publish`, `GET /api/network/pipelines/:id/versions/:n`, `POST /api/network/pipelines/:id/runs` (`{ version, confirm: true }`), `GET /api/network/pipeline-runs`, `GET /api/network/pipeline-runs/:id`, `POST /api/network/pipeline-runs/:id/cancel`, `POST /api/network/pipeline-runs/:id/nodes/:nodeId/approve` (`{ decision: 'approve' | 'reject' }`) |

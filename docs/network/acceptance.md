@@ -103,7 +103,7 @@ requirements are in [NETWORK_REQUIREMENTS.md](NETWORK_REQUIREMENTS.md).
 
 ### Task 06 — job engine (fake worker)
 
-`tests/network-jobs.test.mjs`:
+`tests/network-jobs.test.mjs` (engine and HTTP; the fake worker is `tests/helpers/network-worker.mjs`):
 
 1. Submit returns `{ jobId, status: 'queued' }` after `job.json` and `request.json` exist on disk; the fake worker
    completes it; status sequence `queued → preparing → running → completed` in `job.json` history.

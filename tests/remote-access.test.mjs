@@ -272,8 +272,11 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     ...each('/api/base', ['GET', 'GET presets', 'POST avatar/cancel', 'POST avatar/generate', 'POST preview', 'POST apply', 'POST restore-global', 'POST skills/import', 'POST resources', 'POST import/preview', 'POST import', 'POST export', 'POST roots', 'DELETE roots/r1',
       'POST wiki/cancel', 'POST wiki/generate', 'POST wiki/apply', 'POST source/import', 'GET markdown/templates']),
     ...each('/api/base/resources/b1', ['GET', 'GET revisions', 'GET revisions/1', 'GET avatar', 'POST override', 'POST deploy', 'PATCH', 'DELETE', 'POST test', 'POST refresh', 'GET search']),
-    // Network (architecture §10.2): registry, graph, export, memory and report routes create no way in and change no trust.
+    // Network (architecture §10.2): registry, graph, export, memory, report, job and job-settings routes create no way in and
+    // change no trust (a paired device has the owner's control, so it may submit and cancel jobs).
     'GET /api/network/agents', 'POST /api/network/agents', 'GET /api/network/networks', 'POST /api/network/networks', 'GET /api/network/export', 'POST /api/network/import',
+    'GET /api/network/settings', 'PATCH /api/network/settings', 'GET /api/network/jobs', 'POST /api/network/jobs',
+    ...each(`/api/network/jobs/job_${'a'.repeat(20)}`, ['GET', 'DELETE', 'POST cancel', 'POST approve', 'POST retry', 'POST close']),
     ...each(`/api/network/agents/agt_${'a'.repeat(20)}`, ['GET', 'PATCH', 'GET memory', 'POST memory', 'GET memory/preview', `PATCH memory/mem_${'b'.repeat(20)}`, `DELETE memory/mem_${'b'.repeat(20)}`, `POST memory/mem_${'b'.repeat(20)}/approve`,
       'GET posts', 'POST posts', `PATCH posts/pst_${'c'.repeat(20)}`, `DELETE posts/pst_${'c'.repeat(20)}`]),
     ...each(`/api/network/networks/net_${'a'.repeat(20)}`, ['GET', 'PATCH', 'DELETE', 'POST publish', 'POST duplicate', 'GET versions/1', 'GET memory', 'POST memory', `PATCH memory/mem_${'b'.repeat(20)}`, `DELETE memory/mem_${'b'.repeat(20)}`, `POST memory/mem_${'b'.repeat(20)}/approve`])];

@@ -75,10 +75,13 @@ export async function writeDocument(path, data) {
   catch { fail('Network data could not be saved. Check free disk space and folder permissions. Nothing was changed.', 'NETWORK_WRITE_FAILED', 500); }
 }
 
-/** Write `text` once, without a backup; the caller's name carries `sha256(text)`, so a second write is the same bytes. */
-export async function writeImmutable(path, text) {
+/**
+ * Write `text` once, without a backup; the caller's name (or record) carries `sha256(text)`, so a second write is the same
+ * bytes. `what` names it in the error.
+ */
+export async function writeImmutable(path, text, what = 'The published version') {
   try { await folder(dirname(path)); await writeAtomic(path, text, { backup: false }); }
-  catch { fail('The published version could not be saved. Check free disk space and folder permissions. Nothing was changed.', 'NETWORK_WRITE_FAILED', 500); }
+  catch { fail(`${what} could not be saved. Check free disk space and folder permissions. Nothing was changed.`, 'NETWORK_WRITE_FAILED', 500); }
 }
 
 /** An immutable document whose bytes must still hash to `hash` and pass `valid`; anything else is refused, never repaired. */
