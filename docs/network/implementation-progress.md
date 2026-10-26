@@ -24,7 +24,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 | Task | File | Status | Commit |
 |---:|---|---|---|
 | 01 | 01-audit-and-contracts.md | done | 27646ef |
-| 02 | 02-registry-and-storage.md | done | (this commit) |
+| 02 | 02-registry-and-storage.md | done | 7771788 |
 | 03 | 03-network-page-and-agent-profiles.md | pending | |
 | 04 | 04-agent-memory-and-feed.md | pending | |
 | 05 | 05-graph-designer-and-subnetworks.md | pending | |
