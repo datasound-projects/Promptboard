@@ -38,9 +38,9 @@ branch from the same verified base, merged by the coordinator in order, then int
 | 04 | 04-agent-memory-and-feed.md | done | 1fc58b6 |
 | 05 | 05-graph-designer-and-subnetworks.md | done | 47447fc |
 | 06 | 06-general-purpose-job-engine.md | done | d49d064 |
-| 07 | 07-local-worker-runtime.md | pending | |
-| 08 | 08-live-activity-and-observability.md | pending | |
-| 09 | 09-pipeline-dag-engine.md | pending | |
+| 07 | 07-local-worker-runtime.md | done (merged, wave A) | a6aab88 |
+| 08 | 08-live-activity-and-observability.md | done (merged, wave A) | 4d275e7 |
+| 09 | 09-pipeline-dag-engine.md | done (merged, wave A) | 018a2fd |
 | 10 | 10-pipeline-designer-and-network-run-ui.md | pending | |
 | 11 | 11-private-api-and-mcp.md | pending | |
 | 12 | 12-delegation-and-triggers.md | pending | |
