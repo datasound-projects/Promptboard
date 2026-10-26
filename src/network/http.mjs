@@ -65,6 +65,7 @@
  *   GET  /api/network/pipeline-runs/:id     the run with its plan
  *   POST /api/network/pipeline-runs/:id/cancel {}
  *   POST /api/network/pipeline-runs/:id/nodes/:nodeId/approve { decision: 'approve' | 'reject' } (nodeId may be <substep>/<step>)
+ *   GET  /api/network/pipeline-runs/:id/nodes/:nodeId/report   an output step's saved report, hash-checked
  *
  * External clients (machine-auth.mjs, rest.mjs; architecture §10.3, §22). Creating or rotating a client shows a new
  * token and the listener opens a port, so those three are local-only (src/remote-access.mjs localOnly); listing and
@@ -186,6 +187,7 @@ export const NETWORK_ROUTES = Object.freeze([
   route('GET', `/pipeline-runs/${RUN}`, (c, id) => c.runs.read(id)),
   route('POST', `/pipeline-runs/${RUN}/cancel`, async (c, id) => c.runs.cancel(id, await c.body(BODY.small))),
   route('POST', `/pipeline-runs/${RUN}/nodes/${STEP}/approve`, async (c, id, node) => c.runs.decide(id, node, await c.body(BODY.small))),
+  route('GET', `/pipeline-runs/${RUN}/nodes/${STEP}/report`, (c, id, node) => c.runs.report(id, node)),
   route('GET', '/clients', c => c.machine.clients.list()),
   route('POST', '/clients', async c => c.machine.clients.create(await c.body(BODY.small)), () => 201),
   route('DELETE', `/clients/${CLIENT}`, async (c, id) => c.machine.clients.revoke(id, await c.body(BODY.small))),

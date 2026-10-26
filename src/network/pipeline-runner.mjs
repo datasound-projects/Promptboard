@@ -110,6 +110,7 @@ export class PipelineRunner {
       await this.#serial(() => this.#change(runs.get(id), r => Object.assign(r, { status: 'interrupted', errorCode: 'RESTORED_FROM_BACKUP',
         reason: 'This run was read from its backup copy, which may not know every step job it started. It does not go on by itself: check its jobs, then cancel it.' }))).catch(() => {});
     }
+    void this.jobs.sweep?.(); // The engine's start sweep ran before this knew which runs ended, so it kept every step job's logs.
   }
   #run(id) {
     if (typeof id !== 'string' || !RUN_ID.test(id)) fail('This pipeline run does not exist.', 'NOT_FOUND', 404);
@@ -243,7 +244,8 @@ export class PipelineRunner {
     for (const id of step.config.include) {
       const refs = inputs.filter(ref => ref.node === id);
       lines.push('', `## ${this.#label(plan, id)}`, '');
-      if (!refs.length) lines.push('_This step did not run in this run._');
+      // After a join of `any`, a step can still be on its way when the report is saved: it may complete later.
+      if (!refs.length) lines.push(STEP_ENDED.has(r.nodes[id].status) ? '_This step did not run in this run._' : '_This step had not finished when this report was saved._');
       for (const ref of refs) { const text = await this.#artifact(r, ref); lines.push(ref.port === 'json' ? `\`\`\`json\n${JSON.stringify(JSON.parse(text), null, 2)}\n\`\`\`` : text.trimEnd()); }
     }
     const text = `${lines.join('\n')}\n`;
@@ -410,6 +412,16 @@ export class PipelineRunner {
     });
     await this.#cancelJobs(id);
     return { run: this.#view(saved) };
+  }
+  /** The report an output step saved, read again and shown only when it still hashes to what the step recorded. */
+  async report(id, nodeId) {
+    await this.#ready();
+    const run = this.#run(id), step = this.#plans.get(id).nodes.find(item => item.id === nodeId), result = run.nodes[nodeId]?.result;
+    if (step?.type !== 'output') fail('This step is not an output step of the run.', 'NOT_FOUND', 404);
+    if (run.nodes[nodeId].status !== 'completed' || !result?.text) fail('This output step has not saved its report.', 'STEP_STATE', 409);
+    const text = await readFile(this.#file(id, result.text.ref), 'utf8').catch(() => null);
+    if (text === null || sha256(text) !== result.text.sha256) fail('The saved report is missing or changed since it was written, so it is not shown.', 'ARTIFACT_INVALID', 409, { nodeId });
+    return { nodeId, name: step.config.name, file: step.file, text, sha256: result.text.sha256, chars: text.length };
   }
   /** The owner's decision on an approval step (owner routes only): approve lets the steps after it run; reject cancels them. */
   async decide(id, nodeId, input) {

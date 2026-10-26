@@ -14,7 +14,7 @@
  * breaks one: a cursor older than the oldest kept event reads from there with `gap: true`. A segment saved by a newer
  * version makes the whole journal unavailable (NETWORK_VERSION_UNSUPPORTED): nothing is read from or written to it.
  */
-import { appendFile, mkdir, open, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { serial } from '../durable.mjs';
@@ -73,6 +73,7 @@ export class NetworkEvents {
   #failures = 0;
   #listeners = new Set();
   #streams = new Map(); // client key → open streams.
+  #parsed = new Map(); // segment name → { size, page }: the segments read last, oldest first (see #read).
 
   #ready() { return this.#loading ??= this.#load().catch(error => { this.#loading = null; throw error; }); }
   async #load() {
@@ -105,9 +106,21 @@ export class NetworkEvents {
     });
     return { events, skipped };
   }
+  /**
+   * One segment's events. A segment only grows (append only, never rewritten), so a parse is reused while the file keeps
+   * the size it was parsed at: a replay reads each segment once, not once per page. Callers never change what it answers.
+   */
   async #read(segment) {
-    try { return this.#parse(await readFile(join(this.dir, segment.name), 'utf8'), segment); }
-    catch (error) { if (error.code === 'ENOENT') return { events: [], skipped: 0 }; throw error; } // Removed by retention meanwhile.
+    const path = join(this.dir, segment.name);
+    try {
+      const { size } = await stat(path), hit = this.#parsed.get(segment.name);
+      if (hit?.size === size) { this.#parsed.delete(segment.name); this.#parsed.set(segment.name, hit); return hit.page; }
+      const bytes = await readFile(path), page = this.#parse(bytes.toString('utf8'), segment);
+      // ponytail: the 2 segments read last stay parsed (at most ~2 × 8 MiB of events); a seq → offset index if memory matters.
+      this.#parsed.delete(segment.name); this.#parsed.set(segment.name, { size: bytes.length, page });
+      if (this.#parsed.size > 2) this.#parsed.delete(this.#parsed.keys().next().value);
+      return page;
+    } catch (error) { if (error.code === 'ENOENT') return { events: [], skipped: 0 }; throw error; } // Removed by retention meanwhile.
   }
   #available() { if (this.#unavailable) fail(this.#unavailable.message, this.#unavailable.code, 409); }
 
@@ -200,7 +213,7 @@ export class NetworkEvents {
     for (let i = at(end - 1); i >= 0; i--) {
       const page = await this.#read(segments[i]);
       skipped += page.skipped;
-      for (const event of page.events.reverse()) {
+      for (const event of page.events.toReversed()) {
         if (event.seq >= end || (prev !== null && event.seq >= prev)) continue;
         if (events.length >= limit || scanned >= EVENT_LIMITS.scan) { i = -1; break; }
         scanned++; prev = event.seq;

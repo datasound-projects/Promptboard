@@ -188,6 +188,7 @@ export class MachineListener {
     let url; try { url = new URL(req.url, 'http://machine'); } catch { return reply(res, 400, { error: 'This request address is not valid.', code: 'INVALID_URL' }); }
     if (!url.pathname.startsWith('/machine/v1/')) return reply(res, 404, { error: 'This route does not exist.', code: 'NOT_FOUND' });
     const client = await this.clients.authenticate(req.headers.authorization);
+    if (res.destroyed) return; // The caller left while its token was checked: its 'close' has passed, so nothing may be kept for it.
     if (!client) return reply(res, 401, { error: 'Send a valid client token: Authorization: Bearer pbm_…', code: 'MACHINE_UNAUTHORIZED' }, { 'WWW-Authenticate': 'Bearer' });
     if (!this.#allow(client.id, 'requests', this.limits.requestsPerMinute)) return reply(res, 429, { error: 'Too many requests. Wait a minute.', code: 'RATE_LIMITED' }, { 'Retry-After': '60' });
     const open = this.#open.get(client.id) ?? new Set(); this.#open.set(client.id, open);
@@ -287,10 +288,16 @@ export class MachineListener {
   }
   async eventStream({ client, res, params }) {
     if (this.#streams >= this.limits.streams) fail('Too many machine streams are open. Close one first.', 'STREAM_LIMIT', 429); // The owner's Activity views keep the rest.
+    this.#streams++; // Counted before any await, so a reader that leaves meanwhile still gives its slot back.
+    // An expiring client's stream ends at its expiry (re-armed past setTimeout's 24.8-day ceiling); an event that comes
+    // after it by the clock ends it too, instead of reaching the client. Revoke and rotate end it through #drop.
+    const expired = () => client.expiresAt !== null && client.expiresAt <= this.now();
+    let timer = null;
+    const arm = () => { timer = setTimeout(() => (expired() ? res.destroy() : arm()), Math.min(Math.max(client.expiresAt - this.now(), 0), 2 ** 31 - 1)); timer.unref?.(); };
+    if (client.expiresAt !== null) arm();
+    res.once('close', () => { this.#streams--; clearTimeout(timer); });
     const own = await this.#ownSet(client);
-    this.#streams++;
-    res.once('close', () => { this.#streams--; });
-    try { await this.events.stream({ res, after: seq(params.get('after')), client: `machine:${client.id}`, view: event => (own.has(event.jobId) ? machineEvent(event) : null) }); }
+    try { await this.events.stream({ res, after: seq(params.get('after')), client: `machine:${client.id}`, view: event => (expired() ? (res.destroy(), null) : own.has(event.jobId) ? machineEvent(event) : null) }); }
     catch (error) { if (!res.headersSent) throw error; res.destroy(); }
   }
 }

@@ -326,12 +326,28 @@ window.PromptboardNetworkActivity = (() => {
     let searchTimer = null;
     search.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(renderFeed, 150); });
 
+    /**
+     * The newest `limit` events matching `filter` (`jobId=…` or `agentId=…`). One journal read looks at no more than 50,000
+     * lines, so this follows `prev` until it has them or reaches the journal's start: at most 40 reads, 2 million lines, more
+     * than the kept journal can hold (16 segments of 8 MiB, an event line is at least about 70 bytes).
+     */
+    async function filtered(filter, limit) {
+      let events = [], before = '';
+      for (let reads = 0; reads < 40; reads++) {
+        const page = await host.request(`/api/network/events?${filter}&limit=${limit}${before}`);
+        events = [...page.events, ...events];
+        if (events.length >= limit || page.prev === null) break;
+        before = `&before=${page.prev}`;
+      }
+      return { events: events.slice(-limit) };
+    }
+
     // ---- One job: its record (Task 06 routes), its result when the app can serve it, and its events.
     async function loadJob(id, { quiet = false } = {}) {
       if (!quiet) job = { id, record: null, error: '', events: [], result: null, loading: true };
       void handoffs?.loadJob(id);
       try {
-        const [record, events] = await Promise.all([host.request(`/api/network/jobs/${id}`), host.request(`/api/network/events?jobId=${id}&limit=200`)]);
+        const [record, events] = await Promise.all([host.request(`/api/network/jobs/${id}`), filtered(`jobId=${id}`, 200)]);
         if (job?.id !== id) return;
         Object.assign(job, { record, error: '', loading: false });
         for (const event of events.events) if (!job.events.some(known => known.seq === event.seq)) job.events.push(event);
@@ -343,11 +359,13 @@ window.PromptboardNetworkActivity = (() => {
       } catch (failure) { if (job?.id === id) Object.assign(job, { error: failure.message, loading: false }); }
       scheduleRender();
     }
-    /** A step job's run: the timeline filtered to that run's events (its steps, their jobs and their activity). */
+    /** A step job's run: its run view, and the timeline filtered to that run's events (its steps, their jobs and their activity). */
     function runLink(id) {
       const node = button(`Run ${short(id)}: show its events`, () => { agentFilter.value = ''; kindFilter.value = ''; search.value = id; focusJob = 'search'; host.go('#/network/activity'); }, 'text-button');
       node.id = 'network-activity-run-events'; node.title = id;
-      return node;
+      const open = button(`Open run ${short(id)}`, () => host.go(`#/network/runs/${id}`), 'text-button'); open.id = 'network-activity-open-run'; open.title = id;
+      const links = el('span'); links.append(open, ' · ', node);
+      return links;
     }
     function renderJob() {
       const back = button('Back to Activity', () => { focusJob = job?.id; host.go('#/network/activity'); }, 'text-button network-back-activity'); back.id = 'network-activity-back';
@@ -403,7 +421,7 @@ window.PromptboardNetworkActivity = (() => {
       const view = agentView;
       if (!view || view.loading || view.loaded) return;
       view.loading = true; view.error = '';
-      host.request(`/api/network/events?agentId=${view.agent.id}&limit=${PAGE}`).then(page => {
+      filtered(`agentId=${view.agent.id}`, PAGE).then(page => {
         view.events = [...page.events, ...view.events.filter(event => !page.events.some(known => known.seq === event.seq))].sort((a, b) => a.seq - b.seq);
         view.loaded = true;
       }, failure => { view.error = failure.message; }).finally(() => { view.loading = false; if (agentView === view) renderAgent(); });

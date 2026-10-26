@@ -3165,6 +3165,62 @@ button.origin-context-badge { cursor: pointer; }
 @media (max-width: 1100px) { .network-clients-columns { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 730px) { .network-clients-controls { align-items: stretch; } .network-clients-port input { width: 100%; } .network-clients-port .field-label { flex: 1; } }
 
+/* Network Pipelines (network-pipeline.js): the list, the designer and the run view reuse the Graph layout classes; these
+   rules add what differs. Steps have a shape per type on the canvas and a mark in the lists; arrows show their port. */
+.network-pipeline-semantics { margin-top: 12px; }
+.network-pipeline-title { margin: 16px 0 0; color: var(--ink); font-size: 18px; }
+.network-pipeline-subtitle { margin: 22px 0 8px; color: var(--subtle); font: 600 11px var(--mono); letter-spacing: 1px; text-transform: uppercase; }
+.network-pipeline-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.network-pipeline-row > .network-agent { flex: 1 1 320px; width: auto; min-width: 0; }
+.network-pipeline-row-actions { flex: none; }
+.network-danger-text:enabled { color: var(--error); }
+.network-pipeline-all { justify-self: start; padding: 0; font-size: 12.5px; }
+.network-pipeline-palette { gap: 6px; }
+.network-pipeline-palette-label { margin-right: 2px; color: var(--subtle); font: 600 11px var(--mono); letter-spacing: 1px; text-transform: uppercase; }
+.network-step-button { padding-inline: 10px; }
+.network-pipeline-settings-open { justify-self: start; }
+.network-node-mark.mark-condition, .network-node-mark.mark-approval { color: var(--og-warn); }
+.network-node-mark.mark-output { color: var(--og-ok); }
+.network-node-mark.mark-subnetwork, .network-node-mark.mark-parallel, .network-node-mark.mark-join { color: var(--og-define); }
+.network-port { font-family: var(--mono); }
+.network-port.port-true { color: var(--og-ok); } .network-port.port-false { color: var(--og-warn); } .network-port.port-json { color: var(--og-design); }
+.network-pipeline-ports { display: grid; gap: 4px; }
+.network-pipeline-ports .note, .network-pipeline-reach { margin: 0; font-size: 12.5px; }
+.network-field-error { margin: 0; color: var(--error); font-size: 12.5px; }
+.network-field-warning { margin: 0; color: var(--og-warn); font-size: 12.5px; }
+.network-rules { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.network-rule { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.network-rule-title { color: var(--muted); font-size: 12px; font-weight: 600; }
+.network-rule-grid { display: grid; gap: 6px; }
+.network-rule > .text-button { justify-self: start; }
+.network-rule-summary { margin: 0; font: 12px var(--mono); overflow-wrap: anywhere; }
+.network-pipeline-include .check-row { font-size: 13px; }
+.network-pipeline-versions { display: grid; gap: 6px; }
+.network-pipeline-versions .note { margin: 0; font-size: 12.5px; }
+.network-pipeline-runs .network-agent { padding: 8px 10px; }
+.network-issue.issue-blocking { border-left-color: var(--error); }
+.network-issue.issue-refused { border-color: color-mix(in srgb, var(--error) 45%, transparent); border-left: 4px solid var(--error); background: color-mix(in srgb, var(--error) 6%, var(--surface)); }
+.network-run-facts .network-facts { margin: 0; }
+.network-run-facts .note, .network-run-facts .network-stale { margin: 6px 0 0; }
+.network-run-summary { min-height: 1.55em; margin: 0; color: var(--text); font-size: 13.5px; }
+.network-run-row[data-depth="1"] { padding-left: 16px; } .network-run-row[data-depth="2"] { padding-left: 32px; } .network-run-row[data-depth="3"], .network-run-row[data-depth="4"] { padding-left: 48px; }
+.network-run-row[data-status="waiting_for_approval"] .network-graph-item { border-left: 3px solid var(--og-warn); }
+.network-run-row[data-status="failed"] .network-graph-item, .network-run-row[data-status="blocked"] .network-graph-item { border-left: 3px solid var(--error); }
+.network-run-row[data-status="running"] .network-graph-item { border-left: 3px solid var(--og-design); }
+.network-run-row[data-status="completed"] .network-graph-item { border-left: 3px solid var(--og-ok); }
+.network-run-decide { margin: 2px 0 0; }
+.network-run-report { max-height: 420px; padding: 10px 12px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+.network-job-json { max-height: 60vh; }
+.base-status.tone-run::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; vertical-align: 1px; background: var(--og-design); }
+@media (max-width: 730px) {
+  .network-pipeline-row-actions { padding-left: 4px; }
+  .network-run-row[data-depth] { padding-left: 0; }
+}
+.network-pipelines .network-graph-details .field-label textarea { display: block; width: 100%; min-height: 0; margin-top: 6px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); font: 13px/1.55 var(--sans); resize: vertical; }
+.network-pipelines .network-graph-details > .text-button, .network-run-details .text-button { justify-self: start; }
+.network-graph-side .network-run-report .md-heading { margin: 12px 0 4px; color: var(--ink); font: 600 15px var(--sans); letter-spacing: 0; text-transform: none; }
+.network-graph-side .network-run-report h2.md-heading { margin-top: 0; font-size: 17px; }
+
 /* Network handoffs and schedules (network-delegation.js, Task 12): a job's question, sub-jobs and messages; Activity's
    Schedules; Settings' handoff policy. The page's tokens, hairlines and state chips; both themes; one column on a phone. */
 .network-handoff-box { display: grid; gap: 6px; min-width: 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--og-warn) 55%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--og-warn) 8%, var(--surface)); }

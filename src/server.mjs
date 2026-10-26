@@ -91,6 +91,7 @@ const assets = new Map([
   ['/network-graph.js', ['network-graph.js', 'text/javascript; charset=utf-8']],
   ['/network-activity.js', ['network-activity.js', 'text/javascript; charset=utf-8']],
   ['/network-clients.js', ['network-clients.js', 'text/javascript; charset=utf-8']],
+  ['/network-pipeline.js', ['network-pipeline.js', 'text/javascript; charset=utf-8']],
   ['/network-delegation.js', ['network-delegation.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal and graph assets, served from the installed packages by exact path only (no CDN,

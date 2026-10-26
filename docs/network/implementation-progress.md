@@ -1632,6 +1632,158 @@ queued (no worker), as the smoke shows; with it, they run like owner jobs. Port 
 
 **Commits.** a1d6642 (code, tests, dependency, architecture §22), then this log entry.
 
+### Task 10 — Pipeline designer and run view (2026-10-26, wave B, branch `feat/network-10`)
+
+**What was done.** Network → Pipelines works (no longer "soon"). The list shows every pipeline with its network, pinned
+network version, step and arrow counts and latest version, filtered by network and searched on the server, plus the latest
+runs; it creates (empty, or from the MVP template), renames, duplicates (a new unpublished draft) and deletes a pipeline
+(Delete is disabled with the reason once a version is published; the server refuses it too). The designer edits one draft
+on a Cytoscape canvas beside keyboard lists: a palette of Agent (members of the pinned network version), Sub-network (a
+published pipeline of a contained network at that version), Parallel, Join, Condition, Approval and Output; port-aware
+connect (canvas Connect mode with a From-port select, or the "Add an arrow from …" form), remove, drag, arrow keys,
+"Arrange in order" (columns along the execution order), fit and zoom, undo; a details panel per step (label, the type's
+config, ports in and out, what reaches it, connect form) and per arrow (ports and what it carries), the pipeline settings,
+a declarative rule editor with Task 09's nine operators and typed values, a Check list and Versions and runs. Save is one
+`PATCH` with the loaded revision (incomplete steps are refused before sending and marked; a conflict offers "Load the saved
+pipeline" or "Save mine as a new pipeline"; unsaved changes are guarded). Validate and Publish save first, mark refused
+steps and arrows from the error details, and Publish shows the version and a diff summary against the previous version.
+Run confirms an explicit published version with its size, concurrency, permissions, tools and "cost not enforced". The run
+view shows the pinned plan live (polling one swappable function), per step status, reasons, job link, provider, worker,
+tries and job IDs, inputs, artifact references, condition evidence, Approve/Reject on approvals, the saved report
+(hash-checked) and Cancel run; nested sub-pipelines are one collapsed group with drill-in on the canvas and in the list. A
+phone gets the ordered step list and one step's details in both views. Graph's text now says relations are permissions
+and intent, not execution order. Decisions: architecture.md §21.
+
+**Files.** New: `public/network-pipeline.js`, `tests/network-pipeline-ui.test.mjs`, `tests/network-pipeline-browser.test.mjs`.
+Changed: `public/network.js` (routes `#/network/pipelines[/<id>]` and `#/network/runs/<id>`, the panel, both guards, the
+`openJob`/`followRun` seams), `public/network-graph.js` (exports `kit`; `css` and `keepFocus` at module scope; one sentence
+in its explanation), `public/index.html` (script), `public/styles.css` (Pipelines section), `src/server.mjs` (asset),
+`src/network/pipeline-runner.mjs` (`report()`), `src/network/http.mjs` (one route), `tests/remote-access.test.mjs` (its row),
+`tests/helpers/ui-harness.mjs` (evaluates `network-pipeline.js`; `networkWorker` option), `tests/network-ui.test.mjs`
+(Pipelines is available), `docs/network/architecture.md` (§21), this section. The status table is unchanged (wave rule).
+
+**Route.** `GET /api/network/pipeline-runs/:id/nodes/:nodeId/report` → `{ nodeId, name, file, text, sha256, chars }` for a
+completed output step whose saved report still hashes to the recorded SHA-256 (`ARTIFACT_INVALID` 409, `STEP_STATE` 409,
+`NOT_FOUND`). In `NETWORK_ROUTES` and the paired-device table (allowed, like every run route).
+
+**Tests** (temporary data folders; the only worker is Task 06's deterministic fake behind the real server; no CLI, no
+network beyond the local test server):
+
+- `tests/network-pipeline-ui.test.mjs` 5 tests (jsdom): (1) the template becomes a draft with the agents of the pinned
+  version, six steps in execution order and six port-typed arrows; a new condition makes Save refuse before any `PATCH`
+  with the step marked; the rule editor (operators, "Write a number.", field names, the json port that must reach it);
+  a loop and an arrow out of an output refused where drawn; save, remove; Validate refuses a switched-off agent with the
+  message, the marked step and its details, then passes; nothing ran; Publish v1 ("This is the first version."); the run
+  confirmation (version, 6 steps/3 agent jobs, at most 2 at once, permissions, tools, cost not enforced); the live run
+  view to "Waiting for you"; Approve from the step; completed; the saved report exactly as on disk, Download, a report
+  changed on disk refused; provider, inputs and result references; the job record as JSON; one start and one approval
+  sent. (2) a run of v1 waiting for its approval while the draft is renamed, extended, saved and published as v2 ("1 step
+  added, 1 step changed"): the run view still shows v1's steps and `plan.json` is byte-identical; Reject from the step →
+  cancelled, no report; a version that cannot start is refused in the confirmation with its reason; a reload (new page
+  and server on the same folder) shows the same run and the edited draft. (3) manual worker: both research steps running
+  live, one finished shows Completed while the other runs; Cancel run → cancelled, the worker told to stop, jobs
+  cancelled/completed; `beforeunload` and the in-app guard (declined keeps editor, edits and address); a conflicting save
+  offers both choices and "Save mine" makes "Market report (my changes)"; a failed job → step Failed with
+  "PROVIDER_ERROR: Its job … failed (PROVIDER_ERROR). The CLI failed.", the run stops, the other step cancelled. (4) nested,
+  built from the UI: New pipeline, an agent step (only the pinned version's members offered), a sub-network step (only
+  the contained network's pipeline at the pinned network version; one at another version is not offered), drill-in
+  ("Show its steps"), an output (connecting ticks it), save, validate (5 steps, 2 agent jobs, 1 sub-pipeline), publish; a
+  switched-off agent is highlighted before any check; the run shows the sub-pipeline as one collapsed group, Expand
+  lists its steps by depth, its inner approval is approved from the group's details, both reports saved. (5) the list
+  (network filter, rename with focus kept, duplicate as an unpublished copy, delete only never-published, server
+  `PIPELINE_PUBLISHED`), every control labelled and every disabled button with a reason, palette/connect form/config by
+  keyboard, canvas keys (arrows, Shift, Delete, undo, Escape), a relation edge refused by the server (400) and not shown as
+  an arrow, the Graph text, and the phone: ordered steps → one step → Back with focus on its row; settings; a run's
+  approval on a phone.
+- `tests/network-pipeline-browser.test.mjs` 3 tests (Chrome, real Cytoscape, unchanged CSP): (1) Graph relations are
+  dashed bezier curves named by type, pipeline arrows solid taxi lines with `triangle-backcurve` heads labelled by port,
+  steps shaped per type; the template; a mouse drag saved exactly; a Parallel step connected by Connect + two taps;
+  Validate valid and refused without moving the canvas (the refused step has the error border); publish, run
+  confirmation, live canvas states, approve by a tap on the node and its button, the report; the run canvas did not move
+  during live updates; light and dark at 1440 (canvas beside the list, colours differ) and 390 (no canvas, ordered steps,
+  one step, Back); no outside request, no `<style>` element, no exception, CSP or Cytoscape style warning. (2) a 200-step
+  pipeline (10 chains into one report). (3) nested: the sub-network step is a barrel; in the run one collapsed node that
+  expands into 3 steps without overlapping anything (the report moves right), the inner approval approved by a tap,
+  Collapse all.
+- Changed: `tests/network-ui.test.mjs` (Pipelines is available), `tests/remote-access.test.mjs` (the report route row).
+- Mutation check (`$TMPDIR/network-logs/task-10-mutations.log`, script kept outside the repo): 29 of 29 mutations make a
+  test fail (route row, report hash check, validate marks, save pre-check, loop check, number rule, Approve button, live
+  polling, cost row, run view header, Reject, the refused start, the cancel call, the guard, the conflict choices,
+  `beforeunload`, the step reason, the sub-pipeline scope filter, collapsed groups, the disabled-agent warning, output
+  auto-include, delete of a published pipeline, canvas keys, the phone detail view, the Graph sentence, Pipelines still
+  "soon", dashed arrows, room for an expanded group, the remote-access row). The scope filter survived the first round;
+  the nested test now publishes a pipeline of the inner network's version 2, which must not be offered.
+- Runs: `npm run check` pass. New and touched tests twice on the final code (`task-10-new-twice.log`): `network-pipeline-ui`,
+  `network-ui`, `network-graph-ui`, `network-review-ui`, `remote-access` 40/40 and 40/40; `network-pipeline-browser`,
+  `network-browser`, `network-graph-browser`, `network-review-browser`, `remote-access-browser` 9/9 and 9/9. Earlier on this
+  code (`task-10-touched.log`): every non-browser `network-*` test plus `remote-access`, `server`, `ui`, `ui-2`, `ui-3`,
+  `project-explorer-ui`, `sandbox-ui`: 262/263 — the one failure is Task 06's `network-jobs` "job routes over HTTP" `read
+  ECONNRESET` (pre-existing, logged by Task 09); alone 18/18 (`task-10-jobs-rerun.log`). One browser run with five Chrome
+  files in parallel failed at the mouse drag: Cytoscape refreshes its cached container offset some time after a scroll,
+  so a press right after `scrollIntoView` missed the node; the test's `point()` now calls `cy.resize()` first (passes 3/3
+  alone and in both final runs). The full `npm test` was not run (wave rule).
+- Isolated smoke on port 4920 (temporary data and projects folders, PATH holding only a `node` symlink, no worker):
+  `/network-pipeline.js` 200 with a JavaScript type and loaded by the page, `/api/network/pipelines` 403 without the token
+  and an empty page with it, the report route 403 without the token and `NOT_FOUND` for a missing run; stopped, folder
+  removed. Paid CLI runs: 0.
+
+**Performance** (headless Chrome 1440×1000, software rendering, this Mac; 200 steps and 199 arrows; ten runs): first
+draw from choosing the pipeline to two painted frames with every step on the canvas and in the list 0.37–3.3 s (median
+about 1.4 s; the slow ones while other Chrome processes ran); choosing a step 36–840 ms (its JavaScript is 8–23 ms; the
+rest is software paint, slowest on the first selection, 60–200 ms on later ones; 684–1,491 ms in two runs before
+redundant canvas writes and resizes were removed); a label edit 27–918 ms; Arrange in order 42–544 ms; save and validate 50–354 ms; JS heap +3.7–3.8 MB. The
+suite asserts only a 10 s first draw and 3 s per action (CI draws in software under load). `PB_NETWORK_PERF_LOG` writes
+the numbers (`task-10-perf.json`).
+
+**Screenshots looked at** (`$TMPDIR/network-logs/task-10-screens/`): `pipelines-list-1440-light-empty`,
+`pipelines-template-1440-light`, `pipeline-designer-1440-{light,dark}`, `pipeline-validate-refused-1440-light`,
+`pipeline-publish-1440-light`, `pipeline-run-confirm-1440-light`, `run-waiting-1440-light`, `run-approval-1440-light`,
+`run-report-1440-light`, `run-1440-{light,dark}`, `pipelines-list-1440-{light,dark}`, `run-390-{light,dark}-{list,detail}`,
+`pipeline-390-{light,dark}-{list,detail}`, `run-nested-{collapsed,expanded}-1440-light`, `pipeline-200-steps`. Fixed after
+looking: "Collapse all" showed with no sub-pipeline (now hidden; disabled with a reason when nothing is expanded), report
+headings took the side panel's uppercase label style, the description field was unstyled, labels were too small at the
+fitted zoom (larger font, narrower columns), dialog notes had no spacing, and an expanded sub-pipeline overlapped the next
+step.
+
+**Acceptance criteria and evidence:**
+
+- *User can build & execute a nested pipeline graph from UI, with real live states and approval actions:* UI test 4 (built,
+  validated, published and run from the UI; group expand; inner approval approved), browser test 3 (canvas expand, tap to
+  approve), UI tests 1 and 3 (live Running/Completed/Waiting/Failed/Cancelled from the real server's runner and job
+  engine), browser test 1; `run-nested-*`, `run-waiting-*`, `run-approval-*`. Live states are polled each second until Task
+  08's stream is wired (below).
+- *Editing the draft while a run is active has no effect on the run:* UI test 2 (draft renamed, extended, saved and
+  republished as v2 while the run waits: run view labels and steps of v1, `plan.json` byte-identical, the plan from the
+  route deep-equal), the run view's pinned note.
+- *No invalid step graph is executable; useful validation errors are shown:* UI test 1 (incomplete step refused before
+  saving, marked; Validate refusal with message, marked step, details and Show; loops and arrows out of an output refused
+  where drawn), UI test 2 (a version that cannot start is refused in the confirmation, Start disabled, nothing started),
+  browser test 1 (refused step marked on the canvas, canvas does not move); Run is disabled until a version is published.
+- *Pipeline and Graph modes explain their different semantics and do not accidentally share edge types:* browser test 1
+  (style comparison), UI test 4 (both texts, a relation edge refused 400, a network's relation not shown as an arrow).
+- acceptance.md Task 10 rows: 1 → browser test 1, UI test 1 (palette, validation on the bad node, publish, confirmation
+  with agents, permissions, concurrency, "cost not enforced"); 2 → UI tests 1 and 3, browser tests 1 and 3 (states change
+  live by polling, approve from the node, open job, cancel); 3 → UI test 2; 4 → browser test 1, UI test 4; 5 → UI test 4,
+  browser test 1 (phone list and keyboard paths for add, connect, configure, approve). Failure matrix row 24 → UI test 2.
+
+**What the integration pass must wire.** (1) Task 08's event stream: `app.js` passes `followRun(runId, changed) → stop` into
+`PromptboardNetwork.create` (`network.js` forwards it as `host.followRun`); it subscribes to `pipeline.run`, `pipeline.node`
+and `job.status` events with that `pipelineRunId` and calls `changed()` per event (it resolves to whether the run still
+moves); without it the run view polls every second (`pollRun`). (2) If Task 08 adds a job drill-down, pass `openJob(jobId)`
+the same way; otherwise "Open job" shows the job record as JSON. (3) Task 07's real worker needs nothing here; Task 12's
+pipeline schedules would add their own controls.
+
+**Known limits.** Live states are polled (1 s) until the stream is wired; the jobs of a run are read 200 at a time. Pause
+is not offered (the runner has none). An agent step's result text has no route; the run view shows its references and the
+saved report. No read-only view of an older pipeline version (the publish diff summary and the run view cover it). The
+designer reads the first 200 registrations (state and tools of others are unknown, so not warned). Sub-pipelines are
+always collapsed in the designer; on the run canvas an expanded group's steps are laid out in columns and what lies to its
+right or below moves, but routes of long taxi arrows can still cross. Undo keeps 50 steps; layouts and drags are undone one
+at a time. The run view's network is named by version only. The 200-step canvas pays 0.4–3 s for its first draw in
+software rendering. Paid CLI runs: 0.
+
+**Commits.** 6bc96d1 (Task 10), then this log entry.
+
 ### Task 12 — Delegation, job messages and schedules (2026-10-26, parallel wave B, branch `feat/network-12`)
 
 **What was done.** A running agent can ask for help in the only way it has: the last fenced ```json block of its final report,
@@ -1789,3 +1941,39 @@ makes job schedules). No MCP tools for sub-jobs, messages or answers yet. Webhoo
 completed job's report text (the report is kept as written).
 
 **Commits.** 7d3adb5 (code, tests, architecture §23), then this log entry with the live-run script.
+
+### Phase-2 review fixes (Tasks 06–11)
+
+An independent review of Tasks 06–11 at 96987d8 (`$TMPDIR/network-logs/review-p2/FINDINGS.md`, its repros and outputs
+beside it) listed one P2 and ten P3 findings. All eleven are fixed at their root on `feat/network-wave-b`, each with a test
+in `tests/network-review2.test.mjs` (server) or `tests/network-review2-ui.test.mjs` (page) that failed before its fix
+(`review2-fix-before-server.log`: 7 of 7 failing; `review2-fix-before-ui.log`: 6 of 6, the Task 10 seams test included)
+and passes after. Task 10's two seams are wired. Mutation check: each fix reverted on its own, its test run, the file
+restored from HEAD (`git stash` never used): 25 of 25 mutations fail (`review2-fix-mutations.log`). Architecture: §19 item 8
+(`job.recovered`), §21 item 11 (the seams).
+
+| Finding | Fix | Test (`network-review2*`) | Commit |
+|---|---|---|---|
+| P2-1 an edit made while a pipeline draft saves is lost | the working copy becomes the server's copy only when it still equals what the save (or the publish) sent; otherwise only the draft and its revision move on and the edit stays unsaved with its undo steps. `network-graph.js` had the same save-then-replace pattern and is fixed the same way (its publish saves inside its modal dialog, so it needs nothing more) | "P2-1: an edit made while the pipeline draft saves…" (Save, and Save, validate and publish), "P2-1 (Graph)…" | 225681e |
+| P2-2 a machine stream slot leaks when its reader leaves during an await | the listener returns when the response is gone after authentication (nothing kept in the open set), and `eventStream` counts the stream and hears its close before awaiting the own-job scan | "P2-2…" (8 drops during a slow scan, 8 during slow authentication; a new client's stream is then 200) | ab5797d |
+| P2-3 retention never removes finished runs' step-job logs | the runner asks the job engine for one more retention pass once it has loaded (`jobs.sweep()`, which `close()` waits for) | "P2-3…" | c6d2d97 |
+| P2-4 an interrupted run hides Cancel | Cancel run is offered for every run that has not ended | "P2-4…" (interrupted from its backup, then cancelled from the view) | 72e72fe |
+| P2-5 each journal page parses a whole segment | a segment's parse is reused while the file keeps the size it was parsed at (append only, so the same lines); the two segments read last stay parsed; a backward page no longer reverses the shared array. Repro: 50,000 events in 250 pages took 5.8 s (23 ms a page, event loop blocked up to 46 ms) before, 0.1 s after (blocked up to 21 ms: one parse) | "P2-5…" (JSON.parse calls for a 6,000-event replay: 96,034 before, under 3 per event after; appends and backward reads stay right) | 2e0ee9d |
+| P2-6 a job's or agent's events older than one journal read are "not in the journal" | the job record and the agent's Activity tab follow `prev` until they have a page of events or reach the journal's start (at most 40 reads, more than the kept journal holds) | "P2-6…" (50,000 newer events) | 2213d5d |
+| P2-7 a join(any) report says a slower step "did not run" | a step still open when the report is saved reads "This step had not finished when this report was saved."; an ended step without a result keeps "did not run" | "P2-7…" (exact report) | 8838923 |
+| P2-8 a finished job read from its backup is recovered silently | every job read from its `.bak` is saved once, one revision past the lost copy, and appends one `job.recovered` event (`RESTORED_FROM_BACKUP`, `by: app`) | "P2-8…" (the event, its fields, revision newer than the lost one) | c574994 |
+| P2-9 a machine client's stream outlives its expiry | the stream ends at the client's expiry (a timer, re-armed past setTimeout's 24.8-day ceiling), and an event that comes after the expiry by the clock ends it instead of reaching the client | "P2-9…" (a stream opened 400 ms before expiry ends; a clock jump past expiry delivers nothing) | ab5797d |
+| P2-10 the Create client form offers only the first 200 agents and networks | it reads every page of both | "P2-10…" (205 agents) | 520d7af |
+| P2-11 a job cancelled during the worker's claim leaves its entry in memory | `LocalJobWorker.claim()` keeps nothing once the attempt's signal is aborted (the repro now answers `{ process: 'none' }`) | "P2-11…" | 8acaea3 |
+| Task 10 seams | `network.js` passes its own `followRun` on the page's one event stream (Activity's; never a second, per the wave-A integration constraint): a run on screen turns that stream on, the `onEvent` fan-out calls `changed()` for `pipeline.run`, `pipeline.node`, `job.status` and `job.activity` events of the run, and it polls every second only while the stream is not live. `app.js` passes `openJob` (`#/network/activity/<jobId>`); the job record also offers "Open run". The Task 10 UI test expects the Activity record and now waits for the cancelled job, since the live view shows the cancelled run before the runner has stopped its job | "Task 10 seams…" (at most one stream; no run reads for 2.5 s while live; an approval made elsewhere arrives live; polling while all 4 stream slots are taken) | 55d80e2 (a first wiring with its own stream), dfb0c68, 5ed5dcf |
+
+**Test runs** (PATH: a `node` symlink plus `/usr/bin:/bin:/usr/sbin:/sbin`, which hold `git` and `sh` but no AI CLI; with
+`node` alone the two tests that call `git --version` fail): `npm run check` passes; the new and changed tests
+(`network-review2`, `network-review2-ui`, `network-pipeline-ui`) twice, 18 of 18 each time; every non-browser
+`tests/network-*.test.mjs` (23 files) with `remote-access`, `project-explorer-ui`, `sandbox-ui`, `ui`, `ui-2` and `ui-3`,
+301 of 301 (`review2-fix-touched.log`); every `tests/network-*browser*.test.mjs` (7 files), 11 of 11
+(`review2-fix-browser.log`). The full `npm test` is left to the coordinator after the merge.
+
+**Known limits.** When a run ends, its view stops following at the first read that sees the end; jobs the runner stops
+after saving that end (a failed step halting the run) can show their last status in the step details until the view is
+opened again, as with polling before. The journal keeps at most two parsed segments in memory. Paid CLI runs: 0.

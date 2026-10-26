@@ -292,7 +292,7 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     // Pipelines and runs (Task 09): starting, cancelling and approving are the owner's control, which a paired device has.
     'GET /api/network/pipelines', 'POST /api/network/pipelines', 'GET /api/network/pipeline-runs',
     ...each(`/api/network/pipelines/pip_${'a'.repeat(20)}`, ['GET', 'PATCH', 'DELETE', 'POST validate', 'POST publish', 'GET versions/1', 'POST runs']),
-    ...each(`/api/network/pipeline-runs/run_${'a'.repeat(20)}`, ['GET', 'POST cancel', `POST nodes/n_${'b'.repeat(12)}/n_${'c'.repeat(12)}/approve`]),
+    ...each(`/api/network/pipeline-runs/run_${'a'.repeat(20)}`, ['GET', 'POST cancel', `POST nodes/n_${'b'.repeat(12)}/n_${'c'.repeat(12)}/approve`, `GET nodes/n_${'b'.repeat(12)}/report`]),
     // Task 12: messages, answers and read receipts are the owner's control over their own jobs; a schedule can be made (switched
     // off), edited (an edit of an enabled one switches it off), switched off, deleted or run once, never switched on, from a phone.
     ...each(`/api/network/jobs/job_${'a'.repeat(20)}`, ['GET messages', 'POST messages', 'POST messages/read', 'POST answer']),

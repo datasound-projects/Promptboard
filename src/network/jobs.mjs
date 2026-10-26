@@ -203,6 +203,7 @@ export class NetworkJobs {
   #claiming = new Set(); // job IDs the pump is claiming now.
   #lastQueued = 0;
   #retry = null;
+  #sweeping = null; // The retention pass sweep() started, which close() waits for.
 
   #folder(id) { return join(this.dir, 'jobs', escapeId(id)); }
   #attemptFile(own, name) { return join(this.#folder(own.jobId), 'attempts', escapeId(own.attemptId), name); }
@@ -244,11 +245,16 @@ export class NetworkJobs {
   /**
    * After a restart nothing owns an attempt any more: one that may have started becomes interrupted (uncertain), one that
    * had not, interrupted (not started). A job read from its backup may have moved on since that copy, so it never runs
-   * again by itself either. Queued and waiting jobs keep their state.
+   * again by itself either. Queued and waiting jobs keep their state. Every job read from its backup is saved once with a
+   * `job.recovered` event (acceptance §6 row 7), one revision past the lost copy (the backup is the save before it), so no
+   * revision number ever stands for two different records.
    */
   async #reconcile(job, restored) {
-    if (restored && ['queued', 'waiting_for_approval', 'waiting_for_input', 'preparing', 'running'].includes(job.status)) {
-      return this.#save(this.#end(job, 'interrupted', { outcome: 'uncertain', errorCode: 'RESTORED_FROM_BACKUP', reason: 'This job was read from its backup copy, so it may have run after that copy was made. Nothing was started again: retry or close it.' }, 'app'));
+    if (restored) {
+      const open = ['queued', 'waiting_for_approval', 'waiting_for_input', 'preparing', 'running'].includes(job.status), skipped = { ...job, revision: job.revision + 1 };
+      const saved = await this.#save(open ? this.#end(skipped, 'interrupted', { outcome: 'uncertain', errorCode: 'RESTORED_FROM_BACKUP', reason: 'This job was read from its backup copy, so it may have run after that copy was made. Nothing was started again: retry or close it.' }, 'app') : skipped);
+      this.#emit(saved, null, 'job.recovered', { by: 'app', errorCode: 'RESTORED_FROM_BACKUP', message: 'Its saved record was damaged, so it was read from its backup copy: anything saved after that copy (such as a late result) is not in it.' });
+      return saved;
     }
     if (job.status === 'preparing' || job.status === 'running') {
       const attempt = current(job), started = Boolean(attempt?.launchingAt);
@@ -257,9 +263,9 @@ export class NetworkJobs {
     }
   }
   /**
-   * Retention (architecture §4.5), once per start: a finished job's large attempt logs (stream.jsonl, output.log) go after
-   * outputRetentionDays, at most 500 jobs per start, never while its parent job is still open. Metadata, the request and
-   * results stay until the owner deletes the job.
+   * Retention (architecture §4.5), once per start and again once the pipeline runner has loaded: a finished job's large
+   * attempt logs (stream.jsonl, output.log) go after outputRetentionDays, at most 500 jobs per pass, never while its parent
+   * job is still open. Metadata, the request and results stay until the owner deletes the job.
    */
   async #sweep() {
     const cutoff = this.now() - this.#settings.outputRetentionDays * DAY;
@@ -313,13 +319,14 @@ export class NetworkJobs {
     try { Promise.resolve(this.events?.append({ type: 'job.handoff', jobId: job.id, agentId: job.agentId, networkId: job.networkId, projectId: job.projectId, status, kind, errorCode, message })).catch(() => {}); } catch {}
   }
   /**
-   * One job.status event for a saved status change (architecture §17 item 2). Not awaited, and every failure of the sink
+   * One job.status event for a saved status change (architecture §17 item 2), or a `type` such as job.recovered whose
+   * `fields` replace the job's own (architecture §19 item 8). Not awaited, and every failure of the sink
    * is swallowed: the journal is observability, so it can never hold up or undo a transition that is already saved.
    */
-  #emit(job, from) {
+  #emit(job, from, type = 'job.status', fields = {}) {
     const attempt = current(job);
-    const event = { type: 'job.status', jobId: job.id, attemptId: attempt?.id, agentId: job.agentId, projectId: job.projectId, networkId: job.networkId, pipelineRunId: job.pipelineRunId,
-      nodeId: job.nodeId, status: job.status, from, by: job.history.at(-1)?.by, errorCode: job.errorCode, message: job.reason, coverage: attempt?.coverage, artifactRef: job.status === 'completed' ? job.result?.textRef : undefined };
+    const event = { type, jobId: job.id, attemptId: attempt?.id, agentId: job.agentId, projectId: job.projectId, networkId: job.networkId, pipelineRunId: job.pipelineRunId,
+      nodeId: job.nodeId, status: job.status, from, by: job.history.at(-1)?.by, errorCode: job.errorCode, message: job.reason, coverage: attempt?.coverage, artifactRef: job.status === 'completed' ? job.result?.textRef : undefined, ...fields };
     try { Promise.resolve(this.events?.append(event)).catch(() => {}); } catch {}
   }
   #job(id) {
@@ -783,11 +790,14 @@ export class NetworkJobs {
   wake() { this.#pump(); }
   /** Begin after the server listens: load, reconcile, sweep, then start queued jobs when a worker exists. */
   async start() { await this.#ready(); this.#started = true; this.#pump(); }
+  /** Retention again: the pipeline runner calls it once it has loaded, since until then `holds` keeps every step job. */
+  sweep() { return this.#sweeping = this.#ready().then(() => this.#serial(() => (this.#closing ? null : this.#sweep()))).catch(() => {}); }
   /** Shutdown: claim nothing more, stop owned attempts and save them as interrupted (architecture §7.4). */
   async close() {
     this.#closing = true;
     clearTimeout(this.#retry);
     await this.#loading?.catch(() => {});
+    await this.#sweeping;
     await Promise.allSettled([...this.#live.values()].map(live => this.#stop(live, 'interrupted', { errorCode: 'APP_STOPPED', reason: 'Promptboard stopped while this job ran. Nothing was started again: retry or close it.' })));
   }
 
