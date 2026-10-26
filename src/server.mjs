@@ -374,7 +374,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker, networkEventOptions = {}, machineOptions = {}, networkScheduleOptions = {} } = {}) {
+export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker, networkEventOptions = {}, machineOptions = {}, networkScheduleOptions = {}, networkPipelineOptions = {} } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   // One app per data folder; the board itself loads lazily, so starting never reads or writes board files.
   const lock = await lockDataDir(dataDir);
@@ -477,7 +477,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const networkJobs = new NetworkJobs({ dataDir, registry: network, worker: networkWorker === undefined ? new LocalJobWorker({ dataDir, registry: network }) : networkWorker, authBusy: () => busy?.kind === 'auth', events: networkEvents });
   // Pipelines (drafts, versions) and their runs; a run's steps are jobs of the engine above, never started by a save.
   const pipelines = new NetworkPipelines({ dataDir, registry: network });
-  const pipelineRuns = new PipelineRunner({ dataDir, pipelines, jobs: networkJobs, events: networkEvents });
+  const pipelineRuns = new PipelineRunner({ dataDir, pipelines, jobs: networkJobs, events: networkEvents, ...networkPipelineOptions }); // Options: tests' clocks.
   // External clients (REST and MCP): their own 127.0.0.1 listener, off until the owner turns it on; never this handle().
   const machine = new MachineListener({ dataDir, registry: network, jobs: networkJobs, events: networkEvents, reservedPorts: () => [server.address()?.port, remoteAccess?.settings.port], ...machineOptions });
   // Task 12: the owner's handoff policy (off by default) checks every question and sub-job an agent or a client asks for, and

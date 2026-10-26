@@ -85,9 +85,9 @@ export class JobMessages {
   /**
    * Append one message. `kind`, `from`, `to` and the bounds are checked here for every caller; text and json are cleaned as
    * owner text is (secrets masked, local folders cut). The owner and clients may hold at most 200 posted messages per job.
-   * `agentId` (the job's agent) only labels the event.
+   * `agentId` (the job's agent) and a pipeline step job's `pipelineRunId`/`nodeId` only label the event.
    */
-  async post(jobId, input, { agentId } = {}) {
+  async post(jobId, input, { agentId, pipelineRunId, nodeId } = {}) {
     only(input, ['kind', 'from', 'to', 'text', 'json', 'nodeId', 'jobId', 'attemptId', 'task'], 'a message');
     const { kind, from, to, json } = input;
     if (!MESSAGE_KINDS.includes(kind)) fail(`A message is one of ${MESSAGE_KINDS.join(', ')}.`);
@@ -113,7 +113,7 @@ export class JobMessages {
         createdAt: this.now(), readAt: null };
       await writeDocument(this.#file(jobId), { ...doc, revision: doc.revision + 1, messages: [...doc.messages, message] });
       const summary = oneLine(`${kind.replace('_', ' ')} from ${partyName(from)} to ${partyName(to)}${message.jobId ? ` (sub-job ${message.jobId})` : ''}`);
-      try { Promise.resolve(this.events?.append({ type: 'job.message', jobId, agentId, kind, message: summary })).catch(() => {}); } catch {}
+      try { Promise.resolve(this.events?.append({ type: 'job.message', jobId, agentId, pipelineRunId, nodeId, kind, message: summary })).catch(() => {}); } catch {}
       return message;
     });
   }

@@ -75,6 +75,8 @@ const current = job => job?.attempts.find(attempt => attempt.id === job.currentA
 const withAttempt = (job, id, changes) => ({ ...job, attempts: job.attempts.map(attempt => (attempt.id === id ? { ...attempt, ...changes } : attempt)) });
 const exists = path => access(path).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
 const later = (work, ms) => { const timer = setTimeout(work, ms); timer.unref?.(); return timer; };
+/** What labels a job's handoff and message events: its agent and, for a pipeline step's job, its run and step (so the run's filter finds them). */
+const tags = job => ({ agentId: job.agentId, pipelineRunId: job.pipelineRunId, nodeId: job.nodeId });
 
 /** A stored job is used only when it has what this module writes; anything else counts as damaged (set aside, backup used). */
 const storedAttempt = item => object(item) && ATTEMPT_ID.test(item.id) && Number.isSafeInteger(item.number) && ATTEMPT_STATUSES.includes(item.status) && time(item.claimedAt)
@@ -316,7 +318,7 @@ export class NetworkJobs {
   #requesterParty(job) { return job.requester.kind === 'machine' ? { clientId: job.requester.id } : { owner: true }; }
   /** One job.handoff event: IDs, the kind and a short summary, never the question, the sub-tasks or what came back. */
   #handoffEvent(job, status, kind, message, errorCode) {
-    try { Promise.resolve(this.events?.append({ type: 'job.handoff', jobId: job.id, agentId: job.agentId, networkId: job.networkId, projectId: job.projectId, status, kind, errorCode, message })).catch(() => {}); } catch {}
+    try { Promise.resolve(this.events?.append({ type: 'job.handoff', jobId: job.id, ...tags(job), networkId: job.networkId, projectId: job.projectId, status, kind, errorCode, message })).catch(() => {}); } catch {}
   }
   /**
    * One job.status event for a saved status change (architecture §17 item 2), or a `type` such as job.recovered whose
@@ -636,7 +638,7 @@ export class NetworkJobs {
       if (!(error instanceof NetworkError)) throw error;
       const what = asked.kind === 'needs_input' ? 'ask a question' : asked.kind === 'delegate' ? `delegate ${asked.tasks.length} sub-task${asked.tasks.length === 1 ? '' : 's'}` : 'hand off';
       const refused = `It asked to ${what}, which was refused: ${error.message}`.slice(0, LIMITS.reason);
-      await this.messages.post(job.id, { kind: 'blocked', from: { app: true }, to: this.#requesterParty(job), text: refused, attemptId: attempt.id }, { agentId: job.agentId }).catch(() => {});
+      await this.messages.post(job.id, { kind: 'blocked', from: { app: true }, to: this.#requesterParty(job), text: refused, attemptId: attempt.id }, tags(job)).catch(() => {});
       this.#handoffEvent(job, 'refused', asked.kind ?? 'invalid', refused, error.code);
       return { refused };
     }
@@ -648,7 +650,7 @@ export class NetworkJobs {
     // The reason is in job.status events, so it never quotes the question or the sub-tasks (those stay in the messages).
     const reason = children ? `Delegated ${children.length} sub-job${children.length === 1 ? '' : 's'}; it runs again with their results.` : 'It asked a question; it runs again with the answer.';
     // The question is recorded before the job shows as waiting, so whoever sees it waiting can read what it asked.
-    if (!children) await this.messages.post(job.id, { kind: 'needs_input', from: { agentId: job.agentId }, to: this.#requesterParty(job), text: asked.question, attemptId: attempt.id }, { agentId: job.agentId }).catch(() => {});
+    if (!children) await this.messages.post(job.id, { kind: 'needs_input', from: { agentId: job.agentId }, to: this.#requesterParty(job), text: asked.question, attemptId: attempt.id }, tags(job)).catch(() => {});
     let saved = await this.#save({ ...this.#end(job, 'waiting_for_input', { reason, attempt: { ...changes, handoff } }, 'worker'), awaiting });
     if (!children) {
       this.#handoffEvent(saved, 'waiting', 'needs_input', 'It asked a question and waits for the answer.');
@@ -665,7 +667,7 @@ export class NetworkJobs {
       try {
         const made = await this.#accept(child.spec, requester, child.link, child.agent);
         if (!made.deduplicated) await this.messages.post(parent.id, { kind: 'request', from: { agentId: parent.agentId }, to: { agentId: child.spec.agentId }, text: child.spec.input.text, jobId: made.jobId,
-          attemptId: parent.awaiting.attemptId, task: index }, { agentId: parent.agentId }).catch(() => {});
+          attemptId: parent.awaiting.attemptId, task: index }, tags(parent)).catch(() => {});
       } catch (error) { if (!(error instanceof NetworkError)) throw error; refused.set(index, { code: error.code, message: error.message.slice(0, 300) }); }
     }
     if (!refused.size) return parent;
@@ -692,7 +694,7 @@ export class NetworkJobs {
     if (outcomes.some(({ task, child }) => !task.refused && !TERMINAL.has(child?.status))) return parent;
     const { messages } = await this.messages.list(parent.id);
     const recorded = new Set(messages.filter(message => message.attemptId === waiting.attemptId && ['result', 'blocked'].includes(message.kind) && Number.isSafeInteger(message.task)).map(message => message.task));
-    for (const { task, child } of outcomes) if (!recorded.has(task.index)) await this.messages.post(parent.id, await this.#outcome(parent, waiting, task, child), { agentId: parent.agentId });
+    for (const { task, child } of outcomes) if (!recorded.has(task.index)) await this.messages.post(parent.id, await this.#outcome(parent, waiting, task, child), tags(parent));
     const saved = await this.#save({ ...this.#move(parent, 'queued', { queuedAt: this.#stamp(), currentAttemptId: null, outcome: null, errorCode: null, reason: '' }, 'app'), awaiting: null });
     this.#handoffEvent(saved, 'continued', 'delegate', `Its ${waiting.tasks.length} sub-job${waiting.tasks.length === 1 ? '' : 's'} ended; it runs again with their results.`);
     this.#pump();
@@ -906,7 +908,7 @@ export class NetworkJobs {
     await this.#ready();
     return this.#serial(async () => {
       const job = this.#job(id);
-      return { message: await this.messages.post(id, { kind: input.kind, from, to: { agentId: job.agentId }, text: input.text, ...(input.json !== undefined ? { json: input.json } : {}) }, { agentId: job.agentId }) };
+      return { message: await this.messages.post(id, { kind: input.kind, from, to: { agentId: job.agentId }, text: input.text, ...(input.json !== undefined ? { json: input.json } : {}) }, tags(job)) };
     });
   }
   /** Read receipts for `reader`: every unread message addressed to it, or those listed in `ids`. Nothing about execution changes. */
@@ -930,7 +932,7 @@ export class NetworkJobs {
       const job = this.#job(id);
       if (job.status !== 'waiting_for_input' || job.awaiting?.kind === 'children') fail('This job is not waiting for an answer.', 'JOB_STATE', 409);
       if (by === 'owner' && input.expectedRevision !== job.revision) conflict('This job');
-      await this.messages.post(id, { kind: 'result', from: by === 'owner' ? { owner: true } : { clientId }, to: { agentId: job.agentId }, text: input.text, ...(job.awaiting ? { attemptId: job.awaiting.attemptId } : {}) }, { agentId: job.agentId });
+      await this.messages.post(id, { kind: 'result', from: by === 'owner' ? { owner: true } : { clientId }, to: { agentId: job.agentId }, text: input.text, ...(job.awaiting ? { attemptId: job.awaiting.attemptId } : {}) }, tags(job));
       const saved = await this.#save({ ...this.#move(job, 'queued', { queuedAt: this.#stamp(), currentAttemptId: null, outcome: null, errorCode: null, reason: '' }, by), awaiting: null });
       this.#handoffEvent(saved, 'continued', 'needs_input', `Answered by ${by === 'owner' ? 'the owner' : 'the external client'}; it runs again with the answer.`);
       this.#pump();
