@@ -542,7 +542,7 @@ export class NetworkJobs {
         return await this.#serial(async () => {
           const job = this.#jobs.get(live.jobId), attempt = current(job);
           if (attempt?.id !== live.own.attemptId || ATTEMPT_ENDED.has(attempt.status)) return job;
-          const saved = await this.#save(this.#end(job, status, details, status === 'cancelled' ? 'owner' : 'app'));
+          const saved = await this.#save(this.#end(job, status, details, details.by ?? (status === 'cancelled' ? 'owner' : 'app')));
           live.endedByEngine = true;
           later(() => this.#release(live), LIMITS.stopMs); // A worker that never returns still frees its slot.
           return saved;
@@ -601,18 +601,22 @@ export class NetworkJobs {
     await Promise.allSettled([...this.#live.values()].map(live => this.#stop(live, 'interrupted', { errorCode: 'APP_STOPPED', reason: 'Promptboard stopped while this job ran. Nothing was started again: retry or close it.' })));
   }
 
-  /** Cancel a job that has not ended. A queued or waiting job is cancelled at once; a running attempt is stopped first. */
-  async cancel(id, input = {}) {
+  /**
+   * Cancel a job that has not ended. A queued or waiting job is cancelled at once; a running attempt is stopped first.
+   * `by: 'machine'` when the external client that submitted it cancels it (the REST gateway checks that it is its own).
+   */
+  async cancel(id, input = {}, { by = 'owner' } = {}) {
     only(input, [], 'a cancel request');
+    const reason = by === 'machine' ? 'Cancelled by the external client that submitted it.' : 'Cancelled by you.';
     await this.#ready();
     const first = await this.#serial(async () => {
       const job = this.#job(id);
       if (TERMINAL.has(job.status)) fail(`This job already ended as ${job.status}. Nothing was cancelled.`, 'JOB_FINISHED', 409);
       if (!NEXT[job.status].includes('cancelled')) fail('This job needs your decision instead: retry it or close it.', 'JOB_STATE', 409);
       const live = job.currentAttemptId && this.#live.get(job.currentAttemptId);
-      return live ? { live } : { job: await this.#save(this.#end(job, 'cancelled', { reason: 'Cancelled by you.' })) };
+      return live ? { live } : { job: await this.#save(this.#end(job, 'cancelled', { reason }, by)) };
     });
-    const job = first.job ?? await this.#stop(first.live, 'cancelled', { reason: 'Cancelled by you.' });
+    const job = first.job ?? await this.#stop(first.live, 'cancelled', { reason, by });
     return { job: this.#view(job), cancelled: job.status === 'cancelled' };
   }
   /** `decision: 'approve'` queues a job that waits for approval; 'reject' cancels it. Only the owner's routes call this. */

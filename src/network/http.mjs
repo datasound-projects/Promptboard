@@ -1,7 +1,8 @@
 /**
  * Owner Network routes (/api/network/*), mounted in src/server.mjs behind its unchanged token, Host, Origin, proxy and
- * fetch-site checks. Every route here is also allowed from a paired device (architecture §10.2): none of them creates a
- * way in, shows a secret or changes trust (a paired device has the owner's control, so it may submit and cancel jobs too).
+ * fetch-site checks. Every route here is also allowed from a paired device (architecture §10.2) except the three
+ * external-client routes that show a new token or open the machine listener (local-only, listed below): the others create
+ * no way in, show no secret and change no trust (a paired device has the owner's control, so it may submit and cancel jobs).
  * Only the job routes lead to work, and only through the job engine's worker. NETWORK_ROUTES below is the one route table:
  * the dispatcher reads it, and tests/remote-access.test.mjs checks that every row has exactly one paired-device row there.
  *
@@ -64,6 +65,16 @@
  *   GET  /api/network/pipeline-runs/:id     the run with its plan
  *   POST /api/network/pipeline-runs/:id/cancel {}
  *   POST /api/network/pipeline-runs/:id/nodes/:nodeId/approve { decision: 'approve' | 'reject' } (nodeId may be <substep>/<step>)
+ *
+ * External clients (machine-auth.mjs, rest.mjs; architecture §10.3, §22). Creating or rotating a client shows a new
+ * token and the listener opens a port, so those three are local-only (src/remote-access.mjs localOnly); listing and
+ * revoking are allowed from a paired device (revoking only removes access).
+ *   GET  /api/network/clients               the clients and their scopes; never a token or its hash
+ *   POST /api/network/clients               { name, scopes: { agents, networks?, projects?, permissions }, expiresInDays? } → 201 { client, token } (local-only)
+ *   DELETE /api/network/clients/:id         {}: revoke for good; its open streams end at once
+ *   POST /api/network/clients/:id/rotate    { expectedRevision } → { client, token } (local-only)
+ *   GET  /api/network/listener              the machine listener (off by default) and the MCP command
+ *   PATCH /api/network/listener             { enabled?, port? } (local-only)
  */
 import { activitySummary } from './activity.mjs';
 import { EVENT_FILTERS } from './events.mjs';
@@ -84,7 +95,7 @@ const query = (params, keys) => ({ ...Object.fromEntries(keys.map(key => [key, p
 const preview = params => ({ projectId: params.get('projectId') || null, networkId: params.get('networkId') || null, memory: params.get('memory') || 'agent',
   projectLessons: ({ true: true, false: false, null: false })[params.get('projectLessons')] ?? params.get('projectLessons') });
 
-const AGENT = '(agt_[0-9a-f]{20})', NETWORK = '(net_[0-9a-f]{20})', MEMORY = '(mem_[0-9a-f]{20})', POST = '(pst_[0-9a-f]{20})', JOB = '(job_[0-9a-f]{20})';
+const CLIENT = '(cli_[0-9a-f]{20})', AGENT = '(agt_[0-9a-f]{20})', NETWORK = '(net_[0-9a-f]{20})', MEMORY = '(mem_[0-9a-f]{20})', POST = '(pst_[0-9a-f]{20})', JOB = '(job_[0-9a-f]{20})';
 const PIPELINE = '(pip_[0-9a-f]{20})', RUN = '(run_[0-9a-f]{20})', STEP = '(n_[0-9a-f]{12}(?:/n_[0-9a-f]{12}){0,4})';
 const route = (method, path, run, status, stream = false) => Object.freeze({ method, pattern: new RegExp(`^/api/network${path}$`), run, status, stream });
 /** Memory routes of one scope: an agent's (agents/agt_…) or a network's (networks/net_…). */
@@ -147,9 +158,15 @@ export const NETWORK_ROUTES = Object.freeze([
   route('GET', `/pipeline-runs/${RUN}`, (c, id) => c.runs.read(id)),
   route('POST', `/pipeline-runs/${RUN}/cancel`, async (c, id) => c.runs.cancel(id, await c.body(BODY.small))),
   route('POST', `/pipeline-runs/${RUN}/nodes/${STEP}/approve`, async (c, id, node) => c.runs.decide(id, node, await c.body(BODY.small))),
+  route('GET', '/clients', c => c.machine.clients.list()),
+  route('POST', '/clients', async c => c.machine.clients.create(await c.body(BODY.small)), () => 201),
+  route('DELETE', `/clients/${CLIENT}`, async (c, id) => c.machine.clients.revoke(id, await c.body(BODY.small))),
+  route('POST', `/clients/${CLIENT}/rotate`, async (c, id) => c.machine.clients.rotate(id, await c.body(BODY.small))),
+  route('GET', '/listener', c => c.machine.status()),
+  route('PATCH', '/listener', async c => c.machine.configure(await c.body(BODY.small))),
 ]);
 
-export async function networkRoute({ network, jobs, events, board, pipelines, runs, req, res, pathname, searchParams, jsonBody, send }) {
+export async function networkRoute({ network, jobs, events, board, pipelines, runs, machine, req, res, pathname, searchParams, jsonBody, send }) {
   const body = async limit => {
     const value = await jsonBody(req, limit);
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new NetworkError('Send a JSON object.');
@@ -160,7 +177,7 @@ export async function networkRoute({ network, jobs, events, board, pipelines, ru
       if (row.method !== req.method) continue;
       const match = row.pattern.exec(pathname);
       if (!match) continue;
-      const answer = await row.run({ network, jobs, events, board, pipelines, runs, req, res, searchParams, body }, ...match.slice(1));
+      const answer = await row.run({ network, jobs, events, board, pipelines, runs, machine, req, res, searchParams, body }, ...match.slice(1));
       if (row.stream) return; // It answered on the response.
       return send(res, row.status ? row.status(answer) : 200, answer);
     }

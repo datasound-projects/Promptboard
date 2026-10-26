@@ -1474,3 +1474,96 @@ fill in what §5, §6.3 and §9 left open.
 17. **Not built here:** the UI (Task 10), pipeline export/import, machine/A2A starts (Tasks 11/13), schedules of
     pipelines (Task 12), and the fake-CLI end-to-end through the real worker (`tests/network-pipeline-e2e.test.mjs`, after
     Task 07 is merged; the live smoke is Task 14).
+
+## 22. Task 11 decisions (external clients: machine listener, REST and MCP)
+
+Built in `src/network/machine-auth.mjs` (clients and their tokens), `src/network/rest.mjs` (the listener and the REST
+gateway), `src/network/mcp.mjs` (the stdio MCP server behind `node bin/ste.mjs --mcp`) and `public/network-clients.js`
+(Network → Settings). Items 1, 3, 4 and 13 change §10.3, §5 and §6.4; the others fill them in.
+
+1. **One module for the listener and the gateway.** `rest.mjs` exports `MachineListener` (the `http.Server`, its checks and
+   `MACHINE_ROUTES`); there is no separate `machine-listener.mjs`. It binds **127.0.0.1 only** in this task: the private
+   Tailscale/Twingate address and TLS that §10.3 allowed are not offered (no owner asked for them; the paired-phone
+   listener stays the only private-network door). Its settings `{ enabled, port }` live in `clients.json` (`listener`),
+   default `{ enabled: false, port: 4330 }`; reading creates no file. Port 0 means "a free port the system chooses" (tests);
+   the page offers 1024–65535; the app's port and remote access's port are refused (`PORT_IN_USE`). It starts after the app
+   listens, only when enabled, and closes at shutdown right after remote access; a port that is taken is shown as
+   `listener.error`, never a crash.
+2. **`clients.json`** (`promptboard.network-clients` v1, `.bak`, 0600) = `{ revision, listener, clients }`. A client is §5's
+   `MachineClient` with `kind: 'api'` only (Task 13 adds `'a2a'`), plus `rotatedAt`; `status` (active, revoked, expired) is
+   computed. `tokenHint` (the last 4 characters) replaces `tokenPrefix`: the first characters of `pbm_cli_…` are the
+   public client ID. `lastUsedAt` is written at most every 10 minutes per client. At most 100 active clients.
+3. **Rotation keeps the client** (§6.4 said "revoke + new client"): one write replaces the token hash, so the client's jobs,
+   idempotency keys and event filter stay its own; the old token is refused at once and every open request and stream of
+   the client is destroyed (`onRevoke`). Rotation needs the row's `expectedRevision`; a revoked or expired client cannot be
+   rotated (`CLIENT_REVOKED`, `CLIENT_EXPIRED`).
+4. **Revoke is final and idempotent** (`DELETE /clients/:id`, `{}`); the record stays (jobs name it). Its running and queued
+   jobs continue (§11.2); "Revoke and cancel its jobs" is not built: the owner cancels them in Activity.
+5. **Tokens.** `pbm_<cli_id>_<43 base64url>` from 32 random bytes; only `sha256(token)` is stored and compared with
+   `timingSafeEqual`; unknown, malformed, revoked, expired and wrong tokens all answer the same `401 MACHINE_UNAUTHORIZED`.
+   The token is in exactly one answer (create or rotate, `201`/`200 { client, token }`), never in a list, event, export,
+   log or file. `bin/ste.mjs` refuses every option after `--mcp` and never repeats a `pbm_` value in its error.
+6. **Checks on every machine request, in order:** Host is `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding);
+   an `Origin` must be `http://<that host>`; `sec-fetch-site: cross-site` and proxy headers are refused; `X-STE-Token` or a
+   `pb_remote` cookie is refused (`403 MACHINE_CREDENTIAL_REQUIRED`) even beside a valid bearer token; only `/machine/v1/*`
+   exists; then the bearer token; then 60 requests a minute per client (`429`, `Retry-After: 60`); then the route's
+   permission (`403 PERMISSION_DENIED`). No CORS header is ever sent (a preflight is a plain 404). POST bodies are JSON
+   (`415`) of at most 256 KiB (`413`, refused from `Content-Length` before reading), so a machine job's input is smaller
+   than an owner's. The owner app refuses any `Authorization: Bearer pbm_…` (`403 MACHINE_TOKEN_REFUSED`) even beside
+   the owner token, and the paired-phone listener only ever forwards to the owner app, so a machine token never acts there.
+7. **Scopes, checked before the job engine sees a submit:** `agents` (at least one; each registered when the client is
+   made), `networks` and `projects` (each existing then), `permissions` (at least one of the five). No wildcard. A submit
+   names an agent of the scope (`AGENT_NOT_ALLOWED`), a project and network of the scope (`PROJECT_NOT_ALLOWED`,
+   `NETWORK_NOT_ALLOWED`); memory is `none` unless `read_scoped_memory` is granted, and asking for memory or project
+   lessons without it is `MEMORY_NOT_ALLOWED` (lessons also need the project in scope, and the job engine still checks
+   the registration's own project list). A machine submit has no `parentJobId`, `pipeline` or body `idempotencyKey`
+   (unknown fields, 400); the key comes from the `Idempotency-Key` header and is scoped by the engine to
+   `machine:<clientId>`; filesystem access stays `read_only`. Refused submits count toward the 10 submits a minute.
+8. **What a client sees.** Agent: `{ id, name, tags, capabilities, available, provider, tools }` (no Base content,
+   instructions, model or other scopes); an agent outside the scope is `403` for any ID, so existence is not revealed.
+   Job: `{ jobId, agentId, projectId, networkId, status, outcome, errorCode, reason, createdAt, updatedAt, attempts (a
+   count), result: { chars, sha256, json } | null, waiting }`; another client's or the owner's job is the same `404` as a
+   missing one. Result: `{ jobId, text, json, chars }` through the job engine's `result()` (hash-checked). Event:
+   `{ seq, at, type, jobId, agentId, status?, from?, kind?, errorCode?, message? }`. Approve, retry, close, delete,
+   settings and every owner route do not exist on the listener.
+9. **Events of own jobs.** `NetworkEvents.read` and `stream` take a server-only `view(event)` (null hides it; the cursor
+   still moves past hidden events, so a reconnect never repeats one). The client's job IDs come from one scan of the job
+   index, then its own submits. Stream ceilings: 4 per client (the journal's, client key `machine:<id>`) and 8 machine
+   streams in all, so the owner's Activity views keep at least 24 of the journal's 32.
+10. **Owner routes (§10.1 row 11, §10.2).** `GET /api/network/clients`, `POST /api/network/clients` (201, local-only),
+    `DELETE /api/network/clients/:id` (allowed from a paired device: it only removes access),
+    `POST /api/network/clients/:id/rotate` (local-only), `GET /api/network/listener` (status and the MCP command),
+    `PATCH /api/network/listener` (local-only). The three local-only ones are in `localOnly()` and every route has its row
+    in `tests/remote-access.test.mjs` through `NETWORK_ROUTES`.
+11. **MCP: the architecture's stdio bridge is kept.** Reasons: the bridge holds exactly one client's token and nothing
+    else, so it can never do more than that client over REST and there is one authorization path to test; Claude Code,
+    Codex and most hosts start stdio servers natively; an in-process Streamable HTTP endpoint would add a second HTTP
+    surface with sessions on the listener for no capability the bridge lacks. `mcp.mjs` uses `McpServer` and `serveStdio`
+    from `@modelcontextprotocol/server` 2.3.1 (the current v2 API; `serveStdio` serves the 2026-07-28 protocol and the
+    2025 era from the same factory) and zod 4.6.7 schemas, each `.strict()`. Configuration from the environment only:
+    `PROMPTBOARD_MACHINE_TOKEN` or `PROMPTBOARD_MACHINE_TOKEN_FILE`, `PROMPTBOARD_MACHINE_URL` (default
+    `http://127.0.0.1:4330`, refused unless it is a loopback `http` origin without credentials or a path). Tools:
+    `agents_list`, `agents_get`, `jobs_submit` (answers `{ jobId, status, deduplicated }` at once; `idempotencyKey`
+    becomes the header), `jobs_get`, `jobs_cancel`, `artifacts_get` (`offset`, `maxChars`; windows within 60,000 bytes
+    whole, never splitting a surrogate pair; the result's json only with the first window when ≤ 16 KB). Every answer is
+    JSON text within 60,000 bytes; refusals are tool errors with the server's message and code, never the token.
+    Annotations are hints only. A 15-second timeout per call; redirects are refused.
+12. **No deadlock with the same provider.** A submit returns once the job is saved; status is read with `jobs_get`.
+    A host that calls Promptboard while one of its jobs of the same provider runs only adds a queued job (tested with one
+    slot). Network job workers receive no MCP servers (§14 item 5), so a Network job cannot call this bridge itself; a job
+    that waits for another job holds its slot only until its own time limit.
+13. **Job engine edits (small, additive).** `result(id)` is byte-identical to Task 07's (so the merge is clean); `cancel(id,
+    input, { by })` records `by: 'machine'` and "Cancelled by the external client that submitted it." when the gateway
+    cancels an own job (owner cancels are unchanged).
+14. **UI: Network → Settings** (a seventh section tab, after Federation; `#/network/settings`). The machine listener
+    (switch, port, status line), the clients (create, rotate, revoke with confirmation; active ones first), and setup
+    snippets for Claude Code (`.mcp.json` with `${PROMPTBOARD_MACHINE_TOKEN}`), Codex (`config.toml` with `env_vars`), other
+    MCP hosts (a token file) and REST (`curl` with `$PROMPTBOARD_MACHINE_TOKEN`). The token appears once, in this module's
+    own dialog: copied only when Copy is clicked, removed from the page when the dialog closes (Done, ×, Escape, leaving).
+15. **Dependencies.** `@modelcontextprotocol/server` 2.3.1 (Apache-2.0, published 2026-10-05, the same release as the
+    installed client and core; dependencies `zod ^4.2.0` and core 2.3.1) and `zod` 4.6.7 (MIT, published 2026-10-12, already
+    installed by the SDKs) as direct exact dependencies; `npm audit`: 0 vulnerabilities; `THIRD_PARTY_NOTICES.md` updated.
+16. **For Tasks 12 and 13.** Inbound A2A goes on this listener: add rows to `MACHINE_ROUTES` (and a path exception before
+    the `/machine/v1/` check for `/.well-known/agent-card.json`), clients of `kind: 'a2a'` (the validator accepts only
+    `'api'` now), and the same `onRevoke` teardown. Messages from a client are `{ clientId }` (§11.4); machine-written
+    reports (§4.7 item 8) are not built. A client's submit is `source: 'machine'`, `requester: { kind: 'machine', id }`.

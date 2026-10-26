@@ -71,7 +71,7 @@ test('Network is the fifth page: nav, title, skip link and sidebar; back and for
   assert.deepEqual([win.document.activeElement.id, win.location.hash], ['network-view', '#/network']);
   assert.equal($('#network-view').getAttribute('aria-labelledby'), 'network-heading'); assert.equal($('#network-heading').textContent, 'Network');
   assert.deepEqual([...$('#network-view [role="tablist"]').querySelectorAll('[role="tab"]')].map(tab => [tab.dataset.tab, tab.getAttribute('aria-selected'), tab.dataset.available || 'true']),
-    [['agents', 'true', 'true'], ['graph', 'false', 'true'], ['pipelines', 'false', 'false'], ['activity', 'false', 'true'], ['library', 'false', 'true'], ['federation', 'false', 'false']]);
+    [['agents', 'true', 'true'], ['graph', 'false', 'true'], ['pipelines', 'false', 'false'], ['activity', 'false', 'true'], ['library', 'false', 'true'], ['federation', 'false', 'false'], ['settings', 'false', 'true']]);
   // Every page still opens, and history moves through all five pages and Network's own sub-routes.
   const open = page => () => Object.entries(VIEWS).every(([hash, id]) => $(id).hidden === (hash !== page));
   for (const hash of ['#/origin', '#/', '#/kanban', '#/base']) await visit(ctx, hash, open(hash));
@@ -264,9 +264,10 @@ test('keyboard and labels: tablists follow arrow keys, every control is named, E
   await until(() => win.location.hash === '#/network/graph' && tab('graph').getAttribute('aria-selected') === 'true', 'ArrowRight');
   assert.deepEqual([win.document.activeElement, tab('graph').tabIndex, tab('agents').tabIndex], [tab('graph'), 0, -1]);
   const selected = (id, hash) => () => win.location.hash === hash && tab(id).getAttribute('aria-selected') === 'true' && win.document.activeElement === tab(id);
-  key(ctx, tab('graph'), 'End'); await until(selected('federation', '#/network/federation'), 'End');
-  key(ctx, tab('federation'), 'ArrowRight'); await until(selected('agents', '#/network'), 'wraps to Agents');
-  key(ctx, tab('agents'), 'ArrowLeft'); await until(selected('federation', '#/network/federation'), 'wraps back');
+  key(ctx, tab('graph'), 'End'); await until(selected('settings', '#/network/settings'), 'End');
+  key(ctx, tab('settings'), 'ArrowRight'); await until(selected('agents', '#/network'), 'wraps to Agents');
+  key(ctx, tab('agents'), 'ArrowLeft'); await until(selected('settings', '#/network/settings'), 'wraps back');
+  key(ctx, tab('settings'), 'ArrowLeft'); await until(selected('federation', '#/network/federation'), 'Federation');
   // An unavailable section says so and offers nothing that looks like it works.
   const soon = $('#network-panel-soon');
   assert.deepEqual([soon.hidden, soon.getAttribute('aria-labelledby'), soon.querySelector('h2').textContent, soon.querySelectorAll('button, input, select, a, textarea').length], [false, 'network-tab-federation', 'Federation', 0]);
