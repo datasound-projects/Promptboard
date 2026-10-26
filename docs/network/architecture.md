@@ -1475,6 +1475,84 @@ fill in what §5, §6.3 and §9 left open.
     pipelines (Task 12), and the fake-CLI end-to-end through the real worker (`tests/network-pipeline-e2e.test.mjs`, after
     Task 07 is merged; the live smoke is Task 14).
 
+## 21. Task 10 decisions (pipeline designer and run view)
+
+Built in `public/network-pipeline.js` (`window.PromptboardNetworkPipeline.create(host)`, served at `/network-pipeline.js`,
+loaded after `network-graph.js`), routed from `public/network.js`, styled in `public/styles.css`, with one new owner route.
+Nothing here starts a run except the confirmed Run; saving, validating and publishing start nothing.
+
+1. **Routes.** `#/network/pipelines` (the list), `#/network/pipelines/<pip_…>` (the designer of the draft) and
+   `#/network/runs/<run_…>` (one run; the Pipelines tab stays selected). `network.js` lends the module its status line
+   (`role="status"`), dialog and agent links, and guards navigation through both `graphs.guard` and `pipes.guard`.
+   `network-graph.js` exports a small `kit` (labels, selects, chips, `isPhone`, `css`, `keepFocus`, …; `css` and `keepFocus`
+   moved to module scope unchanged), so both canvases share the CSP-safe Cytoscape setup (§13) and list helpers.
+2. **One new route:** `GET /api/network/pipeline-runs/:id/nodes/:nodeId/report` → `PipelineRunner.report()`: an output step
+   that completed; its `reports/<file>` is read again and shown only when it hashes to the SHA-256 recorded in `run.json`
+   (`ARTIFACT_INVALID` 409 otherwise, `STEP_STATE` 409 before it is saved, `NOT_FOUND` for a step that is not an output).
+   Allowed from a paired device like every other run route (§10.2). An agent step's result text has no route: the run view
+   shows its references (file, characters, SHA-256) and the saved report is what is read.
+3. **Edges never mix.** Pipeline arrows are their own storage type (`fromPort`/`toPort`, no `relation`; the server's strict
+   edge schema refuses a relation edge, so nothing can be pasted across) and their own look: solid right-angled (`taxi`)
+   arrows with a `triangle-backcurve` head labelled with the port they leave on (json blue, true green, false amber), steps
+   shaped per type (agent rectangle, sub-network barrel with a double border, parallel concave hexagon, join hexagon,
+   condition diamond, approval octagon, output cut rectangle). Graph relations stay dashed curves named by their type. Both
+   pages say it: Pipelines “arrows are execution order … not Graph relations, which record permissions and intent and
+   never move data”; Graph “Relations are permissions and intent, not execution order …”.
+4. **Working copy and save.** The designer edits name, description, pinned network version, settings, steps and arrows
+   locally and saves them as one `PATCH` with the loaded revision. A step whose config the strict schema would refuse
+   without naming it (agent not chosen, sub-pipeline not chosen, condition without or with an incomplete rule, output with
+   no step ticked, a rule or include naming a removed step) stops the save before anything is sent and is marked. Validate
+   and Publish save first when there are changes. A revision conflict overwrites nothing: “Load the saved pipeline” or “Save
+   mine as a new pipeline” (`<name> (my changes)`). Undo keeps 50 steps; leaving with unsaved changes asks (in-app and
+   `beforeunload`), as Graph does. Removing a step also unticks it from reports and drops rules that read it.
+5. **What to fix.** A refused save, validate or publish marks steps from `details.nodeId` (a plan ID's first segment, so a
+   refusal inside a sub-pipeline marks its sub-network step), `details.path` (steps of a loop), `details.include` and the
+   arrow from `details.edgeId`, on the canvas (error border), in the lists and in the step's details, with “Show” buttons.
+   Before any check the designer also warns, from the registrations it read: switched-off, stale or missing agents, agents
+   that are not members of the pinned network version, web search a provider cannot use, rules whose json does not reach
+   the condition, report steps whose result does not reach the output, duplicate output names, no output. Validate (the
+   compiler) stays authoritative. Loops and arrows out of an output are refused where they are drawn.
+6. **Rule editor.** Rows of step (agent steps only: a rule reads `<step>.json`), field path (dot-separated, at most 8 of
+   `[A-Za-z0-9_-]{1,64}`), operator (Task 09's nine: equals, does not equal, less than, at most, more than, at least, one of,
+   exists, contains), value type (text, number, true/false, null; numbers only for the comparisons; a comma list for “one
+   of”), each with its message. Rows are stored only when every row is complete; meanwhile the step is incomplete and a save
+   waits. No free-form expression exists anywhere.
+7. **Ports and flow.** A step's details list “Receives on: input” with the arrows in, “Sends on” per port with the arrows out,
+   and “What reaches it”, computed like the compiler's typing (§20 item 3); an arrow's details say what it carries.
+   Connecting a result into an output ticks it in the report. Keyboard: the palette buttons, the “Add an arrow from …” form
+   (port and target), every config field, and on the canvas arrow keys (Shift: 50), Delete and Escape.
+8. **Sub-network steps** offer only published pipelines of networks that the pinned network version contains, at exactly
+   that network version (what the compiler accepts, §14 item 13). They are drawn collapsed; drill-in is “Show its steps” (the
+   pinned version's steps, read only) and “Open its pipeline”.
+9. **Template.** “New from template” builds the MVP demo client-side (research A ∥ research B → join → reviewer → approval
+   → report, the agents chosen from the version's members) and creates it as a normal draft with `POST /pipelines`.
+10. **Lifecycle and run confirmation.** Publish validates first and shows the next version number, the compiled size and a
+    diff summary against the previous version (steps added, removed and changed by ID, arrows by ends and port, settings,
+    network version, name; read from the immutable version). Run picks an explicit published version and checks it now
+    (`validate { version }`), then shows: the version and its pins, steps and agent jobs after expansion, how many at once
+    (`min(maxParallel, maxConcurrentJobs)`), permissions (each step its own read-only Network job in an empty folder, no
+    project files or lessons, only the agent's approved memory), tools per top-level agent step, deadline and failure
+    policy, and cost “Not enforced, and unknown before it runs”; a missing worker is said. A version that cannot start is
+    refused there with its reason. A run started while the draft has unsaved changes does not leave the designer.
+11. **Run view and live states.** It shows only the run's `plan` and `run` (never the draft) and says so. While the run
+    moves it reads `GET /pipeline-runs/:id` and `GET /jobs?pipelineRunId=` once a second and stops when it ends; that is
+    one function, `pollRun(runId, changed) → stop`, replaced by `host.followRun` when given. **Integration after Task 08:**
+    pass `followRun` from `app.js` through `network.js` to subscribe to the event stream (`pipeline.run`, `pipeline.node`
+    and `job.status` events with this `pipelineRunId`) and call `changed()` per event; and pass `openJob(jobId)` to open the
+    Activity job drill-down (without it, “Open job” shows the job record as JSON from `GET /jobs/:id`). Per step: status,
+    reason and code, agent with provider and model (as registered now), tools, try `n` of `retries + 1` and every job ID,
+    the job's status and waiting message, the worker's process, the frozen inputs, result references, a condition's
+    decision with each rule's evidence, an approval's prompt with Approve/Reject (only while it waits and the run moves),
+    and an output's report (“Show the report”, Download). Cancel run asks first. Pause is not offered: the runner has none.
+12. **Canvas of a run.** Top-level steps at the positions of the pinned version (columns where one is missing); a sub-pipeline
+    is one collapsed node with its aggregate status; expanding it (double-click, its list row or its details) draws its
+    steps in columns inside a box and moves what lies to its right (or below it in its column) out of the way. The list
+    beside it holds the same steps in plan order with group rows (Expand/Collapse, `aria-expanded`), indented by depth.
+13. **Phone (≤ 730 px).** No canvas, in the designer or the run: the ordered step list (execution order), then one step's
+    details with Back (focus returns to its row); “Pipeline settings” is a list button there.
+14. **Not built here:** a read-only view of an older pipeline version (the diff summary and the run view cover it), pipeline
+    export/import, pause/resume, a route for an agent step's result text, and the event stream (Task 08).
+
 ## 22. Task 11 decisions (external clients: machine listener, REST and MCP)
 
 Built in `src/network/machine-auth.mjs` (clients and their tokens), `src/network/rest.mjs` (the listener and the REST

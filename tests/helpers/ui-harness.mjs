@@ -105,6 +105,7 @@ export async function setup(t, { catalogReader = async id => ({ provider: id, ..
   win.eval(await readFile(new URL('../../public/network-graph.js', import.meta.url), 'utf8'));
   win.eval(await readFile(new URL('../../public/network-activity.js', import.meta.url), 'utf8'));
   win.eval(await readFile(new URL('../../public/network-clients.js', import.meta.url), 'utf8'));
+  win.eval(await readFile(new URL('../../public/network-pipeline.js', import.meta.url), 'utf8'));
   win.eval(await readFile(new URL('../../public/network.js', import.meta.url), 'utf8'));
   // Browsers share one global scope across classic scripts; jsdom's eval does not, so evaluate them together.
   // Test-only export appended by the harness (not part of the app): reload the board and read the token.
