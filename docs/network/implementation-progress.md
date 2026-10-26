@@ -1537,7 +1537,7 @@ field), `src/network/activity.mjs` (origin fields on queue rows), `src/network/r
 `schedules`), `src/schedules.mjs` (exports `dueSlot` and `since`, nothing else), `src/server.mjs` (wiring, start/stop,
 `networkScheduleOptions`, asset), `src/remote-access.mjs` (`localOnly`: policy PATCH and schedule confirm),
 `public/network-activity.js`, `public/network-clients.js`, `public/index.html`, `public/styles.css` (appended block),
-`tests/remote-access.test.mjs` (14 rows), `tests/helpers/network-worker.mjs` (optional `json`), `tests/helpers/ui-harness.mjs`,
+`tests/remote-access.test.mjs` (12 rows), `tests/helpers/network-worker.mjs` (optional `json`), `tests/helpers/ui-harness.mjs`,
 `tests/fixtures/fake-headless-cli.mjs` (`[[delegate:<id>]]`), `docs/network/architecture.md` (§23), this file. `acceptance.md`
 already had the Task 12 rows and is unchanged.
 
@@ -1604,7 +1604,7 @@ timeline names and filters handoff, message and schedule events; open sub-jobs a
   widths, Tab to New schedule with a visible ring, Enter opens on the name, Escape returns focus, Tab from the answer to Send
   answer with a ring, no exception or CSP message. Screenshots (all looked at): `$TMPDIR/network-logs/task-12-screens/`
   `activity-schedules-*`, `schedule-editor-390-*`, `job-delegating-*`, `job-question-*`, `settings-handoffs-*`.
-- Changed: `tests/remote-access.test.mjs` (2 local-only and 12 allowed rows).
+- Changed: `tests/remote-access.test.mjs` (2 local-only and 10 allowed rows, one per new route).
 - Mutation check (`$TMPDIR/network-logs/task-12-mutations.log`, a throw-away script outside the repo, each source restored and
   hash-checked): 50 mutations of the policy, engine, messages, schedules, phone rule and UI; **49 killed**. The survivor, the
   `lastSlot >= slot` re-check inside `#fire`, was unreachable (only the busy-guarded tick fires, and `dueSlot` already counts
