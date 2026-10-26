@@ -27,7 +27,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 | 02 | 02-registry-and-storage.md | done | 7771788 |
 | 03 | 03-network-page-and-agent-profiles.md | done | 9edf549 |
 | 04 | 04-agent-memory-and-feed.md | done | 1fc58b6 |
-| 05 | 05-graph-designer-and-subnetworks.md | done | (next commit) |
+| 05 | 05-graph-designer-and-subnetworks.md | done | 47447fc |
 | 06 | 06-general-purpose-job-engine.md | pending | |
 | 07 | 07-local-worker-runtime.md | pending | |
 | 08 | 08-live-activity-and-observability.md | pending | |
@@ -600,6 +600,6 @@ every published version once per server start. The vendor script is parsed on ev
 `/api/tasks/:id/duplicate` (the row is listed anyway). No isolated app instance outside the tests ran except a scratch
 look and two perf experiments on port 4905 (temporary folders, removed). Paid CLI runs: 0.
 
-**Commit.** Recorded in the next commit.
+**Commit.** 47447fc (Task 05), then this log entry.
 
 **Next task: 06.**
