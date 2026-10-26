@@ -151,6 +151,33 @@ test('P2-7: a join(any) report says a step was still running when it was saved, 
   assert.equal(report, '# First answer wins\n\n## Fast\n\nFast answer.\n\n## Slow\n\n_This step had not finished when this report was saved._\n');
 });
 
+test('P2-8: a finished job read from its backup is recovered with a job.recovered event and a revision it never had', async t => {
+  const worker = fakeWorker({ mode: 'manual', endOnCancel: false });
+  const ctx = await fixture(t, { worker });
+  const lead = await ctx.register('lead');
+  const started = worker.next();
+  const jobId = (await ctx.owner('/api/network/jobs', 'POST', { agentId: lead.id, input: { text: 'Hello' } })).json.jobId;
+  const entry = await started;
+  await entry.own.launching(); await entry.own.spawned({ pid: 4242 });
+  await ctx.owner(`/api/network/jobs/${jobId}/cancel`, 'POST', {}); // The engine ends it; the worker still delivers its result.
+  await entry.own.finish({ status: 'completed', exitCode: 0, result: { text: 'The answer that came late.' } });
+  entry.end();
+  const folder = join(ctx.dataDir, 'network', 'jobs', `job__${jobId.slice(4)}`), saved = JSON.parse(await readFile(join(folder, 'job.json'), 'utf8'));
+  assert.ok(saved.attempts.at(-1).lateResult, 'the newest save holds the late result; the backup does not');
+  await ctx.app.close();
+  await writeFile(join(folder, 'job.json'), '{ damaged');
+
+  const again = await fixture(t, { dataDir: ctx.dataDir, worker: fakeWorker() });
+  const { job } = (await again.owner(`/api/network/jobs/${jobId}`)).json;
+  assert.equal(job.status, 'cancelled', 'a finished job stays finished');
+  assert.ok(job.revision > saved.revision, `revision ${job.revision} is newer than the lost ${saved.revision}, so no stale copy matches it`);
+  const events = await until(async () => { const page = (await again.owner(`/api/network/events?jobId=${jobId}&limit=200`)).json; return page.events.some(event => event.type === 'job.recovered') && page.events; }, 'job.recovered');
+  const recovered = events.filter(event => event.type === 'job.recovered');
+  assert.equal(recovered.length, 1);
+  assert.deepEqual([recovered[0].agentId, recovered[0].status, recovered[0].errorCode, recovered[0].by], [lead.id, 'cancelled', 'RESTORED_FROM_BACKUP', 'app']);
+  assert.match(recovered[0].message, /read from its backup copy/);
+});
+
 test('P2-9: a machine client’s open stream ends at its expiry and delivers nothing after it', async t => {
   let skew = 0;
   const ctx = await fixture(t, { worker: fakeWorker({ mode: 'manual' }), machineOptions: { now: () => Date.now() + skew } });

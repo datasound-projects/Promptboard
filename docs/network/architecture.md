@@ -1308,7 +1308,9 @@ statuses, Kanban runs) and `public/network-activity.js` (the UI). None changes a
    errorCode message` (the job's reason) as §17 lists, plus `pipelineRunId`/`nodeId` (Task 09's job fields, so the run
    filter works), `coverage` (the attempt's, once known) and `artifactRef` (the result file of a completed job). The
    append is not awaited and every throw or rejection of the sink is swallowed: a full disk, a damaged journal or a sink
-   that never answers cannot hold up or undo a saved transition (tested).
+   that never answers cannot hold up or undo a saved transition (tested). Every job read from its `.bak` (acceptance §6
+   row 7) adds one `job.recovered` event (`errorCode: RESTORED_FROM_BACKUP`, `by: app`, the status after the restore,
+   a message that later saves may be lost) and is saved one revision past the lost copy, so no revision is ever reused.
 9. **Authority.** Events are never read to decide anything: job and pipeline state come only from `job.json`/`run.json`,
    no route appends an event, and a forged `job.status completed` changes no job (tested). "Only trusted source events
    may influence completion" therefore holds trivially: none may.
