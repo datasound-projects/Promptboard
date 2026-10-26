@@ -172,7 +172,7 @@ window.PromptboardNetwork = (() => {
       memoryPanel: networkId => memoryView(null, networkId), openAgent: id => go(hashFor('agents', id)) }) || null;
     // Activity (network-activity.js): agents' job status, the open jobs, Kanban runs and the live timeline.
     const activity = window.PromptboardNetworkActivity?.create({ request, say, go, stream: context.stream, openTask: context.openTask,
-      openAgent: id => { profileTab = 'activity'; focusDetail = 'always'; go(hashFor('agents', id)); }, onEvent: event => { tasksEvent(event); runEvent(event); }, onLive: (state, was) => { tasksLive(state, was); runLive(state, was); } }) || null;
+      openAgent: id => { profileTab = 'activity'; focusDetail = 'always'; go(hashFor('agents', id)); }, onEvent: event => { tasksEvent(event); runEvent(event); }, onLive: (state, was) => tasksLive(state, was) }) || null;
     // Settings (network-clients.js): the machine listener and external clients.
     const clients = window.PromptboardNetworkClients?.create({ request, say, showError, projects: context.projects, ensureBoard: context.ensureBoard }) || null;
     // Pipelines (network-pipeline.js): the designer and the run view. `openJob` opens the Activity drill-down (from app.js)
@@ -738,8 +738,8 @@ window.PromptboardNetwork = (() => {
     function tasksLive(state, was) { if (was === 'live' && state !== 'live' && tasks.agent && tasksShown(tasks.agent.id) && tasks.data && !tasks.loading) void loadJobs(); }
     /**
      * The run view's live source (host.followRun): `changed()` runs on each pipeline.run, pipeline.node, job.status or
-     * job.activity event of the run while Activity's stream is live, every second while it is not, and at once when it
-     * drops, until it answers false. Calls never overlap: one asked for meanwhile runs once after.
+     * job.activity event of the run while Activity's stream is live, and every second while it is not, until it answers
+     * false. Calls never overlap: one asked for meanwhile runs once after.
      */
     const runFollowers = new Set();
     function followRun(runId, changed) {
@@ -756,7 +756,6 @@ window.PromptboardNetwork = (() => {
       return stop;
     }
     function runEvent(event) { if (['pipeline.run', 'pipeline.node', 'job.status', 'job.activity'].includes(event.type)) for (const follower of runFollowers) if (follower.runId === event.pipelineRunId) void follower.call(); }
-    function runLive(state, was) { if (was === 'live' && state !== 'live') for (const follower of runFollowers) void follower.call(); }
     function stopPolling() { clearTimeout(tasks.timer); tasks.timer = null; }
     async function loadResult(id) {
       try { tasks.results.set(id, await request(`/api/network/jobs/${id}/result`)); }
