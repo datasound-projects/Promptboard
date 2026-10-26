@@ -1539,11 +1539,13 @@ Nothing here starts a run except the confirmed Run; saving, validating and publi
 11. **Run view and live states.** It shows only the run's `plan` and `run` (never the draft) and says so. While the run
     moves it reads `GET /pipeline-runs/:id` and `GET /jobs?pipelineRunId=` once a second and stops when it ends; that is
     one function, `pollRun(runId, changed) → stop`, replaced by `host.followRun` when given. **Wired (Phase-2 review):**
-    `app.js` passes `followRun = PromptboardNetworkPipeline.streamRun(tokenFetch)` through `network.js`: it opens the event
-    stream and calls `changed()` once it is live and per `pipeline.run`, `pipeline.node` or `job.status` event with this
-    `pipelineRunId`, polls every second only while the stream is not live (connecting, refused, dropped; it reconnects after
-    2 s, 15 s when refused), and stops when `changed()` answers false. `openJob(jobId)` opens the Activity job record
-    (`#/network/activity/<jobId>`); without it, “Open job” shows the job record as JSON from `GET /jobs/:id`. Per step: status,
+    `network.js` passes its own `followRun` on the page's one event stream (Activity's, never a second): a run on screen
+    turns that stream on like the Tasks tab does, Activity's `onEvent` fan-out calls `changed()` per `pipeline.run`,
+    `pipeline.node`, `job.status` or `job.activity` event with this `pipelineRunId`, it polls every second only while
+    `activity.streaming()` is false (connecting, refused, dropped), reads at once when the stream drops, and stops when
+    `changed()` answers false. `app.js` passes `openJob(jobId)`, which opens the Activity job record
+    (`#/network/activity/<jobId>`); that record's “Open run” leads back to the run view. Without them, “Open job” shows the
+    job record as JSON from `GET /jobs/:id` and the view polls. Per step: status,
     reason and code, agent with provider and model (as registered now), tools, try `n` of `retries + 1` and every job ID,
     the job's status and waiting message, the worker's process, the frozen inputs, result references, a condition's
     decision with each rule's evidence, an approval's prompt with Approve/Reject (only while it waits and the run moves),

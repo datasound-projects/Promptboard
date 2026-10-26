@@ -6321,10 +6321,10 @@ window.PromptboardSandbox?.create({ api, announce });
 // Network: the agent directory over /api/network/*. Base stays the only editor of agent definitions: "Open in Base"
 // opens the real resource there. Opening or editing a registration never starts a job, a run or a model call. Activity
 // reads the event stream with the token in a header (tokenFetch) and opens a Kanban run's card on its board. A pipeline
-// run view follows its run on the same stream (polling only while it is not live); its "Open job" opens Activity's record.
+// run view's "Open job" opens Activity's record of that job.
 networkView = window.PromptboardNetwork?.create({ api, projects: () => board?.projects || [], ensureBoard: loadBoard,
   openBase: id => { location.hash = '#/base'; baseView?.openResource(id); }, stream: (path, init) => tokenFetch(path, init),
-  followRun: window.PromptboardNetworkPipeline?.streamRun((path, init) => tokenFetch(path, init)), openJob: jobId => { location.hash = `#/network/activity/${jobId}`; },
+  openJob: jobId => { location.hash = `#/network/activity/${jobId}`; },
   openTask: async (projectId, taskId) => { await loadBoard().catch(() => {}); if (currentProject()?.id !== projectId) selectProject(projectId); location.hash = '#/kanban'; setTimeout(() => void openTaskDetails(taskId), 0); } }) || null;
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;

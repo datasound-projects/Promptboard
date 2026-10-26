@@ -172,13 +172,13 @@ window.PromptboardNetwork = (() => {
       memoryPanel: networkId => memoryView(null, networkId), openAgent: id => go(hashFor('agents', id)) }) || null;
     // Activity (network-activity.js): agents' job status, the open jobs, Kanban runs and the live timeline.
     const activity = window.PromptboardNetworkActivity?.create({ request, say, go, stream: context.stream, openTask: context.openTask,
-      openAgent: id => { profileTab = 'activity'; focusDetail = 'always'; go(hashFor('agents', id)); }, onEvent: event => tasksEvent(event), onLive: (state, was) => tasksLive(state, was) }) || null;
+      openAgent: id => { profileTab = 'activity'; focusDetail = 'always'; go(hashFor('agents', id)); }, onEvent: event => { tasksEvent(event); runEvent(event); }, onLive: (state, was) => { tasksLive(state, was); runLive(state, was); } }) || null;
     // Settings (network-clients.js): the machine listener and external clients.
     const clients = window.PromptboardNetworkClients?.create({ request, say, showError, projects: context.projects, ensureBoard: context.ensureBoard }) || null;
-    // Pipelines (network-pipeline.js): the designer and the run view. `openJob` and `followRun` are optional seams for the
-    // Activity drill-down and the live event stream (architecture §21); without them it shows the job as JSON and polls.
+    // Pipelines (network-pipeline.js): the designer and the run view. `openJob` opens the Activity drill-down (from app.js)
+    // and `followRun` follows a run on Activity's one event stream (architecture §21); without them it shows JSON and polls.
     const pipes = window.PromptboardNetworkPipeline?.create({ request, say, go, showError, openDialog, closeDialog: () => closeDialog(), openAgent: id => go(hashFor('agents', id)),
-      openJob: context.openJob, followRun: context.followRun }) || null;
+      openJob: context.openJob, followRun }) || null;
     const STREAM_TABS = ['activity', 'tasks']; // The profile tabs that follow the event stream (Tasks reads its list again on job events).
     view.append(head, privacy, sections, status, alert, agentsPanel, soonPanel, ...(graphs ? [graphs.library, graphs.graph] : []), ...(pipes ? [pipes.panel] : []), ...(activity ? [activity.panel] : []), ...(clients ? [clients.panel] : []));
 
@@ -205,7 +205,7 @@ window.PromptboardNetwork = (() => {
       graphs?.show(['graph', 'library'].includes(section) ? where : null);
       pipes?.show(section === 'pipelines' ? where : null);
       activity?.show(watching ? where : null);
-      activity?.live(watching || (section === 'agents' && Boolean(where.agentId) && STREAM_TABS.includes(profileTab)));
+      activity?.live(watching || (section === 'agents' && Boolean(where.agentId) && STREAM_TABS.includes(profileTab)) || (section === 'pipelines' && Boolean(where.runId)));
       clients?.show(settings);
       if (own || watching || settings) return;
       if (section !== 'agents') {
@@ -736,6 +736,27 @@ window.PromptboardNetwork = (() => {
     }
     /** The stream dropped: read now, which goes back to polling until it is live again. */
     function tasksLive(state, was) { if (was === 'live' && state !== 'live' && tasks.agent && tasksShown(tasks.agent.id) && tasks.data && !tasks.loading) void loadJobs(); }
+    /**
+     * The run view's live source (host.followRun): `changed()` runs on each pipeline.run, pipeline.node, job.status or
+     * job.activity event of the run while Activity's stream is live, every second while it is not, and at once when it
+     * drops, until it answers false. Calls never overlap: one asked for meanwhile runs once after.
+     */
+    const runFollowers = new Set();
+    function followRun(runId, changed) {
+      const follower = { runId, busy: false, again: false, stopped: false, timer: null };
+      const stop = () => { follower.stopped = true; clearTimeout(follower.timer); runFollowers.delete(follower); };
+      follower.call = async () => {
+        if (follower.busy) { follower.again = true; return; }
+        follower.busy = true;
+        do { follower.again = false; let more = true; try { more = await changed(); } catch {} if (more === false) stop(); } while (follower.again && !follower.stopped);
+        follower.busy = false;
+      };
+      const poll = () => { follower.timer = setTimeout(() => { if (follower.stopped) return; if (!activity?.streaming()) void follower.call(); poll(); }, 1000); };
+      runFollowers.add(follower); poll();
+      return stop;
+    }
+    function runEvent(event) { if (['pipeline.run', 'pipeline.node', 'job.status', 'job.activity'].includes(event.type)) for (const follower of runFollowers) if (follower.runId === event.pipelineRunId) void follower.call(); }
+    function runLive(state, was) { if (was === 'live' && state !== 'live') for (const follower of runFollowers) void follower.call(); }
     function stopPolling() { clearTimeout(tasks.timer); tasks.timer = null; }
     async function loadResult(id) {
       try { tasks.results.set(id, await request(`/api/network/jobs/${id}/result`)); }

@@ -347,11 +347,13 @@ window.PromptboardNetworkActivity = (() => {
       } catch (failure) { if (job?.id === id) Object.assign(job, { error: failure.message, loading: false }); }
       scheduleRender();
     }
-    /** A step job's run: the timeline filtered to that run's events (its steps, their jobs and their activity). */
+    /** A step job's run: its run view, and the timeline filtered to that run's events (its steps, their jobs and their activity). */
     function runLink(id) {
       const node = button(`Run ${short(id)}: show its events`, () => { agentFilter.value = ''; kindFilter.value = ''; search.value = id; focusJob = 'search'; host.go('#/network/activity'); }, 'text-button');
       node.id = 'network-activity-run-events'; node.title = id;
-      return node;
+      const open = button(`Open run ${short(id)}`, () => host.go(`#/network/runs/${id}`), 'text-button'); open.id = 'network-activity-open-run'; open.title = id;
+      const links = el('span'); links.append(open, ' · ', node);
+      return links;
     }
     function renderJob() {
       const back = button('Back to Activity', () => { focusJob = job?.id; host.go('#/network/activity'); }, 'text-button network-back-activity'); back.id = 'network-activity-back';
