@@ -755,3 +755,89 @@ instance lock, not by the job files.
 **Commit.** d49d064 (Task 06), then this log entry.
 
 **Next task: 07.**
+
+### Phase-1 review fixes (2026-10-26)
+
+An independent review of Tasks 01–05 (at 2c42b99; findings, probes and screenshots in
+`$TMPDIR/network-logs/review-p1/`) listed ten findings and six unconfirmed points. All ten are fixed at their root, each
+with a test that fails without it (checked by reverting the source change or by a mutation, `git stash` never used;
+`$TMPDIR/network-logs/review-p1-fixes/mutations.log`, `p1-3-mutations.log`, `p1-8-without.log`). Task 06's job input was
+checked for the same injection problem. Task 07 is not started. Architecture changes: §4.2 rule 9, §4.6 items 2, 5 and 8,
+§4.7 item 5, §4.8 item 5, §7.2 step 5, §10.2, §12.2 item 8.
+
+| Finding | Status | Commit | Test that covers it |
+|---|---|---|---|
+| P1-1 newline injection into the memory block | fixed: names, display names, tags, capabilities, report source references and job idempotency keys refuse `\r`, `\n`, tab, U+0085, U+2028, U+2029 at save **and** import (`LINE_BREAK`); the block collapses a network name to one line (`oneLine`) and indents record text on every line break, Unicode ones included (`indent`); descriptions, memory text, reports and job input stay multi-line | 798e4b7 | `network-review` "P1-1: a line break or tab…", "P1-1: no stored name or record text can close or forge the memory block…" (also a name saved before the fix), "P1-1: job input text and instructions…" |
+| P1-2 cubic, blocking import cycle validation | fixed: one depth-first walk with a shared path (O(versions + pins)), yielding every 1,000 versions; an import first peels off networks that cannot be on a loop of pins (Kahn both ways, O(networks + pins)) and walks only the rest. The reviewer's 1.32 MiB chain: 6.6 s with the event loop held → about 20 ms; a 13 MiB chain of 20,000 networks 146 ms (`review-p1-fixes/probe2-worktree.log`) | a4d8e06 | `network-review` "P1-2: import validation is linear…" (2,000-network chain < 3 s, event loop held < 1 s, a loop through it still refused with the whole path), "P1-2: a crafted file whose networks all pin each other…" (held < 400 ms) |
+| P1-3 route scan blind to `:id` routes | fixed: `src/network/http.mjs` exports `NETWORK_ROUTES` (method + anchored pattern + handler), the dispatcher reads it, and `tests/remote-access.test.mjs` requires exactly one `ALLOWED`/`LOCAL_ONLY` row per route and a route per Network row. Task 06's 10 routes included (39 in all). Mutation check: each of the 39 rows removed, each of the 39 routes removed, and one unlisted route added — 79 of 79 fail the test (Task 05's surviving `POST duplicate` row now fails too) | f7228c2 | `remote-access` "every route from a paired phone…" |
+| P1-4 new nodes placed on top of others | fixed: a spot is free only with node size plus a gap (centres 190 × 70 apart) | a5e709e | `network-review-browser` (Chrome, both themes: the reviewer's pan, gap between bounding boxes) |
+| P1-5 publish conflict left a stale Publish and no alert | fixed: a publish refused by a newer save (or with node `details`) closes its dialog and shows the editor's alert with "Load the saved draft" / "Save mine as a new network"; Save and Publish stay disabled with the reason until one is chosen | a5e709e | `network-review-ui` "P1-5: a publish refused by a newer save…" |
+| P1-6 a damaged deeper version blocks every ancestor save, error names nothing | fixed: a draft update re-checks only the references it adds (create, duplicate and publish check all); a version that cannot be read on the way fails with `details: { networkId, version, path }` and a message naming the sub-network that leads to it; the editor marks that node and offers Remove after a refused save or publish. Task 05's test that pinned the old refusal now expects the save and a refused publish | 2940a0a | `network-review` "P1-6: a damaged version deep inside…"; `network-review-ui` "P1-6: a save that adds a pin…", "P1-6: a publish refused…"; `network-graph` "issues name agents…" |
+| P1-7 local folders saved and exported verbatim | fixed **at save and import** (not at export): registry text goes through `redactLocal(noPaths())`, so an export carries it as saved and a published version's bytes still match its hash. Rule 9 of §4.2 now says so. Exports made before this fix whose published version names hold a folder no longer import (their hash cannot match); the branch was never released | c8de7d5 | `network-review` "P1-7: local folders in names…" |
+| P1-8 8 MiB draft check after the import's first writes | fixed: every remapped draft is measured with the other checks before anything is written. Without it the test's file made the old code write about 82,000 version files over 10.7 minutes before it refused | d818eec | `network-review` "P1-8: an imported draft over 8 MiB…" |
+| P1-9 expanded label on the border, inner relation labels hidden | fixed: a one-line label inside the box below the border, on its own background; relations inside an expanded sub-network are drawn above its nodes (`z-compound-depth: top`) | a5e709e | `network-review-browser` (label box inside the parent and above its nodes; the inner edge style) |
+| P1-10 status messages push the canvas down ~43 px | fixed: the status line keeps its height when empty; Connect mode's instructions (which moved the canvas 48 px just before the taps, found while checking this) now use that line instead of a notice above the canvas | a5e709e | `network-review-browser` (canvas top unchanged after a message and after Connect at 1440 px; editor unchanged after a message at 390 px) |
+
+**Unconfirmed points** (commit 62fb4bb for the four that were real):
+
+- *`memory.resolve()` checks membership and reads network memory in two queues* — **dismissed.** Membership comes from
+  the registry's read of the agent, the records a moment later from the memory queue. A concurrent owner edit in that
+  window gives the block as of the membership read, the same as the job starting a moment earlier; no other scope can be
+  read (every record's scope is checked again in `memoryBlock`), and a deleted network fails the call. One lock across
+  both modules would serialise unrelated work for no gain.
+- *`exportedAt` unvalidated* — **real, fixed:** any JSON value at any depth (up to the 32 MiB body) was accepted and
+  ignored; now a string of at most 64 characters or absent (`network-review` "Unconfirmed: exportedAt…").
+- *Import keeps free IDs, so an old export reattaches a deleted network's orphaned memory* — **real, fixed:** an ID is
+  now taken while a set-aside draft or a memory file still names it; the deleted network's memory file is left untouched
+  (same test; both checks killed by mutation).
+- *Add sub-network lists only the first 200, no search* — **real, fixed:** a server search past the first 200, with
+  "The first 200 of N networks. Search to find the others." (`network-review-ui` "Unconfirmed: …").
+- *Read-only version heading shows the current draft name* — **real, fixed:** it shows the name the version was
+  published with (same test).
+- *Cancelling the unsaved guard pushes a history entry* — **real, fixed:** the editor's address comes back through
+  `history.replaceState`, so Back no longer leads to the declined page (same test).
+
+**Task 06 and the same problem.** A job's `input.text`, `instructions` and JSON strings are multi-line by design and
+will sit in `prompt.md` inside `=== JOB INPUT … ===` (Task 07); they could forge an approved-memory block there. The
+accepted request keeps them as data; §7.2 step 5 now requires Task 07 to put them through `indent()` (and labels through
+`oneLine()`), and `network-review` "P1-1: job input text and instructions…" pins that every line of an accepted input,
+Unicode breaks included, is indented. The idempotency key refuses Unicode line breaks too; jobs have no title field.
+
+**Files.** `src/network/{storage,registry,memory,posts,jobs,http}.mjs`, `public/network-graph.js`, `public/styles.css`;
+tests: new `tests/network-review.test.mjs` (9), `tests/network-review-ui.test.mjs` (4, jsdom),
+`tests/network-review-browser.test.mjs` (1, Chrome); changed `tests/remote-access.test.mjs`, `tests/network-graph.test.mjs`;
+`docs/network/architecture.md`, this file.
+
+**Screenshots looked at** (`$TMPDIR/network-logs/review-p1-fixes/shots/` from an isolated app on port 4907 with a
+temporary data folder and a PATH holding only `node`, stopped and its data removed; and `test-shots/run2/` from the
+Chrome tests): `p1-9-expanded-1440-{light,dark}`, `p1-4-placement-1440-{light,dark}`, `p1-5-conflict-{1440,390}-{light,dark}`,
+`p1-10-status-390-{light,dark}`, `graph-list-390-{light,dark}`; `expanded-1440-{light,dark}`, `placement-1440-{light,dark}`,
+`status-390-{light,dark}`, `graph-1440-light-expanded`, `network-1440-light-profile`. Measured there: the new node
+lands at (185, 120) beside the one at (0, 0), overlap 0; the canvas top stays at 465 px after a message, the 390 px panel
+top at 398 px; the expanded label box (y 250–272) lies inside its parent (241–360) and above its nodes; no console
+exception or CSP message.
+
+**Tests and runs.**
+
+- `npm run check`: pass.
+- The new and changed tests twice on the final code (`$TMPDIR/network-logs/review-p1-fixes-twice.log`): every
+  non-browser `network-*` test plus `remote-access`, 96/96 both times; `network-review-browser`, `network-browser`,
+  `network-graph-browser`, `remote-access-browser` 6/6 both times. (A first browser pair failed only because
+  `PB_NETWORK_SCREENSHOTS` named a folder that did not exist yet and `network-browser.test.mjs` writes without creating
+  it; rerun with the folder present.)
+- Mutation and revert checks: every check in `review-p1-fixes/mutations.log` ends killed (two first attempts survived
+  and were corrected: one mutation that did not remove the pruning, and the memory-file check, which then got its own
+  case); P1-3 79/79; P1-1, P1-2 and the UI points also fail on the reverted source.
+- Full `npm test` on the final code (log `$TMPDIR/network-logs/review-p1-fixes-suite.log`, 2026-10-26 10:16–10:44):
+  non-browser 1,585 tests, 1,584 pass, 0 fail, 0 cancelled, 1 skipped (the win32-only `editors.test.mjs` test); browser
+  151/151. Exit 0, no reruns. Task 06's 1,572 + 13 = 1,585; 150 + 1 = 151.
+
+**Known limits.** A crafted import whose networks all pin each other in loops is still walked once per root (quadratic,
+yielding to the event loop; `ponytail:` note). An empty status line now keeps about 35 px between the section tabs and
+the panel. Exports from before P1-7 with a folder in a published version's name or description no longer import.
+Paid CLI runs: 0.
+
+**Commits.** 798e4b7 (P1-1), c8de7d5 (P1-7), a4d8e06 (P1-2), d818eec (P1-8), 2940a0a (P1-6), f7228c2 (P1-3),
+a5e709e (P1-4, P1-5, P1-9, P1-10), 62fb4bb (unconfirmed points), then this log entry.
+
+**Next task: 07.**
