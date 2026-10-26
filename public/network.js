@@ -802,6 +802,8 @@ window.PromptboardNetwork = (() => {
         node.id = `network-job-${job.id}-${name}`; node.setAttribute('aria-describedby', title.id); actions.append(node);
       };
       if (job.status === 'waiting_for_approval') { act('Approve', () => jobAction(job, 'approve', { expectedRevision: job.revision, decision: 'approve' }, 'Approved. It starts when a job slot is free.'), 'approve'); act('Reject', () => jobAction(job, 'approve', { expectedRevision: job.revision, decision: 'reject' }, 'Rejected. Nothing ran.'), 'reject'); }
+      // Task 12: a job that asked a question, or waits for its sub-jobs, is answered and followed in its Activity record.
+      if (job.status === 'waiting_for_input') act(job.awaiting?.kind === 'children' ? 'Open its sub-jobs' : 'Answer…', () => go(`#/network/activity/${job.id}`), 'record');
       if (JOB_OPEN.has(job.status)) act('Cancel', () => jobAction(job, 'cancel', {}, job.status === 'queued' ? 'Cancelled. Nothing ran.' : 'Cancelled. Its process was stopped.'), 'cancel');
       if (['interrupted', 'unknown'].includes(job.status)) { act('Retry…', () => retryJob(job), 'retry'); act('Close…', () => closeJob(job), 'close'); }
       if (actions.childElementCount) item.append(actions);

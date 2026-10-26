@@ -203,7 +203,28 @@ window.PromptboardNetworkDelegation = (() => {
     const originFact = record => ['Started by', origin(record)];
 
     // ---- Schedules (Activity's side column).
-    const schedules = { data: null, agents: [], error: '', loading: false };
+    const schedules = { data: null, agents: [], pipelines: [], error: '', loading: false };
+    /** Every saved pipeline (all pages): names for pipeline schedules, and the published versions the editor offers. */
+    async function readPipelines() {
+      const items = [];
+      for (let offset = 0; offset !== null;) { const page = await host.request(`/api/network/pipelines?offset=${offset}&limit=200`); items.push(...page.pipelines); offset = page.next; }
+      return schedules.pipelines = items;
+    }
+    const pipelineName = target => `${schedules.pipelines.find(item => item.id === target.pipelineId)?.name || `Pipeline ${short(target.pipelineId)}`} · version ${target.version}`;
+    /**
+     * A pipeline schedule's confirmation shows what one of its runs does, as Run does before it starts (network-pipeline.js
+     * runFacts): `submit` stays disabled until the version is checked and can start now.
+     */
+    function factsBox(target, submit) {
+      const box = el('div', 'network-run-facts'); box.id = 'network-schedule-facts'; box.setAttribute('aria-live', 'polite');
+      if (submit) submit.disabled = true;
+      box.append(note('Checking this version as a run would…'));
+      window.PromptboardNetworkPipeline.runFacts({ request: host.request, pipelineId: target.pipelineId, number: target.version, agentName: nameOf }).then(checked => {
+        box.replaceChildren(...checked.nodes);
+        if (submit) submit.disabled = !checked.valid;
+      }, failure => { box.replaceChildren(el('p', 'inline-error', `Could not check this version. ${failure.message}`)); });
+      return box;
+    }
     const section = el('section', 'network-activity-section network-schedules'); section.id = 'network-schedules';
     const heading = el('h3', '', 'Schedules'); heading.id = 'network-schedules-heading';
     const add = button('New schedule', () => editor(null), 'secondary-button'); add.id = 'network-schedule-new';
@@ -215,6 +236,7 @@ window.PromptboardNetworkDelegation = (() => {
       schedules.loading = true;
       try {
         const [data, agents] = await Promise.all([host.request('/api/network/schedules'), host.request('/api/network/agents?limit=200')]);
+        if (data.schedules.some(row => row.target.pipelineId)) await readPipelines();
         Object.assign(schedules, { data, agents: agents.agents, error: '' });
       } catch (error) { schedules.error = error.message; }
       schedules.loading = false;
@@ -234,7 +256,7 @@ window.PromptboardNetworkDelegation = (() => {
       const sign = el('span', 'network-state-mark', mark); sign.setAttribute('aria-hidden', 'true'); chip.append(sign, label);
       const name = el('strong', '', row.name); name.id = `network-schedule-name-${row.id}`;
       const head = el('div', 'network-activity-row-head'); head.append(name, chip);
-      const what = row.target.pipelineId ? `Pipeline ${short(row.target.pipelineId)} v${row.target.version}` : nameOf(row.target.agentId);
+      const what = row.target.pipelineId ? pipelineName(row.target) : nameOf(row.target.agentId);
       item.append(head, note([what, cadenceText(row.cadence), row.next ? `next ${timeText(row.next)}` : ''].filter(Boolean).join(' · ')));
       if (row.zoneMismatch && row.enabled) item.append(note(`Set up in ${row.timeZone}; this computer now uses ${schedules.data.timeZone}. It starts nothing until you switch it on again here.`, 'note network-schedule-warning'));
       if (row.lastSkip) item.append(note(`Skipped ${timeText(row.lastSkip.at)}: ${row.lastSkip.reason}`, 'note network-schedule-warning'));
@@ -244,6 +266,7 @@ window.PromptboardNetworkDelegation = (() => {
       if (row.cadence.kind !== 'on_demand') control(row.enabled && !row.zoneMismatch ? 'Switch off' : 'Switch on…', () => (row.enabled && !row.zoneMismatch ? switchOff(row) : confirmOn(row)), 'network-schedule-toggle');
       control('Run now', () => runNow(row), 'network-schedule-run');
       if (row.lastJobId) control('Last job', () => host.go(`#/network/activity/${row.lastJobId}`), 'network-schedule-last', 'text-button');
+      if (row.lastRunId) control('Last run', () => host.go(`#/network/runs/${row.lastRunId}`), 'network-schedule-last-run', 'text-button');
       control('Edit', () => editor(row), 'network-schedule-edit', 'text-button');
       control('Delete', () => remove(row), 'network-schedule-delete', 'text-button network-danger');
       item.append(actions);
@@ -256,7 +279,7 @@ window.PromptboardNetworkDelegation = (() => {
       const focused = list.contains(document.activeElement) ? document.activeElement.id : null;
       list.replaceChildren(...(data?.schedules || []).map(scheduleRow));
       if (focused) document.getElementById(focused)?.focus();
-      empty.replaceChildren(...(data && !data.schedules.length ? [note('No schedules. A schedule runs a job for an agent daily, on weekdays, weekly, monthly or when you choose Run now.')] : []));
+      empty.replaceChildren(...(data && !data.schedules.length ? [note('No schedules. A schedule runs a job for an agent, or a published pipeline, daily, on weekdays, weekly, monthly or when you choose Run now.')] : []));
       empty.hidden = !data || data.schedules.length > 0;
     }
     async function change(run, success) {
@@ -265,6 +288,19 @@ window.PromptboardNetworkDelegation = (() => {
     }
     const switchOff = row => change(() => host.request(`/api/network/schedules/${row.id}`, { method: 'PATCH', body: { expectedRevision: row.revision, enabled: false } }), `“${row.name}” is off. Nothing starts on its own.`);
     function runNow(row) {
+      if (row.target.pipelineId) {
+        // Starting a run is never implicit (architecture §21 item 10): the same facts as Run, then Start run.
+        const fail = failureLine(), go = button('Start run', async () => {
+          go.disabled = true; fail.hidden = true;
+          try {
+            const answer = await host.request(`/api/network/schedules/${row.id}/run`, { method: 'POST', body: { idempotencyKey: key() } });
+            dialog.close(); host.say(`Started run ${short(answer.runId)} of “${row.name}”.`); await loadSchedules();
+          } catch (error) { showFailure(fail, error); go.disabled = false; }
+        }, 'dialog-done'); go.id = 'network-schedule-run-confirm';
+        const footer = el('div', 'kanban-dialog-actions'); footer.append(button('Cancel', dialog.close, 'secondary-button'), go);
+        dialog.open(`Run “${row.name}” now?`, [note(`It starts one run of ${pipelineName(row.target)} now, as Run in Pipelines does. Its steps are agent jobs that use your CLI sign-in.`), factsBox(row.target, go), fail, footer], go);
+        return;
+      }
       return change(async () => {
         const answer = await host.request(`/api/network/schedules/${row.id}/run`, { method: 'POST', body: { idempotencyKey: key() } });
         if (answer.jobId) host.say(`Started job ${short(answer.jobId)}.`);
@@ -279,9 +315,10 @@ window.PromptboardNetworkDelegation = (() => {
         } catch (error) { showFailure(fail, error.code === 'REMOTE_LOCAL_ONLY' ? 'Switch schedules on at the computer that runs Promptboard: a paired phone cannot.' : error); go.disabled = false; }
       }, 'dialog-done'); go.id = 'network-schedule-confirm';
       const footer = el('div', 'kanban-dialog-actions'); footer.append(button('Cancel', dialog.close, 'secondary-button'), go);
-      const what = row.target.pipelineId ? `a run of pipeline ${short(row.target.pipelineId)} v${row.target.version}` : `a job for ${nameOf(row.target.agentId)}`;
+      const what = row.target.pipelineId ? `a run of ${pipelineName(row.target)}` : `a job for ${nameOf(row.target.agentId)}`;
       dialog.open(`Switch on “${row.name}”?`, [note(`It will start ${what} ${cadenceText(row.cadence).toLowerCase()} (${schedules.data?.timeZone || row.timeZone}), without asking you each time. Its jobs only read, and use your CLI sign-in.`),
-        note('Times missed while Promptboard is closed run once, and a time is skipped while its previous job is still open. Changing what it runs, or when, switches it off again.'), fail, footer], go);
+        ...(row.target.pipelineId ? [note('Each run does what a run started from Pipelines does:'), factsBox(row.target, go)] : []),
+        note(`Times missed while Promptboard is closed run once, and a time is skipped while its previous ${row.target.pipelineId ? 'run' : 'job'} is still open. Changing what it runs, or when, switches it off again.`), fail, footer], go);
     }
     function remove(row) {
       const fail = failureLine(), go = button('Delete schedule', async () => {
@@ -292,9 +329,12 @@ window.PromptboardNetworkDelegation = (() => {
       const footer = el('div', 'kanban-dialog-actions'); footer.append(button('Cancel', dialog.close, 'secondary-button'), go);
       dialog.open(`Delete “${row.name}”?`, [note('Jobs it started stay in Activity.'), fail, footer], go);
     }
-    /** New or edit: what it runs (an agent and its task) and when. Saving starts nothing. The agents are read again first. */
+    /**
+     * New or edit: what it runs (an agent and its task, or a published pipeline version with its run input) and when. Saving
+     * starts nothing. The agents and pipelines are read again first.
+     */
     async function editor(row) {
-      try { schedules.agents = (await host.request('/api/network/agents?limit=200')).agents; } catch (error) { host.say(error.message); }
+      try { [schedules.agents] = await Promise.all([host.request('/api/network/agents?limit=200').then(data => data.agents), readPipelines()]); } catch (error) { host.say(error.message); }
       const form = el('form', 'network-form network-schedule-form'); form.noValidate = true;
       const name = Object.assign(el('input'), { maxLength: 80, value: row?.name || '', autocomplete: 'off', placeholder: 'For example: Morning digest' }); name.id = 'network-schedule-name';
       const agent = el('select'); agent.id = 'network-schedule-agent';
@@ -309,24 +349,43 @@ window.PromptboardNetworkDelegation = (() => {
       for (const [index, day] of DAYS.entries()) { const box = Object.assign(el('input'), { type: 'checkbox', value: String(index), checked: row?.cadence.days?.includes(index) ?? index === 1 }); const line = el('label', 'network-clients-choice'); line.append(box, el('span', '', day)); days.append(line); }
       const monthDay = Object.assign(el('input'), { type: 'number', min: 1, max: 28, step: 1, value: String(row?.cadence.day || 1) }); monthDay.id = 'network-schedule-day';
       const dayLabel = labelled('Day of the month (1–28)', monthDay), timeLabel = labelled('Time', time);
-      const pipeline = Boolean(row?.target.pipelineId);
-      if (row && !pipeline) { agent.value = row.target.agentId; tools.value = row.target.tools; }
+      // What it runs: a job, or a published pipeline version (only published versions are offered; the server checks again).
+      const kind = el('select'); kind.id = 'network-schedule-kind';
+      for (const [value, label] of [['job', 'A job for one agent'], ['pipeline', 'A run of a published pipeline']]) kind.append(Object.assign(el('option', '', label), { value }));
+      const version = el('select'); version.id = 'network-schedule-pipeline';
+      for (const item of schedules.pipelines) for (const entry of [...item.publishedVersions].reverse()) {
+        version.append(Object.assign(el('option', '', `${item.name} · version ${entry.version}${entry === item.publishedVersions.at(-1) ? ' (latest)' : ''}`), { value: `${item.id}@${entry.version}` }));
+      }
+      const runInput = Object.assign(el('textarea'), { rows: 3, maxLength: 20000, value: row?.target.pipelineId ? row.target.input?.text || '' : '', placeholder: 'What the steps work on each time.' }); runInput.id = 'network-schedule-run-input';
+      const facts = el('div'), jobPart = el('div', 'network-schedule-part'), pipelinePart = el('div', 'network-schedule-part');
+      jobPart.append(labelled('Agent', agent), labelled('Task (the job’s input each time)', text), labelled('Tools', tools));
+      pipelinePart.append(...(version.options.length ? [labelled('Pipeline and published version', version), facts, labelled('Run input (optional)', runInput)] : [note('No pipeline has a published version yet. Publish one in Network → Pipelines first.')]));
+      const target = () => { const [pipelineId, number] = version.value.split('@'); return { pipelineId, version: Number(number) }; };
+      const showFacts = () => { if (kind.value === 'pipeline' && version.value) facts.replaceChildren(factsBox(target())); };
+      kind.value = row?.target.pipelineId ? 'pipeline' : 'job';
+      if (row?.target.pipelineId) version.value = `${row.target.pipelineId}@${row.target.version}`;
+      if (row && !row.target.pipelineId) { agent.value = row.target.agentId; tools.value = row.target.tools; }
       repeat.value = row?.cadence.kind || 'daily';
-      const sync = () => { timeLabel.hidden = repeat.value === 'on_demand'; days.hidden = repeat.value !== 'weekly'; dayLabel.hidden = repeat.value !== 'monthly'; };
-      repeat.addEventListener('change', sync); sync();
+      const sync = () => { timeLabel.hidden = repeat.value === 'on_demand'; days.hidden = repeat.value !== 'weekly'; dayLabel.hidden = repeat.value !== 'monthly'; jobPart.hidden = kind.value !== 'job'; pipelinePart.hidden = kind.value !== 'pipeline'; };
+      repeat.addEventListener('change', sync); kind.addEventListener('change', () => { sync(); showFacts(); }); version.addEventListener('change', showFacts); sync(); showFacts();
       const fail = failureLine(), save = Object.assign(el('button', 'dialog-done', row ? 'Save schedule' : 'Create schedule'), { type: 'submit' }); save.id = 'network-schedule-save';
       const footer = el('div', 'kanban-dialog-actions'); footer.append(button('Cancel', dialog.close, 'secondary-button'), save);
-      form.append(labelled('Name', name), ...(pipeline ? [note(`Runs pipeline ${short(row.target.pipelineId)} version ${row.target.version}.`)] : [labelled('Agent', agent), labelled('Task (the job’s input each time)', text), labelled('Tools', tools)]),
+      form.append(labelled('Name', name), labelled('It runs', kind), jobPart, pipelinePart,
         labelled('Repeat', repeat), timeLabel, days, dayLabel,
         note(row?.enabled ? 'Changing what it runs, or when, switches it off until you switch it on again at this computer.' : 'Saving starts nothing. A new schedule stays off until you switch it on at this computer.'), fail, footer);
       form.addEventListener('submit', async event => {
         event.preventDefault(); fail.hidden = true;
         if (!name.value.trim()) { showFailure(fail, 'Name the schedule.'); name.focus(); return; }
+        const pipeline = kind.value === 'pipeline';
+        if (pipeline && !version.value) { showFailure(fail, 'Publish a pipeline in Network → Pipelines first.'); return; }
         if (!pipeline && !agent.value) { showFailure(fail, 'Register an agent in Network first.'); return; }
         if (!pipeline && !text.value.trim()) { showFailure(fail, 'Write the task.'); text.focus(); return; }
-        const kind = repeat.value, cadence = kind === 'on_demand' ? { kind } : kind === 'weekly' ? { kind, time: time.value, days: [...days.querySelectorAll('input:checked')].map(box => Number(box.value)) }
-          : kind === 'monthly' ? { kind, time: time.value, day: Number(monthDay.value) } : { kind, time: time.value };
-        const body = { name: name.value.trim(), cadence, ...(pipeline ? {} : { target: { ...(row?.target || {}), agentId: agent.value, input: { ...(row?.target.input || {}), text: text.value }, tools: tools.value } }) };
+        const every = repeat.value, cadence = every === 'on_demand' ? { kind: every } : every === 'weekly' ? { kind: every, time: time.value, days: [...days.querySelectorAll('input:checked')].map(box => Number(box.value)) }
+          : every === 'monthly' ? { kind: every, time: time.value, day: Number(monthDay.value) } : { kind: every, time: time.value };
+        // A run input's json (set through the API) is kept; the text is what the field holds.
+        const kept = row?.target.pipelineId ? row.target.input?.json : undefined, input = { ...(runInput.value.trim() ? { text: runInput.value } : {}), ...(kept !== undefined ? { json: kept } : {}) };
+        const body = { name: name.value.trim(), cadence, target: pipeline ? { ...target(), ...(Object.keys(input).length ? { input } : {}) }
+          : { ...(row && !row.target.pipelineId ? row.target : {}), agentId: agent.value, input: { ...(row && !row.target.pipelineId ? row.target.input : {}), text: text.value }, tools: tools.value } };
         save.disabled = true;
         try {
           const answer = row ? await host.request(`/api/network/schedules/${row.id}`, { method: 'PATCH', body: { expectedRevision: row.revision, ...body } })

@@ -47,7 +47,7 @@ window.PromptboardNetworkActivity = (() => {
   }
   const COVERAGE_NAMES = { tools: 'tool activity', 'partial-tools': 'limited activity', 'final-only': 'final result only' };
   const coverageName = level => COVERAGE_NAMES[level] || level;
-  const kindOf = event => (event.type === 'job.status' || event.type === 'job.activity' ? event.type : event.type.startsWith('pipeline.') ? 'pipeline'
+  const kindOf = event => (event.type === 'job.status' || event.type === 'job.activity' ? event.type : event.type === 'job.recovered' ? 'job.status' : event.type.startsWith('pipeline.') ? 'pipeline'
     : ['job.message', 'job.handoff'].includes(event.type) ? 'handoff' : event.type.startsWith('schedule.') ? 'schedule' : 'other');
 
   function create(host) {
@@ -287,6 +287,7 @@ window.PromptboardNetworkActivity = (() => {
       if (event.type === 'job.status') return `${jobText}: ${event.from ? `${stateOf(event.from)[0]} → ` : ''}${stateOf(event.status)[0]}`;
       if (event.type === 'job.activity') return `${jobText} · ${ACTIVITY[event.kind] || 'Activity'}`;
       if (event.type === 'job.result') return `${jobText} · result saved`;
+      if (event.type === 'job.recovered') return `${jobText}: read from its backup copy · ${stateOf(event.status)[0]}`; // Its record was damaged (architecture §19 item 8).
       if (event.type === 'pipeline.run') return `${run}: ${stateOf(event.status)[0]}`;
       if (event.type === 'pipeline.node') return `${run} · step ${event.nodeId || '?'}: ${stateOf(event.status)[0]}`;
       if (event.type === 'job.message') return `${jobText} · ${MESSAGE_KINDS[event.kind] || 'message'} recorded`;

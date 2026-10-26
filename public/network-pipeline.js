@@ -29,8 +29,9 @@ window.PromptboardNetworkPipeline = (() => {
   const PORT_NAMES = { text: 'text result', json: 'json result', true: 'when true', false: 'when false', done: 'when done' };
   const OPERATORS = [['eq', 'equals'], ['ne', 'does not equal'], ['lt', 'is less than'], ['lte', 'is at most'], ['gt', 'is more than'], ['gte', 'is at least'], ['in', 'is one of'], ['exists', 'exists'], ['contains', 'contains']];
   const VALUE_TYPES = [['text', 'Text'], ['number', 'Number'], ['boolean', 'True or false'], ['null', 'Null']];
+  // The last two are a running step whose job waits (Task 12): for your answer, or for the sub-jobs its agent delegated.
   const STEP_STATES = { pending: ['Waiting', 'off'], ready: ['Ready', 'off'], running: ['Running', 'run'], waiting_for_approval: ['Waiting for you', 'warn'], blocked: ['Blocked', 'warn'],
-    completed: ['Completed', 'ok'], failed: ['Failed', 'error'], skipped: ['Skipped', 'off'], cancelled: ['Cancelled', 'off'] };
+    completed: ['Completed', 'ok'], failed: ['Failed', 'error'], skipped: ['Skipped', 'off'], cancelled: ['Cancelled', 'off'], waiting_for_input: ['Waiting for your answer', 'warn'], waiting_for_children: ['Waiting for sub-jobs', 'run'] };
   const RUN_STATES = { running: ['Running', 'run'], waiting_for_approval: ['Waiting for your approval', 'warn'], blocked: ['Blocked', 'warn'], interrupted: ['Interrupted', 'warn'],
     completed: ['Completed', 'ok'], failed: ['Failed', 'error'], cancelled: ['Cancelled', 'off'] };
   const MOVING = new Set(['running', 'waiting_for_approval', 'blocked']);
@@ -131,6 +132,33 @@ window.PromptboardNetworkPipeline = (() => {
     const details = failure?.details || {}, present = new Set(nodes.map(node => node.id)), top = id => (typeof id === 'string' ? id.split('/')[0] : null);
     const ids = [top(details.nodeId), ...(Array.isArray(details.path) ? details.path.map(top) : []), top(details.include)].filter(id => present.has(id));
     return { nodes: new Set(ids), edges: new Set(details.edgeId ? [details.edgeId] : []) };
+  }
+  /**
+   * What a run of published version `number` would do, checked now (`validate { version }`): the version and its pins, steps and
+   * agent jobs, how many at once, permissions, tools, time and cost; or why it cannot start. Run shows it before it starts, and
+   * a pipeline schedule (network-delegation.js) before it is saved, switched on or run now. Answers { valid, nodes }.
+   */
+  async function runFacts({ request, pipelineId, number, agentName = id => id, readVersion = async (id, n) => (await request(`/api/network/pipelines/${id}/versions/${n}`)).version }) {
+    const [check, settings, jobs, version] = await Promise.all([request(`/api/network/pipelines/${pipelineId}/validate`, { method: 'POST', body: { version: number } }), request('/api/network/settings'), request('/api/network/jobs?limit=1'), readVersion(pipelineId, number)]);
+    const ceiling = settings.settings.maxConcurrentJobs, agents = version.nodes.filter(node => node.type === 'agent'), nodes = [];
+    const tools = agents.length ? agents.map(node => `${node.label || agentName(node.config.agentId)}: ${node.config.tools === 'web' ? 'read-only web search' : 'no tools'}`).join('; ') : 'No agent steps at the top level.';
+    if (check.valid) {
+      const rows = [
+        ['Version', `${number} of “${version.name}”, pinned with its exact sub-pipeline versions. Editing or publishing the draft never changes this run.`],
+        ['Steps', `${plural(check.summary.steps, 'step')} after sub-pipelines are expanded; ${plural(check.summary.agentSteps, 'agent job')}.`],
+        ['At once', `At most ${Math.min(version.settings.maxParallel, ceiling)} agent ${Math.min(version.settings.maxParallel, ceiling) === 1 ? 'step' : 'steps'} at a time (this pipeline allows ${version.settings.maxParallel}; the app runs at most ${plural(ceiling, 'Network job')} at once).`],
+        ['Permissions', 'Each agent step is its own Network job with its agent’s CLI sign-in: read-only, in an empty folder, no project files or lessons, only the agent’s approved memory.'],
+        ['Tools', tools],
+        // A step whose agent waits for your answer or for its sub-jobs is still running (architecture §20 item 11).
+        ['Time', `Stops after ${Math.round(version.settings.deadlineMs / 60000)} minutes of running (time an approval step or a blocked step waits for you does not count; a step whose agent waits for your answer or for its sub-jobs does). If a step fails: ${version.settings.failurePolicy === 'stop' ? 'the run stops' : 'independent steps finish, then the run ends failed'}.`],
+        ['Cost', COST],
+      ];
+      const list = el('dl', 'network-facts'); for (const [label, value] of rows) list.append(el('dt', '', label), el('dd', '', value));
+      nodes.push(list);
+    }
+    if (!jobs.worker) nodes.push(note('No job worker is available in this app: agent steps wait in the queue, and nothing runs until one is.', 'network-stale'));
+    if (!check.valid) { const why = el('p', 'inline-error', `This version cannot start now: ${check.error.message}`); why.setAttribute('role', 'alert'); nodes.push(why); }
+    return { valid: check.valid, nodes };
   }
   /** The live source of an open run view, swappable in one place (host.followRun): calls `changed()` until it answers false. */
   function pollRun(runId, changed) {
@@ -742,23 +770,10 @@ window.PromptboardNetworkPipeline = (() => {
       const fill = async () => {
         const mine = ++turn, number = Number(pick.value); submit.disabled = true; failure.hidden = true; facts.replaceChildren(note('Checking this version as a run would…'));
         try {
-          const [check, settings, jobs, version] = await Promise.all([request(`/api/network/pipelines/${ed.id}/validate`, { method: 'POST', body: { version: number } }), request('/api/network/settings'), request('/api/network/jobs?limit=1'), pipelineVersion(ed.id, number)]);
+          const checked = await runFacts({ request, pipelineId: ed.id, number, agentName, readVersion: pipelineVersion });
           if (mine !== turn) return;
-          const ceiling = settings.settings.maxConcurrentJobs, agents = version.nodes.filter(node => node.type === 'agent');
-          const tools = agents.length ? agents.map(node => `${node.label || agentName(node.config.agentId)}: ${node.config.tools === 'web' ? 'read-only web search' : 'no tools'}`).join('; ') : 'No agent steps at the top level.';
-          const rows = check.valid ? [
-            ['Version', `${number} of “${version.name}”, pinned with its exact sub-pipeline versions. Editing or publishing the draft never changes this run.`],
-            ['Steps', `${plural(check.summary.steps, 'step')} after sub-pipelines are expanded; ${plural(check.summary.agentSteps, 'agent job')}.`],
-            ['At once', `At most ${Math.min(version.settings.maxParallel, ceiling)} agent ${Math.min(version.settings.maxParallel, ceiling) === 1 ? 'step' : 'steps'} at a time (this pipeline allows ${version.settings.maxParallel}; the app runs at most ${plural(ceiling, 'Network job')} at once).`],
-            ['Permissions', 'Each agent step is its own Network job with its agent’s CLI sign-in: read-only, in an empty folder, no project files or lessons, only the agent’s approved memory.'],
-            ['Tools', tools],
-            ['Time', `Stops after ${Math.round(version.settings.deadlineMs / 60000)} minutes of running (time waiting for you does not count). If a step fails: ${version.settings.failurePolicy === 'stop' ? 'the run stops' : 'independent steps finish, then the run ends failed'}.`],
-            ['Cost', COST],
-          ] : [];
-          const list = el('dl', 'network-facts'); for (const [label, value] of rows) list.append(el('dt', '', label), el('dd', '', value));
-          facts.replaceChildren(...(check.valid ? [list] : []));
-          if (!jobs.worker) facts.append(note('No job worker is available in this app: agent steps wait in the queue, and nothing runs until one is.', 'network-stale'));
-          if (!check.valid) { const why = el('p', 'inline-error', `This version cannot start now: ${check.error.message}`); why.setAttribute('role', 'alert'); facts.append(why); submit.title = 'It cannot start now; see why above.'; return; }
+          facts.replaceChildren(...checked.nodes);
+          if (!checked.valid) { submit.title = 'It cannot start now; see why above.'; return; }
           submit.disabled = false; submit.title = '';
         } catch (error) { if (mine === turn) facts.replaceChildren(el('p', 'inline-error', `Could not check this version. ${error.message}`)); }
       };
@@ -1111,7 +1126,8 @@ window.PromptboardNetworkPipeline = (() => {
         { selector: 'node.problem', style: { 'border-color': error, 'border-width': 5 } },
         { selector: 'node.s-running', style: { 'border-color': blue, 'border-width': 5 } },
         { selector: 'node.s-completed', style: { 'border-color': ok, 'border-width': 4 } },
-        { selector: 'node.s-waiting_for_approval', style: { 'border-color': warn, 'border-width': 6, 'border-style': 'double' } },
+        { selector: 'node.s-waiting_for_approval, node.s-waiting_for_input', style: { 'border-color': warn, 'border-width': 6, 'border-style': 'double' } },
+        { selector: 'node.s-waiting_for_children', style: { 'border-color': blue, 'border-width': 6, 'border-style': 'double' } },
         { selector: 'node.s-blocked', style: { 'border-color': warn, 'border-width': 4, 'border-style': 'dashed' } },
         { selector: 'node.s-failed', style: { 'border-color': error, 'border-width': 5 } },
         { selector: 'node.s-skipped, node.s-cancelled', style: { opacity: 0.55, 'border-style': 'dashed' } },
@@ -1265,6 +1281,8 @@ window.PromptboardNetworkPipeline = (() => {
     /** What stands for a step on the canvas: the outermost collapsed group around it, or the step itself. */
     const shown = id => chain(id).find(g => !rv.expanded.has(g)) || id;
     const runStepName = id => { const node = step(id); return node?.label || (node?.type === 'output' ? `Output “${node.config.name}”` : TYPE_NAMES[node?.type]) || id; };
+    /** A running step whose job waits for your answer or for its sub-jobs shows that (the run and the step stay running). */
+    const stepStatus = id => { const state = rv.run.nodes[id], job = state.status === 'running' && state.jobId ? rv.jobs.get(state.jobId) : null; return job?.status !== 'waiting_for_input' ? state.status : job.awaiting?.kind === 'children' ? 'waiting_for_children' : 'waiting_for_input'; };
     /** A group's status from its steps: running, waiting, blocked, failed, completed (all ended), or waiting to start. */
     function groupStatus(id) {
       const states = rv.plan.nodes.filter(node => chain(node.id).includes(id)).map(node => rv.run.nodes[node.id].status), has = status => states.includes(status);
@@ -1318,11 +1336,12 @@ window.PromptboardNetworkPipeline = (() => {
       if (!ready) { rHeading.textContent = 'Loading the run…'; rMeta.replaceChildren(); return; }
       const { run, plan } = rv, states = Object.values(run.nodes), count = status => states.filter(node => node.status === status).length;
       rHeading.textContent = `${plan.pipeline.name} · run of version ${plan.pipeline.version}`;
-      rMeta.replaceChildren(Object.assign(tone(RUN_STATES[run.status] || [run.status, 'off']), { id: 'network-run-status' }), chip(`Started ${ago(run.startedAt)}`, 'off'), ...(run.endedAt ? [chip(`Ended ${ago(run.endedAt)}`, 'off')] : []),
+      rMeta.replaceChildren(Object.assign(tone(RUN_STATES[run.status] || [run.status, 'off']), { id: 'network-run-status' }), chip(`Started ${ago(run.startedAt)}${run.history[0]?.by === 'schedule' ? ' by a schedule' : ''}`, 'off'), ...(run.endedAt ? [chip(`Ended ${ago(run.endedAt)}`, 'off')] : []),
         chip(`Network version ${plan.network.version}`, 'off'));
       rPinned.textContent = `This run uses version ${plan.pipeline.version} exactly as published (plan ${run.planSha256.slice(0, 12)}, compiled ${ago(plan.compiledAt)}), with its sub-pipelines pinned. Editing or publishing the pipeline does not change it.`;
-      const waiting = plan.nodes.filter(node => run.nodes[node.id].status === 'waiting_for_approval');
-      rSummary.textContent = `${count('completed')} of ${plural(states.length, 'step')} completed${count('running') ? ` · ${count('running')} running` : ''}${waiting.length ? ` · waiting for your approval of ${waiting.map(node => `“${runStepName(node.id)}”`).join(', ')}` : ''}${count('failed') ? ` · ${count('failed')} failed` : ''}${count('blocked') ? ` · ${count('blocked')} blocked` : ''}${run.reason ? `. ${run.reason}` : ''}`;
+      const waiting = plan.nodes.filter(node => run.nodes[node.id].status === 'waiting_for_approval'), names = status => plan.nodes.filter(node => stepStatus(node.id) === status).map(node => `“${runStepName(node.id)}”`).join(', ');
+      const asking = names('waiting_for_input'), delegating = names('waiting_for_children');
+      rSummary.textContent = `${count('completed')} of ${plural(states.length, 'step')} completed${count('running') ? ` · ${count('running')} running` : ''}${waiting.length ? ` · waiting for your approval of ${waiting.map(node => `“${runStepName(node.id)}”`).join(', ')}` : ''}${asking ? ` · ${asking} waits for your answer` : ''}${delegating ? ` · ${delegating} waits for its sub-jobs` : ''}${count('failed') ? ` · ${count('failed')} failed` : ''}${count('blocked') ? ` · ${count('blocked')} blocked` : ''}${run.reason ? `. ${run.reason}` : ''}`;
       drawRunCanvas(); syncRun(false);
       renderRunSide();
     }
@@ -1364,7 +1383,7 @@ window.PromptboardNetworkPipeline = (() => {
       const pick = button('', () => selectRun(node.id, { focus: true }), 'network-graph-item'); pick.dataset.stepId = node.id;
       if (rv.selected === node.id) pick.setAttribute('aria-current', 'true');
       const text = el('span', 'network-row-text');
-      text.append(el('strong', '', runStepName(node.id)), el('span', 'network-row-sub', `${TYPE_NAMES[node.type]}${node.type === 'agent' ? ` · ${agentLabel(node.config.agentId)}` : ''}${state.attempt > 1 ? ` · try ${state.attempt}` : ''}`), tone(STEP_STATES[state.status] || [state.status, 'off']));
+      text.append(el('strong', '', runStepName(node.id)), el('span', 'network-row-sub', `${TYPE_NAMES[node.type]}${node.type === 'agent' ? ` · ${agentLabel(node.config.agentId)}` : ''}${state.attempt > 1 ? ` · try ${state.attempt}` : ''}`), tone(STEP_STATES[stepStatus(node.id)] || [state.status, 'off']));
       const mark = el('span', `network-node-mark mark-${node.type}`, MARKS[node.type]); mark.setAttribute('aria-hidden', 'true');
       pick.append(mark, text); item.append(pick);
       return item;
@@ -1399,7 +1418,7 @@ window.PromptboardNetworkPipeline = (() => {
     }
     function runStepDetails(node) {
       const state = rv.run.nodes[node.id], parts = [], rows = [];
-      const status = tone(STEP_STATES[state.status] || [state.status, 'off']); status.id = 'network-run-step-status';
+      const status = tone(STEP_STATES[stepStatus(node.id)] || [state.status, 'off']); status.id = 'network-run-step-status';
       parts.push(el('p', 'network-chips', ''), note(`${TYPE_NAMES[node.type]} step${node.group ? ` inside “${group(node.group).label}”` : ''}.`));
       parts[0].append(status);
       if (state.reason || state.errorCode) { const why = el('p', ['failed', 'blocked'].includes(state.status) ? 'network-stale' : 'note', `${state.errorCode ? `${state.errorCode}: ` : ''}${state.reason || ''}`); why.id = 'network-run-step-reason'; parts.push(why); }
@@ -1424,6 +1443,16 @@ window.PromptboardNetworkPipeline = (() => {
       parts.push(facts);
       const actions = el('div', 'network-record-actions');
       if (state.jobId) { const open = button('Open job', () => openJob(state.jobId), 'text-button'); open.id = 'network-run-open-job'; actions.append(open); }
+      // The step's job waits: the owner answers, or approves and follows its sub-jobs, in the job's record (Activity).
+      const handoff = stepStatus(node.id);
+      if (handoff === 'waiting_for_input' || handoff === 'waiting_for_children') {
+        const job = rv.jobs.get(state.jobId), asks = handoff === 'waiting_for_input';
+        const why = note(asks ? `Its agent asked you a question: ${job.awaiting?.question || 'see the job’s record'} The step waits for your answer, then its job runs again with it. The run’s deadline keeps counting.`
+          : `${job.waiting?.message || 'Its job waits for the sub-jobs its agent delegated.'} Sub-jobs that need your approval wait in the job’s record. The run’s deadline keeps counting.`);
+        why.id = 'network-run-step-handoff';
+        const go = button(asks ? 'Answer in the job’s record' : 'Open its sub-jobs', () => openJob(state.jobId), 'secondary-button'); go.id = 'network-run-handoff';
+        parts.push(why, go);
+      }
       if (node.type === 'agent' && host.openAgent) { const agent = button('Open agent profile', () => host.openAgent(node.config.agentId), 'text-button'); agent.id = 'network-run-open-agent'; actions.append(agent); }
       if (actions.children.length) parts.push(actions);
       if (node.type === 'output') parts.push(...reportPart(node, state));
@@ -1540,8 +1569,8 @@ window.PromptboardNetworkPipeline = (() => {
     /** The canvas elements for what is visible now: collapsed groups as one node, expanded ones as boxes around their steps. */
     function syncRun(rebuild) {
       const cy = canvases.r.cy; if (!cy || !rv?.run) return;
-      const label = id => { if (group(id)) { const g = group(id); return `${rv.expanded.has(id) ? '▾' : '▸'} ${clip(g.label, 36)} · v${g.version}${rv.expanded.has(id) ? '' : `\n${STEP_STATES[groupStatus(id)][0]}`}`; } return `${MARKS[step(id).type]} ${clip(runStepName(id), 36)}\n${STEP_STATES[rv.run.nodes[id].status][0]}`; };
-      const status = id => (group(id) ? groupStatus(id) : rv.run.nodes[id].status);
+      const label = id => { if (group(id)) { const g = group(id); return `${rv.expanded.has(id) ? '▾' : '▸'} ${clip(g.label, 36)} · v${g.version}${rv.expanded.has(id) ? '' : `\n${STEP_STATES[groupStatus(id)][0]}`}`; } return `${MARKS[step(id).type]} ${clip(runStepName(id), 36)}\n${STEP_STATES[stepStatus(id)][0]}`; };
+      const status = id => (group(id) ? groupStatus(id) : stepStatus(id));
       if (rebuild) {
         const at = runPositions(), elements = [], visibleGroups = rv.plan.groups.filter(g => chain(g.id).every(p => rv.expanded.has(p))).map(g => g.id);
         for (const id of visibleGroups) elements.push({ group: 'nodes', data: { id, type: 'subnetwork', label: label(id), ...(group(id).parent ? { parent: group(id).parent } : {}) }, position: { ...at.get(id) }, classes: `${rv.expanded.has(id) ? 'group' : ''} s-${status(id)}` });
@@ -1591,5 +1620,5 @@ window.PromptboardNetworkPipeline = (() => {
     }
     return { panel, show, guard, isDirty: () => Boolean(ed?.dirty) };
   }
-  return { create, helpers: { topo, layered, reaching, ruleOf, ruleDraft, diffOf, marksOf } };
+  return { create, runFacts, helpers: { topo, layered, reaching, ruleOf, ruleDraft, diffOf, marksOf } };
 })();

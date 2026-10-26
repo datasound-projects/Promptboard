@@ -198,7 +198,7 @@ export class NetworkSchedules {
   async #start(row, slot, key) {
     if (row.target.pipelineId) {
       if (!this.runs) fail('Pipelines are not available in this app.', 'NOT_FOUND', 404);
-      const { runId } = await this.runs.startRun(row.target.pipelineId, { version: row.target.version, confirm: true, ...(row.target.input ? { input: row.target.input } : {}) });
+      const { runId } = await this.runs.startRun(row.target.pipelineId, { version: row.target.version, confirm: true, ...(row.target.input ? { input: row.target.input } : {}) }, { by: 'schedule' });
       return { runId, fields: { lastRunId: runId, lastJobId: null } };
     }
     let accepted;

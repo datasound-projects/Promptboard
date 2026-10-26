@@ -366,9 +366,10 @@ export class PipelineRunner {
 
   /**
    * Start a published version: compiled now (agents as they are now; anything that cannot run is refused), its plan written
-   * once, every step pending. Needs `confirm: true`: the steps are agent jobs.
+   * once, every step pending. Needs `confirm: true`: the steps are agent jobs. `by` (server code only) is who started it: the
+   * owner's route, or 'schedule' for a schedule the owner switched on (its history and pipeline.run event say so).
    */
-  async startRun(pipelineId, input) {
+  async startRun(pipelineId, input, { by = 'owner' } = {}) {
     only(input, ['version', 'confirm', 'input'], 'a run request');
     if (!Number.isSafeInteger(input.version) || input.version < 1) fail('Choose the published version to run (version).');
     if (input.confirm !== true) fail('Confirm the run (confirm: true): its steps are agent jobs that use your CLI sign-in.', 'CONFIRMATION_REQUIRED');
@@ -381,11 +382,11 @@ export class PipelineRunner {
       const run = { schema: SCHEMA.run, version: 1, id, revision: 1, pipelineId, pipelineVersion: input.version, networkId: compiled.network.id, planSha256: sha256(text), status: 'running', input: given,
         createdAt: at, updatedAt: at, startedAt: at, endedAt: null, deadlineAt: at + compiled.settings.deadlineMs, pausedAt: null, errorCode: null, reason: '',
         nodes: Object.fromEntries(compiled.nodes.map(step => [step.id, { status: 'pending', attempt: 0, jobId: null, jobIds: [], inputs: null, startedAt: null, endedAt: null, errorCode: null, reason: '', result: null }])),
-        history: [{ at, status: 'running', by: 'owner' }] };
+        history: [{ at, status: 'running', by }] };
       try { await writeImmutable(this.#file(id, 'plan.json'), text, 'The run plan'); await writeDocument(this.#file(id, 'run.json'), run); }
       catch (error) { await rm(this.#file(id), { recursive: true, force: true }).catch(() => {}); throw error; } // Nothing half-made stays.
       this.#plans.set(id, plan); this.#runs.set(id, run);
-      this.#emit({ type: 'pipeline.run', pipelineRunId: id, networkId: run.networkId, status: 'running', from: null, by: 'owner', errorCode: null, message: `Started version ${input.version}.` });
+      this.#emit({ type: 'pipeline.run', pipelineRunId: id, networkId: run.networkId, status: 'running', from: null, by, errorCode: null, message: `Started version ${input.version}.` });
       this.#kick();
       return { runId: id, run: this.#view(run) };
     });
