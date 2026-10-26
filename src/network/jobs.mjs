@@ -43,6 +43,8 @@ const LIMITS = JOB_LIMITS, NEXT = JOB_TRANSITIONS, TERMINAL = new Set(['complete
 const ATTEMPT_STATUSES = ['claimed', 'launching', 'running', 'completed', 'failed', 'cancelled', 'unknown', 'interrupted'], ATTEMPT_ENDED = new Set(ATTEMPT_STATUSES.slice(3));
 const OUTCOMES = ['completed', 'failed', 'cancelled', 'uncertain', 'not_started'];
 const JOB_ID = /^job_[0-9a-f]{20}$/, ATTEMPT_ID = /^att_[0-9a-f]{20}$/, AGENT_ID = /^agt_[0-9a-f]{20}$/, NETWORK_ID = /^net_[0-9a-f]{20}$/;
+/** A pipeline run and one step of its compiled plan (a sub-pipeline step is namespaced `<subnode>/<step>`, at most 4 deep). */
+export const RUN_ID = /^run_[0-9a-f]{20}$/, PLAN_NODE_ID = /^n_[0-9a-f]{12}(?:\/n_[0-9a-f]{12}){0,4}$/;
 const EXTERNAL_ID = /^[A-Za-z0-9_-]{1,100}$/, CODE = /^[A-Z][A-Z0-9_]{1,59}$/, KEY = /^[^\u0000-\u001f\u007f]{1,200}$/, SHA = /^[0-9a-f]{64}$/;
 const OWNER = Object.freeze({ kind: 'owner', id: null });
 const SOURCE = { owner: 'owner', machine: 'machine', pipeline: 'pipeline', job: 'delegation', schedule: 'schedule', a2a: 'a2a' };
@@ -81,7 +83,7 @@ const storedSettings = data => Number.isSafeInteger(data.revision) && Object.ent
  * null when not given, so the hash that recognises a repeated submission does not depend on the current settings.
  */
 function submission(input) {
-  only(input, ['agentId', 'input', 'instructions', 'tools', 'permissions', 'limits', 'requireApproval', 'projectId', 'networkId', 'parentJobId', 'idempotencyKey'], 'a job');
+  only(input, ['agentId', 'input', 'instructions', 'tools', 'permissions', 'limits', 'requireApproval', 'projectId', 'networkId', 'parentJobId', 'idempotencyKey', 'pipeline'], 'a job');
   const { agentId, instructions = '', tools = 'none', requireApproval = false, projectId = null, networkId = null, parentJobId = null, idempotencyKey = null } = input;
   if (typeof agentId !== 'string' || !AGENT_ID.test(agentId)) fail('Choose an agent registered in Network.');
   only(input.input, ['text', 'json'], 'the job input');
@@ -117,8 +119,14 @@ function submission(input) {
   if (idempotencyKey !== null && (typeof idempotencyKey !== 'string' || !KEY.test(idempotencyKey) || LINE_BREAK.test(idempotencyKey))) fail(`The idempotency key is 1 to ${LIMITS.idempotencyKey} printable characters.`);
   if (memory === 'agent+network' && !networkId) fail('Network memory needs the network the job runs in (networkId).');
   if (projectLessons && !projectId) fail('Project lessons need the project (projectId).');
+  // The pipeline link (architecture §17 item 4): only present when given, so earlier submissions keep their hash.
+  const pipeline = input.pipeline ?? null;
+  if (pipeline !== null) {
+    only(pipeline, ['runId', 'nodeId'], 'the pipeline link');
+    if (typeof pipeline.runId !== 'string' || !RUN_ID.test(pipeline.runId) || typeof pipeline.nodeId !== 'string' || !PLAN_NODE_ID.test(pipeline.nodeId)) fail('The pipeline link names a run and one of its steps.');
+  }
   return { agentId, input: { text, ...(json !== undefined ? { json } : {}) }, instructions: cleanText(instructions), tools, permissions: { filesystem, memory, projectLessons },
-    timeoutMs, requireApproval, projectId, networkId, parentJobId, idempotencyKey };
+    timeoutMs, requireApproval, projectId, networkId, parentJobId, idempotencyKey, ...(pipeline ? { pipeline: { runId: pipeline.runId, nodeId: pipeline.nodeId } } : {}) };
 }
 
 /** What a worker reports at the end of an attempt. A malformed report is refused (400) and changes nothing. */
@@ -155,6 +163,8 @@ export class NetworkJobs {
     Object.assign(this, { dir: join(dataDir, 'network'), registry, worker, authBusy, now, prepareTimeoutMs, events });
   }
   instance = randomUUID(); // This process: each attempt records it as its workerInstance.
+  /** Set by the pipeline runner: `holds(job)` is true while an open run needs the job, so its logs stay and it cannot be deleted. */
+  holds = null;
   // ponytail: one queue for every job change; per-job queues if many workers ever contend for it.
   #serial = serial();
   #loading = null;
@@ -227,7 +237,7 @@ export class NetworkJobs {
   async #sweep() {
     const cutoff = this.now() - this.#settings.outputRetentionDays * DAY;
     const old = [...this.#jobs.values()].filter(job => TERMINAL.has(job.status) && job.attempts.length && !job.outputsRemovedAt && job.updatedAt <= cutoff
-      && !(job.parentJobId && this.#jobs.has(job.parentJobId) && !TERMINAL.has(this.#jobs.get(job.parentJobId).status))).sort((a, b) => a.updatedAt - b.updatedAt);
+      && !(job.parentJobId && this.#jobs.has(job.parentJobId) && !TERMINAL.has(this.#jobs.get(job.parentJobId).status)) && !this.holds?.(job)).sort((a, b) => a.updatedAt - b.updatedAt);
     for (const job of old.slice(0, LIMITS.sweep)) {
       for (const attempt of job.attempts) for (const name of ['stream.jsonl', 'output.log']) await rm(this.#attemptFile({ jobId: job.id, attemptId: attempt.id }, name), { force: true });
       await this.#save({ ...job, outputsRemovedAt: this.now() });
@@ -336,6 +346,7 @@ export class NetworkJobs {
   async submit(input, { requester = OWNER } = {}) {
     if (!object(requester) || !Object.hasOwn(SOURCE, requester.kind)) fail('Unknown requester.');
     const spec = submission(input), submissionSha256 = sha256(JSON.stringify({ ...spec, idempotencyKey: undefined }));
+    if (spec.pipeline && (requester.kind !== 'pipeline' || requester.id !== spec.pipeline.runId)) fail('Only the pipeline runner links a job to its run. Nothing was submitted.', 'PIPELINE_LINK_REFUSED', 403);
     await this.#ready();
     return this.#serial(async () => {
       const key = this.#key(requester, spec.idempotencyKey), existing = key ? this.#jobs.get(this.#keys.get(key)) : null;
@@ -347,10 +358,10 @@ export class NetworkJobs {
       const agent = await this.#pin(spec), id = newId('job'), at = this.now(), status = spec.requireApproval ? 'waiting_for_approval' : 'queued';
       const request = { schema: SCHEMA.request, version: 1, jobId: id, acceptedAt: at, input: spec.input, instructions: spec.instructions, tools: spec.tools, permissions: spec.permissions,
         limits: { timeoutMs: spec.timeoutMs ?? this.#settings.defaultTimeoutMs, maxOutputBytes: LIMITS.resultBytes }, requireApproval: spec.requireApproval,
-        projectId: spec.projectId, networkId: spec.networkId, parentJobId: spec.parentJobId, agent };
+        projectId: spec.projectId, networkId: spec.networkId, parentJobId: spec.parentJobId, ...(spec.pipeline ? { pipeline: spec.pipeline } : {}), agent };
       const text = `${JSON.stringify(request)}\n`;
       const job = { schema: SCHEMA.job, version: 1, id, revision: 1, status, source: SOURCE[requester.kind], requester: { kind: requester.kind, id: requester.id ?? null },
-        agentId: spec.agentId, projectId: spec.projectId, networkId: spec.networkId, pipelineRunId: null, nodeId: null, parentJobId: spec.parentJobId,
+        agentId: spec.agentId, projectId: spec.projectId, networkId: spec.networkId, pipelineRunId: spec.pipeline?.runId ?? null, nodeId: spec.pipeline?.nodeId ?? null, parentJobId: spec.parentJobId,
         idempotencyKey: spec.idempotencyKey, submissionSha256, requestSha256: sha256(text), createdAt: at, updatedAt: at, acceptedAt: at, queuedAt: status === 'queued' ? this.#stamp() : null,
         attempts: [], currentAttemptId: null, outcome: null, errorCode: null, reason: '', result: null, history: [{ at, status, by: requester.kind }], outputsRemovedAt: null };
       try { await writeImmutable(join(this.#folder(id), 'request.json'), text, 'The job'); await writeDocument(join(this.#folder(id), 'job.json'), job); }
@@ -363,12 +374,12 @@ export class NetworkJobs {
     });
   }
 
-  async list({ status, agentId, projectId, networkId, parentJobId, offset, limit } = {}) {
+  async list({ status, agentId, projectId, networkId, parentJobId, pipelineRunId, offset, limit } = {}) {
     if (status !== undefined && !JOB_STATUSES.includes(status)) fail(`Filter the status by ${JOB_STATUSES.join(', ')}.`);
-    for (const [value, pattern] of [[agentId, AGENT_ID], [projectId, EXTERNAL_ID], [networkId, NETWORK_ID], [parentJobId, JOB_ID]]) if (value !== undefined && !pattern.test(value)) fail('Filter by valid IDs.');
+    for (const [value, pattern] of [[agentId, AGENT_ID], [projectId, EXTERNAL_ID], [networkId, NETWORK_ID], [parentJobId, JOB_ID], [pipelineRunId, RUN_ID]]) if (value !== undefined && !pattern.test(value)) fail('Filter by valid IDs.');
     await this.#ready();
     const items = [...this.#jobs.values()].filter(job => (!status || job.status === status) && (!agentId || job.agentId === agentId) && (!projectId || job.projectId === projectId)
-      && (!networkId || job.networkId === networkId) && (!parentJobId || job.parentJobId === parentJobId)).sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+      && (!networkId || job.networkId === networkId) && (!parentJobId || job.parentJobId === parentJobId) && (!pipelineRunId || job.pipelineRunId === pipelineRunId)).sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
     const result = page(items, offset, limit, 'jobs'), positions = this.#positions();
     return { ...result, jobs: result.jobs.map(job => this.#view(job, positions)), worker: Boolean(this.worker), unavailable: [...this.#unavailable].map(([id, { code }]) => ({ id, code })) };
   }
@@ -663,6 +674,7 @@ export class NetworkJobs {
       if (job.currentAttemptId && this.#live.has(job.currentAttemptId)) fail('This job is still stopping. Try again in a few seconds.', 'JOB_BUSY', 409);
       const users = [...this.#jobs.values()].filter(other => other.parentJobId === id && !TERMINAL.has(other.status)).map(other => other.id);
       if (users.length) fail('Open jobs name this job as their parent. Nothing was deleted.', 'JOB_IN_USE', 409, { jobIds: users });
+      if (this.holds?.(job)) fail('A pipeline run that is still open uses this job’s result. Nothing was deleted.', 'JOB_IN_USE', 409, { pipelineRunId: job.pipelineRunId });
       const folder = this.#folder(id), gone = `${folder}.deleted-${this.now()}-${randomBytes(4).toString('hex')}`;
       try { await rename(folder, gone); } catch { fail('The job could not be deleted. Check folder permissions and try again.', 'NETWORK_WRITE_FAILED', 500); }
       await rm(gone, { recursive: true, force: true }).catch(() => {}); // Renamed first, so the job is gone even if this is cut short.

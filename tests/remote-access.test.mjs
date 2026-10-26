@@ -282,7 +282,11 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     ...each(`/api/network/jobs/job_${'a'.repeat(20)}`, ['GET', 'DELETE', 'POST cancel', 'POST approve', 'POST retry', 'POST close', 'GET result']),
     ...each(`/api/network/agents/agt_${'a'.repeat(20)}`, ['GET', 'PATCH', 'GET memory', 'POST memory', 'GET memory/preview', `PATCH memory/mem_${'b'.repeat(20)}`, `DELETE memory/mem_${'b'.repeat(20)}`, `POST memory/mem_${'b'.repeat(20)}/approve`,
       'GET posts', 'POST posts', `PATCH posts/pst_${'c'.repeat(20)}`, `DELETE posts/pst_${'c'.repeat(20)}`]),
-    ...each(`/api/network/networks/net_${'a'.repeat(20)}`, ['GET', 'PATCH', 'DELETE', 'POST publish', 'POST duplicate', 'GET versions/1', 'GET memory', 'POST memory', `PATCH memory/mem_${'b'.repeat(20)}`, `DELETE memory/mem_${'b'.repeat(20)}`, `POST memory/mem_${'b'.repeat(20)}/approve`])];
+    ...each(`/api/network/networks/net_${'a'.repeat(20)}`, ['GET', 'PATCH', 'DELETE', 'POST publish', 'POST duplicate', 'GET versions/1', 'GET memory', 'POST memory', `PATCH memory/mem_${'b'.repeat(20)}`, `DELETE memory/mem_${'b'.repeat(20)}`, `POST memory/mem_${'b'.repeat(20)}/approve`]),
+    // Pipelines and runs (Task 09): starting, cancelling and approving are the owner's control, which a paired device has.
+    'GET /api/network/pipelines', 'POST /api/network/pipelines', 'GET /api/network/pipeline-runs',
+    ...each(`/api/network/pipelines/pip_${'a'.repeat(20)}`, ['GET', 'PATCH', 'DELETE', 'POST validate', 'POST publish', 'GET versions/1', 'POST runs']),
+    ...each(`/api/network/pipeline-runs/run_${'a'.repeat(20)}`, ['GET', 'POST cancel', `POST nodes/n_${'b'.repeat(12)}/n_${'c'.repeat(12)}/approve`])];
   // The table covers every route the server and Base declare: a new route must be added here, local-only or not.
   const paths = [...LOCAL_ONLY, ...ALLOWED].map(row => row.split(' ')[1].split('?')[0]);
   for (const file of ['server.mjs', 'base-http.mjs', 'sandbox.mjs']) {

@@ -1332,3 +1332,138 @@ statuses, Kanban runs) and `public/network-activity.js` (the UI). None changes a
     left out, an unusable type refused (`append` answers null and the journal counts it). A `job.activity` may carry
     `kind` (`turn|tool|web|mcp|text|status`), which the timeline shows ("Web search", "Tool"); without it the event shows
     as "Activity" with its message. Pipeline events show as "Pipeline run <id>: <status>" and "… step <nodeId>: <status>".
+
+## 20. Task 09 decisions (pipeline compiler and runner)
+
+Built in `src/network/pipeline-model.mjs` (drafts, versions, strict schema), `src/network/pipeline-compiler.mjs` (plan,
+condition interpreter), `src/network/pipeline-runner.mjs` (runs), the §17 item 4 link in `src/network/jobs.mjs`, routes in
+`src/network/http.mjs` and two lines of wiring in `src/server.mjs`. Items 9 and 10 deviate from earlier sections; the rest
+fill in what §5, §6.3 and §9 left open.
+
+1. **Files.** `network/pipelines/<escapeId(pip_…)>.json` (`promptboard.pipeline-draft` v1 + `.bak`) and
+   `pipelines/<id>/v<n>-<sha256>.json` (`promptboard.pipeline-version` v1: written once with the version file first, then
+   the draft names it; hash-checked on every read; never deleted). `network/pipeline-runs/<escapeId(run_…)>/plan.json`
+   (`promptboard.network-plan` v1, written once; `run.json.planSha256` checked at every load), `run.json`
+   (`promptboard.network-run` v1 + `.bak`) and `reports/<file>.md`. Ceilings: 500 steps and 2,000 edges per definition,
+   4 MiB per draft (body 4 MiB + 64 KiB), 2,000 steps after expansion, 4 levels of sub-pipelines, 20 rules per condition,
+   50 includes per output, report 4 MiB, run input as a job input (256 KiB text, 64 KiB json). Pipeline export/import is
+   not built (the §4.4 row stays open).
+2. **Draft** = §5 `PipelineDraft` plus `networkVersion` (a published version of `networkId`, required at create, changeable
+   by PATCH; `networkId` is fixed), `description` (≤ 2,000) and an optional one-line `label` (≤ 80) per step. Names are
+   unique per network. Settings: `maxParallel` 1–4 (default 2), `deadlineMs` 1 min–24 h (default 2 h), `failurePolicy`
+   `stop` (default) | `continue_independent`. Step configs are §5's, strict and stored with defaults filled in a fixed key
+   order: agent `{ agentId, instructions ≤ 32 KiB, tools none|web, timeoutMs null|1 s–120 min, retries 0–2 }`;
+   subnetwork `{ pipelineId, version }`; condition `{ all|any: [{ path, op, value }] }` (path `<stepId>.json[.<field>]{0,8}`,
+   fields `[A-Za-z0-9_-]{1,64}` or array indexes; `lt/lte/gt/gte` take a number, `in` 1–50 scalars, `exists` no value, the
+   others a scalar of ≤ 1,000 characters); parallel `{}`; join `{ require: all|any }`; approval `{ prompt ≤ 2,000 }`; output
+   `{ name (file stem, default report), include: [stepId] 1–50 }`. Ports: agent `text|json`, subnetwork `text`, condition
+   `true|false`, parallel/join/approval `done`, output none (it ends its pipeline); every edge arrives on `input`. A save
+   refuses unknown keys, wrong ports, self edges, duplicates, loops (`PIPELINE_CYCLE` with `details.path`) and rules or
+   includes naming steps that are not in the pipeline. **Execution edges are stored only here**; Graph relations are never
+   read by pipelines, so a drawn relation never moves data or authorises a step.
+3. **Compiler** (`compilePipeline(root, { pipeline, network, agent })`). Validate, publish and start all compile; publish
+   refuses what does not compile, start compiles the published version again (agents as they are now). Refusals, each
+   with `details.nodeId` (plan ID): `AGENT_NOT_FOUND`, `PIPELINE_AGENT_NOT_IN_NETWORK` (not an agent node of the step's
+   pinned network version), `REGISTRATION_DISABLED`, `REGISTRATION_STALE`, `TOOLS_UNSUPPORTED`/`PROVIDER_UNSUPPORTED` (§8
+   matrix), `PIPELINE_RECURSIVE` (pipeline ID already on the expansion stack), `PIPELINE_DEPTH` (> 4),
+   `PIPELINE_TOO_LARGE` (> 2,000), `PIPELINE_SCOPE`, `PIPELINE_REFERENCE_INVALID`/`PIPELINE_NETWORK_INVALID` (not
+   published), `PIPELINE_NO_OUTPUT`, `SUBPIPELINE_OUTPUT` (a sub-pipeline has exactly one output step: what it passes on),
+   `PIPELINE_CYCLE` (again after expansion), `CONDITION_PORT` (a rule reads json that does not reach the condition),
+   `OUTPUT_INCLUDE_MISSING`, `OUTPUT_NAME_TAKEN` (top level). **Scope:** a sub-pipeline must belong to a network that the
+   step's network version contains as a sub-network node **at exactly the version its pipeline pins**; agent steps must be
+   members of their own network version. So no step reaches an agent outside the networks the owner composed, and no
+   pipeline job carries a project (no project lessons, no project data). **Expansion:** a sub-pipeline step is replaced by
+   the child's steps, IDs `<substep>/<childstep>`; edges into it go to the child's entry steps, edges out of it leave the
+   child's output step; rule paths and includes naming it mean that output step. The plan keeps `groups` (`{ id, parent,
+   label, pipelineId, version, sha256, networkId, networkVersion }`) for the nested run view, and a sub-pipeline's own
+   settings are ignored (the root's apply). **Typed artifacts:** each plan step gets `inputs`, the artifacts that can reach
+   it: an agent's `text`/`json` along the edge's port, an output step's `text`; parallel, join, condition and approval pass
+   on what reaches them. The plan is `{ schema, version, runId, compiledAt, pipeline: { id, version, sha256, name },
+   network: { id, version, sha256 }, settings, pins: { pipelines, networks }, groups, nodes }` (nodes in topological order,
+   each `{ id, type, label, group, networkId, config, deps: [{ from, port }], inputs: [{ node, port }], file? }`).
+4. **Conditions** are a fixed interpreter (`decide`): own object keys and array indexes only (no prototype, no `length`),
+   operators `eq ne lt lte gt gte in exists contains`, a missing value matches no operator; no eval, no `Function`, no
+   model-written code. The decision is stored on the step: `{ mode, result, rules: [{ path, op, value, actual (JSON ≤ 200
+   characters), missing, matched }], at }` with the step's `inputs`.
+5. **Run and step states** (§6.3). Run: `running`, `waiting_for_approval`, `blocked`, `interrupted`, `completed`, `failed`,
+   `cancelled` (the last three final). It is computed after every change: anything running or ready → `running`; else an
+   approval waiting → `waiting_for_approval`; else a blocked step → `blocked`; all steps ended → `failed` if a step failed,
+   `cancelled` if an approval was rejected, else `completed`. `interrupted` is used only for a `run.json` read from its
+   backup (`RESTORED_FROM_BACKUP`): that copy may not know jobs it started, so the run never moves on its own; the owner can
+   cancel it. Steps: `pending → ready → running → completed | failed | blocked | cancelled`, `skipped`, and
+   `waiting_for_approval → completed | cancelled`. A pending step is decided in plan order: no incoming edge → ready; an
+   edge is live when its source completed (for a condition, on the port it chose), dead when its source was skipped or the
+   condition chose the other port, broken when it failed or was cancelled. `all` (every step except a join of `any`):
+   broken → `cancelled UPSTREAM_FAILED`, any open → wait, any live → ready, else `skipped`. Join `any`: any live → ready
+   (it goes on with what has arrived), else as above.
+6. **What a step does when ready.** Its inputs are frozen then (artifacts that completed and reached it), so a restart
+   composes the same job input. Agent → `ready`, then started within `min(maxParallel, maxConcurrentJobs)` per run and
+   `maxConcurrentJobs` over all runs (steps in flight = steps `running`); condition, parallel and join complete at once;
+   approval → `waiting_for_approval` with `{ prompt, requestedAt }`; output writes `reports/<name>.md` (a nested output
+   `reports/<group with / as .>.<name>.md`): `# <pipeline or sub-pipeline label>`, then per include `## <label>` and the
+   text (json as a fenced block, a step that did not run says so), and completes with `result.text = { ref, sha256, chars }`.
+7. **Step jobs** (§17 item 4). The step's intent (`running`, `attempt`, `jobId: null`) is saved, then `jobs.submit({
+   agentId, input, instructions, tools, limits.timeoutMs?, networkId: the step's network, idempotencyKey:
+   run:<runId>:node:<stepId>:a<attempt>, pipeline: { runId, nodeId } }, { requester: { kind: 'pipeline', id: runId } })`,
+   then the job ID. A submit whose answer is lost is found again by the key (deduplicated), never doubled. Job input: a
+   one-line header, `Run input:` and every input artifact's text under `Result of step “<label>” (<id>):`, each **indented**
+   (`indent()`), so no result can forge another section; json artifacts go into `input.json.steps[<id>]` (`run` holds the
+   run's json). Over the job limits → step `failed INPUT_LIMIT`. Memory stays the job default (`agent`); no project.
+   Every step is its own job and its own attempt, so two steps of one registration never share a session. A submit
+   refused with 4xx fails the step (`ARTIFACT_INVALID` and `IDEMPOTENCY_CONFLICT` block it); 5xx or anything else leaves the
+   intent for the next pass.
+8. **Following jobs** (`jobs.read` every `pollMs`, default 1 s, on an injectable `schedule`). Open job → step `running` (an
+   owner retry resumes a blocked step). `completed` → the receipt must hold: the job names this run, step, agent and
+   requester; its current attempt completed with outcome `completed`; `result.textRef`/`jsonRef` are that attempt's files;
+   `result.md` hashes to the recorded SHA-256 and is not empty; `result.json` parses. Then the step records `{ jobId,
+   attemptId, text: { ref, sha256, chars }, json: { ref, sha256 } | null }`; anything else → `blocked RECEIPT_INVALID`.
+   Every later read of an artifact checks its hash again (`ARTIFACT_INVALID` blocks). `unknown`/`interrupted` → `blocked`
+   with the job's code and a reason naming the job and "Retry the job (confirming it) or close it"; descendants stay
+   pending; nothing is resubmitted. `failed` → retried as a **new job** (`a<n+1>`) while `attempt ≤ retries`, only for a job
+   that had an attempt (a claim-time refusal is not retried), not `CLOSED_BY_OWNER`, and whose last attempt's
+   `sideEffects` is `none` or `read_only_web`; otherwise `failed` with the job's code. `cancelled` → `failed JOB_CANCELLED`.
+9. **Deviation (acceptance Task 09 row 8):** retries are new jobs of the same step, not new attempts of the same job: a
+   `failed` job is final in §6.1, and the §9 key format `…:a<n>` already names the try. Each job keeps its own attempts.
+10. **Deviation (§4.1 `report.md`):** a pipeline may have several outputs, so reports are `reports/<name>.md`
+    (`report.md` for the default name).
+11. **Failure policy, deadline, cancel.** `stop`: the first failed step (or a rejected approval) ends the run at once:
+    open steps `cancelled RUN_STOPPED`, then the run's open jobs are cancelled through the job engine (found by
+    `list({ pipelineRunId })`, so also a job whose ID a crash kept from `run.json`). `continue_independent`: only the
+    failure's descendants are cancelled; independent branches finish; the run ends `failed`. The **deadline** counts
+    only time the run is `running`: entering `waiting_for_approval` or `blocked` saves `pausedAt`, and going on moves
+    `deadlineAt` by the pause (the owner's thinking time is not compute); past it → `failed DEADLINE` as `stop`. Per-step
+    time limits are the job's `timeoutMs` (the engine enforces it). Tokens and cost are not enforceable mid-run (§7.4).
+    **Cancel** (`POST …/cancel`): the run and its open steps are saved `cancelled` first, then its jobs are cancelled;
+    blocked steps keep their reason (their job still needs the owner's decision).
+12. **Approvals.** Only `POST /api/network/pipeline-runs/:id/nodes/:nodeId/approve { decision }` decides (owner
+    routes; a paired device has the owner's control); the step must be `waiting_for_approval` in a moving run
+    (`STEP_STATE` otherwise). No revision is needed: what the owner approves (the prompt and the frozen inputs) cannot
+    change while the step waits. Approve → `completed` with `approval: { prompt, requestedAt, decision: 'approved',
+    decidedAt, by: 'owner' }`; reject → `cancelled APPROVAL_REJECTED`. Nothing else approves: no job result, restart,
+    deadline or timer.
+13. **Restart.** The runner loads every run (plan hash checked; a damaged run.json with a good backup → `interrupted`, a
+    changed plan → listed under `unavailable` and refused), then goes on from what was saved and proven: steps follow their
+    jobs (the engine has already made interrupted attempts `interrupted`), intents are submitted again under the same key,
+    approvals stay pending. A pass that cannot be saved leaves the run as saved; `GET` shows why in `passError` (memory
+    only) and the next pass tries again.
+14. **The job engine link (§17 item 4)**: `jobs.submit` takes `pipeline: { runId, nodeId }` (validated; nodeId may be
+    `<sub>/<step>` up to 5 levels) only from requester `{ kind: 'pipeline', id: runId }` (`PIPELINE_LINK_REFUSED` 403
+    otherwise, so an owner or machine client cannot forge one); it sets `job.pipelineRunId`/`nodeId` and
+    `request.json.pipeline` (absent without a link, so older requests and hashes are unchanged); `list({ pipelineRunId })`
+    and `GET /jobs?pipelineRunId=` filter. `jobs.holds(job)` (set by the runner) is true while the job's run is not ended
+    (or not loaded yet): the retention sweep keeps its logs and `DELETE` answers `JOB_IN_USE` (§4.5, §4.9 item 14).
+15. **Events** (optional `events.append`, §17 item 1; the server passes `networkJobs.events`, so Task 08's journal is
+    used once merged): `pipeline.run` `{ pipelineRunId, networkId, status, from, by, errorCode, message }` on start and every
+    run status change; `pipeline.node` `{ pipelineRunId, nodeId, networkId, agentId?, jobId?, status, from, by, errorCode,
+    message }` on every step change. Messages are the one-line reasons (≤ 500), never inputs or results.
+16. **Routes** (all behind `handle()`, in `NETWORK_ROUTES`, every one allowed from a paired device: none creates a way in,
+    shows a secret or changes trust): `GET/POST /api/network/pipelines` (`?q networkId offset limit`), `GET/PATCH/DELETE
+    /api/network/pipelines/:id` (delete only never-published, `PIPELINE_PUBLISHED`), `POST …/:id/validate` (`{ version? }`
+    → `{ valid, summary | error }`), `POST …/:id/publish` (`{ expectedRevision }`), `GET …/:id/versions/:n`, `POST
+    …/:id/runs` (`{ version, confirm: true, input? }` → 202 `{ runId, run }`; `CONFIRMATION_REQUIRED` without confirm),
+    `GET /api/network/pipeline-runs` (`?pipelineId status offset limit`, step counts), `GET /api/network/pipeline-runs/:id`
+    (`{ run, plan }`), `POST …/:id/cancel` (`{}`), `POST …/:id/nodes/:nodeId/approve`. Starting is never implicit: no save,
+    validate or publish starts anything, and there is no start idempotency key (a repeated start is a second run).
+17. **Not built here:** the UI (Task 10), pipeline export/import, machine/A2A starts (Tasks 11/13), schedules of
+    pipelines (Task 12), and the fake-CLI end-to-end through the real worker (`tests/network-pipeline-e2e.test.mjs`, after
+    Task 07 is merged; the live smoke is Task 14).

@@ -49,15 +49,31 @@
  *   GET  /api/network/events                ?after | before, limit (1–200), agentId jobId networkId pipelineRunId
  *   GET  /api/network/events/stream         ?after: NDJSON replay from `after`, then live events and a ping every 15 s
  *   GET  /api/network/activity              agents' statuses with coverage, open jobs, Kanban runs of registered agents
+ * Pipelines (pipeline-model.mjs) and their runs (pipeline-runner.mjs). Saving, validating and publishing start nothing;
+ * a run starts only with an explicit start that confirms it, and its steps are jobs of the job engine.
+ *   GET  /api/network/pipelines             ?q networkId offset limit
+ *   POST /api/network/pipelines             { networkId, networkVersion, name, description?, settings?, nodes?, edges? }
+ *   GET  /api/network/pipelines/:id         the draft
+ *   PATCH /api/network/pipelines/:id        { expectedRevision, name?, description?, networkVersion?, settings?, nodes?, edges? }
+ *   DELETE /api/network/pipelines/:id       { expectedRevision }: only a never-published pipeline
+ *   POST /api/network/pipelines/:id/validate { version? }: compiles the draft (or that version) without running it
+ *   POST /api/network/pipelines/:id/publish { expectedRevision }: only when it compiles
+ *   GET  /api/network/pipelines/:id/versions/:n
+ *   POST /api/network/pipelines/:id/runs    { version, confirm: true, input?: { text?, json? } } → 202 { runId, run }
+ *   GET  /api/network/pipeline-runs         ?pipelineId status offset limit
+ *   GET  /api/network/pipeline-runs/:id     the run with its plan
+ *   POST /api/network/pipeline-runs/:id/cancel {}
+ *   POST /api/network/pipeline-runs/:id/nodes/:nodeId/approve { decision: 'approve' | 'reject' } (nodeId may be <substep>/<step>)
  */
 import { activitySummary } from './activity.mjs';
 import { EVENT_FILTERS } from './events.mjs';
 import { JOB_LIMITS } from './jobs.mjs';
+import { PIPELINE_LIMITS } from './pipeline-model.mjs';
 import { NETWORK_LIMITS } from './registry.mjs';
 import { NetworkError } from './storage.mjs';
 
 // A draft may reach 8 MiB; an import carries every draft and version (ponytail: one body, split imports past 32 MiB).
-const BODY = { small: 64 * 1024, network: NETWORK_LIMITS.draftBytes + 64 * 1024, import: 32 * 1024 * 1024 };
+const BODY = { small: 64 * 1024, network: NETWORK_LIMITS.draftBytes + 64 * 1024, pipeline: PIPELINE_LIMITS.draftBytes + 64 * 1024, import: 32 * 1024 * 1024 };
 const integer = (value, fallback) => value === null ? fallback : /^\d{1,9}$/.test(value) ? Number(value) : NaN; // NaN is refused by the registry.
 // A sequence number; anything else is NaN, which the journal refuses.
 const seq = value => value === null || value === '' ? undefined : /^\d{1,15}$/.test(value) ? Number(value) : NaN;
@@ -69,6 +85,7 @@ const preview = params => ({ projectId: params.get('projectId') || null, network
   projectLessons: ({ true: true, false: false, null: false })[params.get('projectLessons')] ?? params.get('projectLessons') });
 
 const AGENT = '(agt_[0-9a-f]{20})', NETWORK = '(net_[0-9a-f]{20})', MEMORY = '(mem_[0-9a-f]{20})', POST = '(pst_[0-9a-f]{20})', JOB = '(job_[0-9a-f]{20})';
+const PIPELINE = '(pip_[0-9a-f]{20})', RUN = '(run_[0-9a-f]{20})', STEP = '(n_[0-9a-f]{12}(?:/n_[0-9a-f]{12}){0,4})';
 const route = (method, path, run, status, stream = false) => Object.freeze({ method, pattern: new RegExp(`^/api/network${path}$`), run, status, stream });
 /** Memory routes of one scope: an agent's (agents/agt_…) or a network's (networks/net_…). */
 const memoryRoutes = (kind, prefix) => [
@@ -107,7 +124,7 @@ export const NETWORK_ROUTES = Object.freeze([
   route('POST', '/import', async c => c.network.import(await c.body(BODY.import))),
   route('GET', '/settings', c => c.jobs.settings()),
   route('PATCH', '/settings', async c => c.jobs.updateSettings(await c.body(BODY.small))),
-  route('GET', '/jobs', c => c.jobs.list(query(c.searchParams, ['status', 'agentId', 'projectId', 'networkId', 'parentJobId']))),
+  route('GET', '/jobs', c => c.jobs.list(query(c.searchParams, ['status', 'agentId', 'projectId', 'networkId', 'parentJobId', 'pipelineRunId']))),
   route('POST', '/jobs', async c => c.jobs.submit(await c.body(JOB_LIMITS.submitBody)), accepted => (accepted.deduplicated ? 200 : 202)),
   route('GET', `/jobs/${JOB}`, (c, id) => c.jobs.read(id)),
   route('GET', `/jobs/${JOB}/result`, (c, id) => c.jobs.result(id)),
@@ -117,9 +134,22 @@ export const NETWORK_ROUTES = Object.freeze([
   // The stream answers on the response itself; the client key is the paired device's session, or the computer.
   route('GET', '/events/stream', c => c.events.stream({ res: c.res, after: seq(c.searchParams.get('after')), client: c.req.promptboardRemote?.id ?? 'local' }), undefined, true),
   route('GET', '/activity', c => activitySummary({ registry: c.network, jobs: c.jobs, events: c.events, board: c.board })),
+  route('GET', '/pipelines', c => c.pipelines.list(query(c.searchParams, ['q', 'networkId']))),
+  route('POST', '/pipelines', async c => c.pipelines.create(await c.body(BODY.pipeline))),
+  route('GET', `/pipelines/${PIPELINE}`, (c, id) => c.pipelines.get(id)),
+  route('PATCH', `/pipelines/${PIPELINE}`, async (c, id) => c.pipelines.update(id, await c.body(BODY.pipeline))),
+  route('DELETE', `/pipelines/${PIPELINE}`, async (c, id) => c.pipelines.remove(id, await c.body(BODY.small))),
+  route('POST', `/pipelines/${PIPELINE}/validate`, async (c, id) => c.pipelines.validate(id, await c.body(BODY.small))),
+  route('POST', `/pipelines/${PIPELINE}/publish`, async (c, id) => c.pipelines.publish(id, await c.body(BODY.small))),
+  route('GET', `/pipelines/${PIPELINE}/versions/([1-9]\\d{0,8})`, (c, id, number) => c.pipelines.version(id, Number(number))),
+  route('POST', `/pipelines/${PIPELINE}/runs`, async (c, id) => c.runs.startRun(id, await c.body(JOB_LIMITS.submitBody)), () => 202),
+  route('GET', '/pipeline-runs', c => c.runs.list(query(c.searchParams, ['pipelineId', 'status']))),
+  route('GET', `/pipeline-runs/${RUN}`, (c, id) => c.runs.read(id)),
+  route('POST', `/pipeline-runs/${RUN}/cancel`, async (c, id) => c.runs.cancel(id, await c.body(BODY.small))),
+  route('POST', `/pipeline-runs/${RUN}/nodes/${STEP}/approve`, async (c, id, node) => c.runs.decide(id, node, await c.body(BODY.small))),
 ]);
 
-export async function networkRoute({ network, jobs, events, board, req, res, pathname, searchParams, jsonBody, send }) {
+export async function networkRoute({ network, jobs, events, board, pipelines, runs, req, res, pathname, searchParams, jsonBody, send }) {
   const body = async limit => {
     const value = await jsonBody(req, limit);
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new NetworkError('Send a JSON object.');
@@ -130,7 +160,7 @@ export async function networkRoute({ network, jobs, events, board, req, res, pat
       if (row.method !== req.method) continue;
       const match = row.pattern.exec(pathname);
       if (!match) continue;
-      const answer = await row.run({ network, jobs, events, board, req, res, searchParams, body }, ...match.slice(1));
+      const answer = await row.run({ network, jobs, events, board, pipelines, runs, req, res, searchParams, body }, ...match.slice(1));
       if (row.stream) return; // It answered on the response.
       return send(res, row.status ? row.status(answer) : 200, answer);
     }
