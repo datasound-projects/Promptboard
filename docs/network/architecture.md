@@ -1149,3 +1149,93 @@ branches from the same base and merged in that order. These interfaces are fixed
 5. **Shared files.** Each task adds its own rows to `NETWORK_ROUTES` and the paired-device table, its own section at the
    end of this document and its own "Task NN" section at the end of the progress log; it does not edit the progress
    status table (the coordinator does, when merging).
+
+## 19. Task 08 decisions (events, stream and Activity)
+
+Built in `src/network/events.mjs` (journal and stream), `src/network/activity.mjs` (the Activity summary: coverage,
+statuses, Kanban runs) and `public/network-activity.js` (the UI). None changes a binding rule; items 2, 6 and 8 fill in
+§4.3 and §10.1, item 7 adds one route.
+
+1. **Journal files.** `<data>/network/events/<16-digit first seq>.jsonl`, created on the first append (reading creates
+   nothing), folder 0700, files 0600, append only. Line 1 of a segment is the header
+   `{"schema":"promptboard.network-events","version":1,"first":<seq>}`; every other line is one event
+   `{ seq, id: 'evt_…', at, type, …fields }`. Fields kept (anything else is dropped, never copied): `jobId attemptId
+   agentId pipelineRunId networkId projectId` (`[A-Za-z0-9_-]{1,100}`), `nodeId` (`n_…` and `/`-namespaced steps),
+   `status from by kind coverage` (lower-case words), `errorCode` (`[A-Z][A-Z0-9_]+`), `artifactRef` (a relative path
+   without `..`), and `message`: one line (`oneLine`: local folders cut, secret-looking values masked, every line break
+   and run of white space one space), at most 500 characters. `label` (a worker activity's text) is taken as the
+   message. Types are `<word>.<word>` (`job.status`, `job.activity`, `job.result`, `pipeline.run`, `pipeline.node`, …);
+   `kanban.*` is refused because Kanban runs are derived, never journaled (§14 item 10). A line is at most 4 KiB.
+2. **Sequence.** `seq` strictly increases across segments and restarts: the next one is the newest segment's last valid
+   seq + 1, or its `first` when it holds no event (a crash right after the header). A write that fails part-way still
+   uses up its seq, so no seq is ever written twice; readers see a seq only after its write ended. Appends run one at a
+   time in call order, so the job engine's events keep its transition order.
+3. **Damage and versions.** A line that does not parse, lacks `seq`/`id`/`at`/`type`, or does not continue the sequence
+   (a duplicate or reordered seq) is skipped and counted (`skipped` in each page: damaged lines in the segments that page
+   read); nothing is repaired in place. A torn last line (crash during a write) is closed with a line break on load, so
+   it stays one skipped line and the next event starts on its own line. A segment whose header has a newer `version`
+   makes the whole journal unavailable: `read` and the stream answer `409 NETWORK_VERSION_UNSUPPORTED`, `append` answers
+   null, and no file is written, rolled or removed. An unreadable folder is reported as `NETWORK_DATA_UNREADABLE`.
+4. **Retention (§4.3, kept).** A segment rolls over past 8 MiB; the newest 16 are kept (about 128 MiB) and the oldest
+   segment file is removed when a new one starts. This is the only automatic deletion in Network and it touches only
+   the journal (observability, not data: jobs keep their own records). Cursors are sequence numbers, so retention never
+   breaks one: `after` older than the oldest kept event reads from the oldest with `gap: true` (the stream sends
+   `{"gap":true,"oldest":n}`), and the UI says "Older events were removed when the journal reached its size limit". A
+   cursor past the newest (the journal was removed by hand) answers `reset: true` (stream `{"reset":true,"last":n}`), and
+   the page reads the journal again.
+5. **Durability.** Appends are not fsynced (one per event would slow every transition, and the journal is not
+   authority). An event reaches listeners only after its write ended, so a crash of the app never loses an event a
+   reader saw; a power loss can lose the newest lines (see known limits in the progress log).
+6. **Routes (§10.1 row 08).** `GET /api/network/events` takes `after` *or* `before`, `limit` 1–200 (default 100) and
+   the exact filters `agentId jobId networkId pipelineRunId`, and answers `{ events (ascending), last, oldest, next, prev,
+   more, gap, reset, skipped }`: `after` pages forward (`next`), otherwise the newest events before `before` (default:
+   all) page backward (`prev`, null at the oldest). At most 50,000 lines are looked at per call, so a narrow filter
+   answers an empty page with a cursor that moved instead of reading the whole journal. `GET /api/network/events/stream`
+   is NDJSON (§14 item 1): with `after` it replays every kept event after it, then `{"live":true,"last":n}`, then each
+   event as it is written and `{"ping":true}` every 15 s; without `after` it starts live. Ceilings: 4 open streams per
+   client (the computer is one client, each paired device another) and 32 in all (`429 STREAM_LIMIT`); a reader that
+   leaves 1 MiB unread, or lets 1,000 events pile up while it replays, is dropped and reconnects with its last seq. Every
+   close tears the stream down (listener, ping, count). A revoked paired device's response is destroyed by
+   `src/remote-access.mjs` itself (it keeps every response per session), which ends the stream at once.
+7. **One added route: `GET /api/network/activity`.** The page's current picture in one read: every registration with
+   its status, per-status counts, coverage and active Kanban runs; the open jobs (every page of the seven open statuses,
+   from the job engine's memory) ordered "needs you" first, then running, then queued in FIFO order, the first 200 with
+   `queueTotal`; up to 50 Kanban runs; and the journal's `{ last, oldest, failures, unavailable }`. Without it the page
+   would need seven job-list calls and the board. All three Task 08 routes only read, show no secret and create no way
+   in, so they are allowed from a paired device (§10.2) and none is local-only; each has its row in
+   `tests/remote-access.test.mjs`.
+8. **Job engine hook (§17 item 2).** `new NetworkJobs({ …, events })`; `#save` appends one `job.status` event whenever
+   the saved status differs from the one before (`from`), and `submit` one for the new job (`from: null`), also for the
+   restart reconciliation and backup restores. Fields: `jobId attemptId agentId projectId networkId status from by
+   errorCode message` (the job's reason) as §17 lists, plus `pipelineRunId`/`nodeId` (Task 09's job fields, so the run
+   filter works), `coverage` (the attempt's, once known) and `artifactRef` (the result file of a completed job). The
+   append is not awaited and every throw or rejection of the sink is swallowed: a full disk, a damaged journal or a sink
+   that never answers cannot hold up or undo a saved transition (tested).
+9. **Authority.** Events are never read to decide anything: job and pipeline state come only from `job.json`/`run.json`,
+   no route appends an event, and a forged `job.status completed` changes no job (tested). "Only trusted source events
+   may influence completion" therefore holds trivially: none may.
+10. **Statuses and coverage.** An agent's status is the first of `waiting_for_input`, `unknown` (also `interrupted`:
+    needs your decision), `waiting_for_approval`, `running` (also `preparing`), `queued` among its open jobs, else `none`
+    ("No open job"), never idle or done. Coverage per provider from §7.2/§8: Claude `tools` ("Tool activity"), Codex
+    `partial-tools` ("Limited activity": only web searches and MCP calls, so a quiet running job is not a stopped one),
+    Gemini `final-only`, Antigravity `none`, no provider `unknown`; each with a one-sentence note shown beside the status.
+11. **Kanban runs (§14 item 10).** Read from `board.state()` (the same runs `board.view()` sends, the newest 500): a run
+    belongs to every registration whose Base resource is in its `baseManifest.profiles`. Shown read only with the card
+    title, project, stage, provider, status (Kanban's own words), reported usage and "Open in Kanban"
+    (`openTask(projectId, taskId)` from `app.js`: loads the board, selects the project, opens the card's details). Active
+    runs first, at most 50. Not journaled; the Supervisor and the board are unchanged and nothing is written.
+12. **UI.** Network → Activity (`#/network/activity`; one job's record at `#/network/activity/<jobId>`) and the agent
+    profile's Activity tab. One stream per page while either shows, through `tokenFetch` (the token stays in a header);
+    it reconnects after 1, 2, 4, 8, 15 s with the last seq it saw, ignores any seq it already has, reloads on `reset`, and
+    pauses for 15 s on `429`. The summary is read again 300 ms after events and every 20 s (Kanban runs and queue positions
+    are not journaled). The timeline keeps at most 1,000 events in memory ("Show older events" reads further back);
+    filters (agent, event kind) and search work on the loaded events. Usage and cost appear only as reported ("Usage: not
+    reported"); nothing shows a percentage or a progress bar. A state is a colour, a border and a mark (running ▶ blue,
+    waiting ⏸ amber, unknown ? dashed), so waiting and unknown differ without colour. A job's record uses Task 06's
+    `GET /jobs/:id` and the journal; its result text comes from Task 07's `GET /jobs/:id/result` when that route exists
+    (otherwise "not shown here in this version"). Live redraws keep keyboard focus (by id or `data-focus-key`). The Tasks
+    tab stays Task 07's.
+13. **For Tasks 07 and 09.** Append `{ type, …fields }` as §17 says; unknown fields are dropped silently, invalid ones
+    left out, an unusable type refused (`append` answers null and the journal counts it). A `job.activity` may carry
+    `kind` (`turn|tool|web|mcp|text|status`), which the timeline shows ("Web search", "Tool"); without it the event shows
+    as "Activity" with its message. Pipeline events show as "Pipeline run <id>: <status>" and "… step <nodeId>: <status>".

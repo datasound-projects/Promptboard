@@ -117,8 +117,12 @@ test('a job’s record, filters and search, catching up after leaving, Kanban ru
   await ctx.app.networkEvents.append({ type: 'pipeline.run', pipelineRunId: 'run_' + 'b'.repeat(20), status: 'running', message: 'Release pipeline started.' });
   await ctx.app.networkEvents.append({ type: 'job.activity', agentId: gem.id, jobId: 'job_' + 'c'.repeat(20), kind: 'text', label: 'Drafting the summary' });
   const project = await ctx.app.board.createProject({ name: 'Site' }), task = await ctx.app.board.createTask({ projectId: project.id, title: 'Fix the login form', prompt: 'Fix it.' });
-  await ctx.app.board.store.update(draft => { draft.runs.push({ id: 'run-k1', taskId: task.id, projectId: project.id, stage: 'executing', status: 'succeeded', createdAt: Date.now() - 9000, updatedAt: Date.now() - 5000, config: { provider: 'claude' }, baseManifest: { profiles: [{ resourceId: 'lead', revision: 1 }] }, usage: { inputTokens: 900, outputTokens: 120, costUSD: 0.042 } }); });
-  await until(() => seqs(ctx).length === 6 && $('#network-activity-kanban [data-kanban-run="run-k1"]'), 'events and the Kanban run');
+  await ctx.app.board.store.update(draft => {
+    draft.runs.push({ id: 'run-k1', taskId: task.id, projectId: project.id, stage: 'executing', status: 'succeeded', createdAt: Date.now() - 9000, updatedAt: Date.now() - 5000, config: { provider: 'claude' }, baseManifest: { profiles: [{ resourceId: 'lead', revision: 1 }] }, usage: { inputTokens: 900, outputTokens: 120, costUSD: 0.042 } });
+    draft.runs.push({ id: 'run-k2', taskId: task.id, projectId: project.id, stage: 'planning', status: 'succeeded', createdAt: Date.now() - 19000, updatedAt: Date.now() - 15000, config: { provider: 'codex' }, baseManifest: { profiles: [{ resourceId: 'gem', revision: 1 }] }, usage: { inputTokens: 50, outputTokens: 7 } });
+  });
+  await until(() => seqs(ctx).length === 6 && $('#network-activity-kanban [data-kanban-run="run-k1"]') && $('#network-activity-kanban [data-kanban-run="run-k2"]'), 'events and the Kanban runs');
+  assert.match($('#network-activity-kanban [data-kanban-run="run-k2"]').closest('li').textContent, /50 in · 7 out tokens · cost: not reported/, 'tokens without a cost: the cost is not invented');
   // Filters and search narrow the timeline; Clear filters brings it back.
   const choose = (selector, value) => { $(selector).value = value; $(selector).dispatchEvent(new win.Event('change', { bubbles: true })); };
   choose('#network-activity-agent', gem.id);

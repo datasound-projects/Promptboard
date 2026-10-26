@@ -18,7 +18,7 @@ import { Store } from '../src/store.mjs';
 import { NetworkRegistry } from '../src/network/registry.mjs';
 import { NetworkJobs } from '../src/network/jobs.mjs';
 import { NetworkEvents, normalizeEvent } from '../src/network/events.mjs';
-import { coverageOf, kanbanRuns } from '../src/network/activity.mjs';
+import { activitySummary, coverageOf, kanbanRuns } from '../src/network/activity.mjs';
 import { startServer } from '../src/server.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 import { fakeWorker } from './helpers/network-worker.mjs';
@@ -294,6 +294,8 @@ test('journal recovery: damaged and duplicate lines are skipped and counted, a t
   assert.equal((await ctx.journal().append({ type: 'job.status', status: 'queued' })).seq, 8, 'a restart keeps the sequence');
   // A segment that only has its header (a crash right after it was made) still fixes where the sequence continues.
   await writeFile(join(ctx.dir, '0000000000000100.jsonl'), `${header(100)}\n`);
+  const reserved = await ctx.journal().read({ after: 8 });
+  assert.deepEqual([reserved.events.length, reserved.next, reserved.more], [0, 99, false], 'the cursor moves past numbers no event holds, so a reader never loops');
   assert.equal((await ctx.journal().append({ type: 'job.status', status: 'queued' })).seq, 100);
 
   // Rollover and retention: small segments, the newest three kept, each named by its first seq; cursors keep working.
@@ -465,6 +467,11 @@ test('Activity: each agent’s status with its CLI coverage, open jobs in order,
   await call(`/api/network/jobs/${approval}/approve`, 'POST', { expectedRevision: 1, decision: 'approve' });
   assert.equal((await call('/api/network/activity')).json.agents.find(agent => agent.name === 'Gem').status, 'queued');
   blocker.entry.end(); busy.entry.end();
+  // An interrupted job needs the owner's decision like an unknown one: the agent shows "unknown", never running or idle.
+  const interrupted = { id: 'job_' + 'd'.repeat(20), status: 'interrupted', agentId: AGENT, projectId: null, networkId: null, createdAt: 1, updatedAt: 2, waiting: { for: 'decision' }, outcome: 'uncertain', errorCode: 'APP_RESTARTED', reason: '', attempts: [], currentAttemptId: null, live: null };
+  const stub = await activitySummary({ registry: { listAgents: async () => ({ agents: [{ id: AGENT, baseResourceId: 'y', displayName: 'Stub', enabled: true, base: { provider: 'codex', stale: false } }], next: null }) },
+    jobs: { list: async ({ status }) => ({ jobs: status === 'interrupted' ? [interrupted] : [], next: null }) }, events: { status: async () => ({ last: 0 }) }, board: async () => ({ runs: [], projects: [] }) });
+  assert.deepEqual([stub.agents[0].status, stub.agents[0].counts.unknown, stub.queue[0].status], ['unknown', 1, 'interrupted']);
   // Pure parts: coverage by provider (unknown for anything else), and runs matched only through registered Base IDs.
   assert.deepEqual(['claude', 'codex', 'gemini', 'agy', undefined, 'toString'].map(provider => coverageOf(provider).level), ['tools', 'partial-tools', 'final-only', 'none', 'unknown', 'unknown']);
   assert.deepEqual(kanbanRuns({ runs: [{ id: 'r', status: 'running', baseManifest: { profiles: [{ resourceId: 'x' }] } }], projects: [] }, [{ id: AGENT, baseResourceId: 'y' }]), []);
