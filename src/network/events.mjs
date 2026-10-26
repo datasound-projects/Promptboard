@@ -161,8 +161,9 @@ export class NetworkEvents {
    * before `before` (default: all), with `prev` to continue to older ones (null at the oldest). Filters match exact IDs.
    * At most `limit` (1–200) events, and at most 50,000 lines are looked at per call, so a narrow filter answers with an
    * empty page and a cursor rather than reading the whole journal. `skipped`: damaged lines in the segments read.
+   * `view(event)` (server code only, e.g. a machine client's own jobs): what a caller sees of an event, null to leave it out.
    */
-  async read({ after, before, limit = 100, ...filters } = {}) {
+  async read({ after, before, limit = 100, view = null, ...filters } = {}) {
     cursor(after, 'after'); cursor(before, 'before');
     if (after !== undefined && before !== undefined) fail('Use after or before, not both.');
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > PAGE_LIMIT) fail(`Choose a limit of 1 to ${PAGE_LIMIT}.`);
@@ -172,7 +173,7 @@ export class NetworkEvents {
     }
     await this.#ready();
     this.#available();
-    const wanted = Object.entries(filters).filter(([, value]) => value !== undefined), match = event => wanted.every(([key, value]) => event[key] === value);
+    const wanted = Object.entries(filters).filter(([, value]) => value !== undefined), match = event => wanted.every(([key, value]) => event[key] === value) && (view ? view(event) : event);
     const last = this.#last, segments = [...this.#segments], oldest = segments[0]?.first ?? last + 1, events = [];
     const at = seq => { let index = -1; segments.forEach((segment, i) => { if (segment.first <= seq) index = i; }); return index; };
     let skipped = 0, scanned = 0;
@@ -186,7 +187,8 @@ export class NetworkEvents {
           if (event.seq <= next || event.seq > last) continue;
           if (events.length >= limit || scanned >= EVENT_LIMITS.scan) { done = false; break; }
           scanned++; next = event.seq;
-          if (match(event)) events.push(event);
+          const shown = match(event);
+          if (shown) events.push(shown);
         }
         if (!done) break;
       }
@@ -202,7 +204,8 @@ export class NetworkEvents {
         if (event.seq >= end || (prev !== null && event.seq >= prev)) continue;
         if (events.length >= limit || scanned >= EVENT_LIMITS.scan) { i = -1; break; }
         scanned++; prev = event.seq;
-        if (match(event)) events.push(event);
+        const shown = match(event);
+        if (shown) events.push(shown);
       }
       if (i === 0) prev = null; // Read to the oldest segment: nothing older is left.
     }
@@ -217,9 +220,10 @@ export class NetworkEvents {
    * seq it saw and reconnects with it, so each event reaches it once. Ceilings: 4 open streams per client (the computer, or
    * one paired device) and 32 in all (429 STREAM_LIMIT); a reader that leaves 1 MiB unread, or 1,000 events pile up while
    * it replays, is disconnected and comes back with its last seq. A revoked paired device's streams are destroyed by remote
-   * access itself (src/remote-access.mjs); every close tears the stream down here.
+   * access itself (src/remote-access.mjs); every close tears the stream down here. `view` as in read(): a skipped event
+   * still moves the reader's sequence, so a reconnect never repeats one.
    */
-  async stream({ res, after, client }) {
+  async stream({ res, after, client, view = null }) {
     cursor(after, 'after');
     await this.#ready();
     this.#available();
@@ -233,7 +237,7 @@ export class NetworkEvents {
       res.write(`${JSON.stringify(item)}\n`);
       if (res.writableLength > EVENT_LIMITS.streamBuffer) res.destroy(); // A reader that stopped reading reconnects with its last seq.
     };
-    const deliver = event => { if (event.seq > last) { last = event.seq; write(event); } };
+    const deliver = event => { if (event.seq > last) { last = event.seq; const shown = view ? view(event) : event; if (shown) write(shown); } };
     const unsubscribe = this.subscribe(event => { if (!replaying) deliver(event); else if (waiting.push(event) > EVENT_LIMITS.replayBuffer) res.destroy(); });
     const ping = setInterval(() => write({ ping: true }), this.pingMs); ping.unref?.();
     const teardown = () => {
@@ -249,6 +253,7 @@ export class NetworkEvents {
       if (after !== undefined) {
         for (let more = true; more && !closed;) {
           const page = await this.read({ after: last, limit: EVENT_LIMITS.replayPage });
+          // The page is unfiltered (deliver applies the view), so its `next` moves past events this reader does not see.
           if (page.reset) { write({ reset: true, last: page.last }); last = page.last; break; }
           if (page.gap) write({ gap: true, oldest: page.oldest });
           for (const event of page.events) deliver(event);

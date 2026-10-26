@@ -256,7 +256,9 @@ test('every route from a paired phone: the local-only ones are refused, every ot
   const id = '00000000-0000-4000-8000-000000000000';
   const LOCAL_ONLY = ['GET /api/remote', 'GET /api/remote?refresh=1', 'POST /api/remote/settings', 'POST /api/remote/pairing', 'POST /api/remote/serve', 'DELETE /api/remote/sessions/all', `DELETE /api/remote/sessions/${id}`,
     'GET /api/editors', 'PUT /api/editors', 'POST /api/auth/login', 'POST /api/auth/cancel', 'POST /api/auth/logout', 'POST /api/github/login', 'POST /api/github/login/cancel', 'POST /api/folder/choose', 'POST /api/projects/p1/open', 'POST /api/tasks/t1/preview', 'DELETE /api/tasks/t1/preview',
-    'POST /api/base/mcp/import/preview', 'POST /api/base/mcp/import', 'POST /api/base/markdown/scan', 'POST /api/base/markdown/import', 'PUT /api/sandbox/claude-token', 'DELETE /api/sandbox/claude-token'];
+    'POST /api/base/mcp/import/preview', 'POST /api/base/mcp/import', 'POST /api/base/markdown/scan', 'POST /api/base/markdown/import', 'PUT /api/sandbox/claude-token', 'DELETE /api/sandbox/claude-token',
+    // Network external clients (Task 11): a new machine token is shown, or the machine listener opens.
+    'POST /api/network/clients', `POST /api/network/clients/cli_${'a'.repeat(20)}/rotate`, 'PATCH /api/network/listener'];
   const each = (prefix, rows) => rows.map(row => { const [method, action = ''] = row.split(' '); return `${method} ${prefix}${action ? `/${action}` : ''}`; });
   const ALLOWED = ['GET /', 'GET /app.js', 'GET /api/session', 'GET /api/providers', 'GET /api/status', 'GET /api/models', 'GET /api/usage', 'GET /api/auth', 'POST /api/notifications/connect', 'POST /api/notifications/ack',
     'POST /api/compose/cancel', 'GET /api/compose/batches', 'POST /api/compose/prepare', 'POST /api/compose/sources/document', 'DELETE /api/compose/sources/document/d1', 'POST /api/compose/mcp/test', 'POST /api/split', 'POST /api/generate',
@@ -277,6 +279,8 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     // change no trust (a paired device has the owner's control, so it may submit and cancel jobs).
     'GET /api/network/agents', 'POST /api/network/agents', 'GET /api/network/networks', 'POST /api/network/networks', 'GET /api/network/export', 'POST /api/network/import',
     'GET /api/network/settings', 'PATCH /api/network/settings', 'GET /api/network/jobs', 'POST /api/network/jobs',
+    // External clients (Task 11): listing them and the listener shows no secret; revoking only removes access.
+    'GET /api/network/clients', `DELETE /api/network/clients/cli_${'a'.repeat(20)}`, 'GET /api/network/listener',
     // Activity (Task 08) only reads: the journal, its stream (a revoked device's stream ends with its session) and the summary.
     'GET /api/network/events', 'GET /api/network/events/stream', 'GET /api/network/activity',
     ...each(`/api/network/jobs/job_${'a'.repeat(20)}`, ['GET', 'DELETE', 'POST cancel', 'POST approve', 'POST retry', 'POST close']),

@@ -2,9 +2,9 @@
 
 Promptboard installs these runtime packages from npm. Each is used under its own licence, reproduced below. Development-only packages (jsdom for tests) are not distributed.
 
-Base uses the maintained MCP client SDK for explicit connection tests only. Its distribution contains the licensing-transition notice below (Apache-2.0 / MIT, and CC-BY-4.0 for documentation); its npm metadata reports Apache-2.0.
+Base uses the maintained MCP client SDK for explicit connection tests only; Network's `--mcp` stdio server for external MCP hosts uses the matching server SDK. Their distributions contain the same licensing-transition notice below (Apache-2.0 / MIT, and CC-BY-4.0 for documentation); their npm metadata reports Apache-2.0.
 
-## @modelcontextprotocol/client 2.3.1 (Apache-2.0); @modelcontextprotocol/core 2.3.1 (Apache-2.0)
+## @modelcontextprotocol/client 2.3.1 (Apache-2.0); @modelcontextprotocol/server 2.3.1 (Apache-2.0); @modelcontextprotocol/core 2.3.1 (Apache-2.0)
 
 ```
 The MCP project is undergoing a licensing transition from the MIT License to the Apache License, Version 2.0 ("Apache-2.0"). All new code and specification contributions to the project are licensed under Apache-2.0. Documentation contributions (excluding specifications) are licensed under CC-BY-4.0.

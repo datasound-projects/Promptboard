@@ -1,8 +1,8 @@
 'use strict';
 
 // Network page (#/network): the agent directory and agent profiles, over the owner routes /api/network/*; the Graph and
-// Library sections live in network-graph.js, Activity (and a profile's Activity tab) in network-activity.js, all shown
-// from here.
+// Library sections live in network-graph.js, Activity (and a profile's Activity tab) in network-activity.js, Settings
+// (external clients) in network-clients.js, all shown from here.
 // Base stays the only editor of agent definitions: this page reads Base, registers a Base agent by its ID, edits only the
 // Network identity (display name, tags, capabilities, projects, on/off) and opens the real resource in Base. A profile
 // also holds the agent's memory (proposed, then approved by the owner, with history and a preview of exactly what a job
@@ -18,6 +18,7 @@ window.PromptboardNetwork = (() => {
     ['activity', 'Activity', ''],
     ['library', 'Library', ''],
     ['federation', 'Federation', 'Work with trusted remote agents over A2A. It stays off until you turn it on.'],
+    ['settings', 'Settings', ''],
   ];
   const PROFILE_TABS = [
     ['profile', 'Profile', ''],
@@ -121,7 +122,7 @@ window.PromptboardNetwork = (() => {
     titles.append(heading, note('Register Base agents once, then find them here. Their definitions stay in Base.', 'intro-description'));
     headActions.append(register); head.append(titles, headActions);
     const privacy = note('Network keeps references to Base agents in this computer’s data folder. Opening or editing them never runs an agent.', 'note network-privacy');
-    const panelOf = id => ({ agents: 'network-panel-agents', graph: 'network-panel-graph', library: 'network-panel-library', activity: 'network-panel-activity' })[id] || 'network-panel-soon';
+    const panelOf = id => ({ agents: 'network-panel-agents', graph: 'network-panel-graph', library: 'network-panel-library', activity: 'network-panel-activity', settings: 'network-panel-settings' })[id] || 'network-panel-soon';
     const sections = tablist('Network sections', SECTIONS.map(([id, label, soon]) => [id, label, Boolean(soon)]), 'network-tab', panelOf, id => go(hashFor(id)), 'network-tabs');
     const status = note('', 'note network-status'); status.id = 'network-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
     const alert = el('div', 'inline-error network-alert'); alert.id = 'network-error'; alert.setAttribute('role', 'alert'); alert.hidden = true;
@@ -161,7 +162,9 @@ window.PromptboardNetwork = (() => {
     // Activity (network-activity.js): agents' job status, the open jobs, Kanban runs and the live timeline.
     const activity = window.PromptboardNetworkActivity?.create({ request, say, go, stream: context.stream, openTask: context.openTask,
       openAgent: id => { profileTab = 'activity'; focusDetail = 'always'; go(hashFor('agents', id)); } }) || null;
-    view.append(head, privacy, sections, status, alert, agentsPanel, soonPanel, ...(graphs ? [graphs.library, graphs.graph] : []), ...(activity ? [activity.panel] : []));
+    // Settings (network-clients.js): the machine listener and external clients.
+    const clients = window.PromptboardNetworkClients?.create({ request, say, showError, projects: context.projects, ensureBoard: context.ensureBoard }) || null;
+    view.append(head, privacy, sections, status, alert, agentsPanel, soonPanel, ...(graphs ? [graphs.library, graphs.graph] : []), ...(activity ? [activity.panel] : []), ...(clients ? [clients.panel] : []));
 
     // The sidebar lists the same sections as links, so the phone drawer and the keyboard both reach them.
     const sideNav = el('nav', 'base-categories network-sections'); sideNav.id = 'network-sections'; sideNav.setAttribute('aria-label', 'Network sections');
@@ -179,12 +182,14 @@ window.PromptboardNetwork = (() => {
       sections.select(section);
       for (const link of sideNav.children) { if (link.dataset.section === section) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current'); }
       const own = Boolean(graphs) && ['graph', 'library'].includes(section), watching = Boolean(activity) && section === 'activity';
-      agentsPanel.hidden = section !== 'agents'; soonPanel.hidden = section === 'agents' || own || watching;
+      const settings = Boolean(clients) && section === 'settings';
+      agentsPanel.hidden = section !== 'agents'; soonPanel.hidden = section === 'agents' || own || watching || settings;
       register.hidden = section !== 'agents';
       graphs?.show(own ? where : null);
       activity?.show(watching ? where : null);
       activity?.live(watching || (section === 'agents' && Boolean(where.agentId) && profileTab === 'activity'));
-      if (own || watching) return;
+      clients?.show(settings);
+      if (own || watching || settings) return;
       if (section !== 'agents') {
         const [, label, text] = SECTIONS.find(([id]) => id === section);
         soonPanel.setAttribute('aria-labelledby', `network-tab-${section}`);
@@ -778,7 +783,7 @@ window.PromptboardNetwork = (() => {
     }
     function leave() {
       if (graphs && !graphs.guard(null)) return; // Unsaved graph changes: "keep editing" brings the editor's address back.
-      visible = false; graphs?.show(null); activity?.show(null); activity?.live(false);
+      visible = false; graphs?.show(null); activity?.show(null); activity?.live(false); clients?.show(false);
       if (dialog.open) { opener = null; closeDialog(); } // A dialog never stays over another page.
     }
     return { show, leave, refresh: load };

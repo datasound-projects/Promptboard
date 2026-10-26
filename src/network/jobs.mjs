@@ -351,6 +351,18 @@ export class NetworkJobs {
     const result = page(items, offset, limit, 'jobs'), positions = this.#positions();
     return { ...result, jobs: result.jobs.map(job => this.#view(job, positions)), worker: Boolean(this.worker), unavailable: [...this.#unavailable].map(([id, { code }]) => ({ id, code })) };
   }
+  /** A completed job's result: its text (and json), read back only when the bytes still hash to what job.json recorded. */
+  async result(id) {
+    await this.#ready();
+    const job = this.#job(id);
+    if (!job.result) fail('This job has no result.', 'NOT_FOUND', 404);
+    const read = ref => readFile(join(this.#folder(id), ...ref.split('/')), 'utf8').catch(() => fail('The result of this job cannot be read from the data folder.', 'NETWORK_CONTENT_UNAVAILABLE', 409));
+    const text = await read(job.result.textRef);
+    if (sha256(text) !== job.result.sha256) fail('The result of this job failed its integrity check. It was left unchanged.', 'NETWORK_CONTENT_INVALID', 409);
+    let json = null;
+    if (job.result.jsonRef) try { json = JSON.parse(await read(job.result.jsonRef)); } catch (error) { if (error instanceof NetworkError) throw error; }
+    return { jobId: id, attemptId: job.currentAttemptId, text, json, chars: job.result.chars };
+  }
   /** One job with its accepted request (null with `requestError` when that file fails its check) and its child jobs. */
   async read(id) {
     await this.#ready();
@@ -479,7 +491,7 @@ export class NetworkJobs {
         return await this.#serial(async () => {
           const job = this.#jobs.get(live.jobId), attempt = current(job);
           if (attempt?.id !== live.own.attemptId || ATTEMPT_ENDED.has(attempt.status)) return job;
-          const saved = await this.#save(this.#end(job, status, details, status === 'cancelled' ? 'owner' : 'app'));
+          const saved = await this.#save(this.#end(job, status, details, details.by ?? (status === 'cancelled' ? 'owner' : 'app')));
           live.endedByEngine = true;
           later(() => this.#release(live), LIMITS.stopMs); // A worker that never returns still frees its slot.
           return saved;
@@ -538,18 +550,22 @@ export class NetworkJobs {
     await Promise.allSettled([...this.#live.values()].map(live => this.#stop(live, 'interrupted', { errorCode: 'APP_STOPPED', reason: 'Promptboard stopped while this job ran. Nothing was started again: retry or close it.' })));
   }
 
-  /** Cancel a job that has not ended. A queued or waiting job is cancelled at once; a running attempt is stopped first. */
-  async cancel(id, input = {}) {
+  /**
+   * Cancel a job that has not ended. A queued or waiting job is cancelled at once; a running attempt is stopped first.
+   * `by: 'machine'` when the external client that submitted it cancels it (the REST gateway checks that it is its own).
+   */
+  async cancel(id, input = {}, { by = 'owner' } = {}) {
     only(input, [], 'a cancel request');
+    const reason = by === 'machine' ? 'Cancelled by the external client that submitted it.' : 'Cancelled by you.';
     await this.#ready();
     const first = await this.#serial(async () => {
       const job = this.#job(id);
       if (TERMINAL.has(job.status)) fail(`This job already ended as ${job.status}. Nothing was cancelled.`, 'JOB_FINISHED', 409);
       if (!NEXT[job.status].includes('cancelled')) fail('This job needs your decision instead: retry it or close it.', 'JOB_STATE', 409);
       const live = job.currentAttemptId && this.#live.get(job.currentAttemptId);
-      return live ? { live } : { job: await this.#save(this.#end(job, 'cancelled', { reason: 'Cancelled by you.' })) };
+      return live ? { live } : { job: await this.#save(this.#end(job, 'cancelled', { reason }, by)) };
     });
-    const job = first.job ?? await this.#stop(first.live, 'cancelled', { reason: 'Cancelled by you.' });
+    const job = first.job ?? await this.#stop(first.live, 'cancelled', { reason, by });
     return { job: this.#view(job), cancelled: job.status === 'cancelled' };
   }
   /** `decision: 'approve'` queues a job that waits for approval; 'reject' cancels it. Only the owner's routes call this. */
