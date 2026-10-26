@@ -149,9 +149,10 @@ export class NetworkJobs {
    * `registry` is the NetworkRegistry (registrations, networks, Base and the board's project IDs are read through it);
    * `worker` the injected worker or null; `authBusy()` whether a sign-in change holds the CLI slot (jobs then wait).
    * Attempts are not in the server's shared task list (a Compose cancel waits for that list): close() stops them.
+   * `events` (optional, the NetworkEvents journal) hears one job.status event after every saved status change.
    */
-  constructor({ dataDir, registry, worker = null, authBusy = () => false, now = Date.now, prepareTimeoutMs = LIMITS.prepareTimeoutMs }) {
-    Object.assign(this, { dir: join(dataDir, 'network'), registry, worker, authBusy, now, prepareTimeoutMs });
+  constructor({ dataDir, registry, worker = null, authBusy = () => false, now = Date.now, prepareTimeoutMs = LIMITS.prepareTimeoutMs, events = null }) {
+    Object.assign(this, { dir: join(dataDir, 'network'), registry, worker, authBusy, now, prepareTimeoutMs, events });
   }
   instance = randomUUID(); // This process: each attempt records it as its workerInstance.
   // ponytail: one queue for every job change; per-job queues if many workers ever contend for it.
@@ -246,10 +247,21 @@ export class NetworkJobs {
     return this.#move(next, status, { outcome, errorCode, reason, ...(result !== undefined ? { result } : {}) }, by);
   }
   async #save(job) {
-    const next = { ...job, revision: job.revision + 1, updatedAt: this.now() };
+    const next = { ...job, revision: job.revision + 1, updatedAt: this.now() }, before = this.#jobs.get(job.id);
     await writeDocument(join(this.#folder(job.id), 'job.json'), next);
     this.#jobs.set(next.id, next);
+    if (before?.status !== next.status) this.#emit(next, before?.status ?? null);
     return next;
+  }
+  /**
+   * One job.status event for a saved status change (architecture §17 item 2). Not awaited, and every failure of the sink
+   * is swallowed: the journal is observability, so it can never hold up or undo a transition that is already saved.
+   */
+  #emit(job, from) {
+    const attempt = current(job);
+    const event = { type: 'job.status', jobId: job.id, attemptId: attempt?.id, agentId: job.agentId, projectId: job.projectId, networkId: job.networkId, pipelineRunId: job.pipelineRunId,
+      nodeId: job.nodeId, status: job.status, from, by: job.history.at(-1)?.by, errorCode: job.errorCode, message: job.reason, coverage: attempt?.coverage, artifactRef: job.status === 'completed' ? job.result?.textRef : undefined };
+    try { Promise.resolve(this.events?.append(event)).catch(() => {}); } catch {}
   }
   #job(id) {
     if (typeof id !== 'string' || !JOB_ID.test(id)) fail('This job does not exist.', 'NOT_FOUND', 404);
@@ -344,6 +356,7 @@ export class NetworkJobs {
       try { await writeImmutable(join(this.#folder(id), 'request.json'), text, 'The job'); await writeDocument(join(this.#folder(id), 'job.json'), job); }
       catch (error) { await rm(this.#folder(id), { recursive: true, force: true }).catch(() => {}); throw error; } // Nothing half-made stays.
       this.#jobs.set(id, job);
+      this.#emit(job, null);
       if (key) this.#keys.set(key, id);
       this.#pump();
       return { jobId: id, status, deduplicated: false, job: this.#view(job) };

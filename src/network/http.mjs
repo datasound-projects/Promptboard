@@ -44,7 +44,14 @@
  *   POST /api/network/jobs/:id/approve      { expectedRevision, decision: 'approve' | 'reject' }
  *   POST /api/network/jobs/:id/retry        { expectedRevision, confirm: true, confirmUncertain? }
  *   POST /api/network/jobs/:id/close        { expectedRevision }
+ *
+ * Activity (events.mjs, activity.mjs; architecture §19). Reads only: no route appends an event.
+ *   GET  /api/network/events                ?after | before, limit (1–200), agentId jobId networkId pipelineRunId
+ *   GET  /api/network/events/stream         ?after: NDJSON replay from `after`, then live events and a ping every 15 s
+ *   GET  /api/network/activity              agents' statuses with coverage, open jobs, Kanban runs of registered agents
  */
+import { activitySummary } from './activity.mjs';
+import { EVENT_FILTERS } from './events.mjs';
 import { JOB_LIMITS } from './jobs.mjs';
 import { NETWORK_LIMITS } from './registry.mjs';
 import { NetworkError } from './storage.mjs';
@@ -52,13 +59,17 @@ import { NetworkError } from './storage.mjs';
 // A draft may reach 8 MiB; an import carries every draft and version (ponytail: one body, split imports past 32 MiB).
 const BODY = { small: 64 * 1024, network: NETWORK_LIMITS.draftBytes + 64 * 1024, import: 32 * 1024 * 1024 };
 const integer = (value, fallback) => value === null ? fallback : /^\d{1,9}$/.test(value) ? Number(value) : NaN; // NaN is refused by the registry.
+// A sequence number; anything else is NaN, which the journal refuses.
+const seq = value => value === null || value === '' ? undefined : /^\d{1,15}$/.test(value) ? Number(value) : NaN;
+const eventQuery = params => ({ after: seq(params.get('after')), before: seq(params.get('before')), limit: params.get('limit') === null ? 100 : /^\d{1,9}$/.test(params.get('limit')) ? Number(params.get('limit')) : NaN,
+  ...Object.fromEntries(EVENT_FILTERS.map(key => [key, params.get(key) || undefined])) });
 const query = (params, keys) => ({ ...Object.fromEntries(keys.map(key => [key, params.get(key) || undefined])), offset: integer(params.get('offset'), 0), limit: integer(params.get('limit'), 50) });
 // The preview's question as resolve() takes it; a value it does not know is passed on and refused there.
 const preview = params => ({ projectId: params.get('projectId') || null, networkId: params.get('networkId') || null, memory: params.get('memory') || 'agent',
   projectLessons: ({ true: true, false: false, null: false })[params.get('projectLessons')] ?? params.get('projectLessons') });
 
 const AGENT = '(agt_[0-9a-f]{20})', NETWORK = '(net_[0-9a-f]{20})', MEMORY = '(mem_[0-9a-f]{20})', POST = '(pst_[0-9a-f]{20})', JOB = '(job_[0-9a-f]{20})';
-const route = (method, path, run, status) => Object.freeze({ method, pattern: new RegExp(`^/api/network${path}$`), run, status });
+const route = (method, path, run, status, stream = false) => Object.freeze({ method, pattern: new RegExp(`^/api/network${path}$`), run, status, stream });
 /** Memory routes of one scope: an agent's (agents/agt_…) or a network's (networks/net_…). */
 const memoryRoutes = (kind, prefix) => [
   route('GET', `${prefix}/memory`, (c, id) => c.network.memory.list(kind, id, query(c.searchParams, ['q', 'status']))),
@@ -102,9 +113,13 @@ export const NETWORK_ROUTES = Object.freeze([
   route('GET', `/jobs/${JOB}/result`, (c, id) => c.jobs.result(id)),
   route('DELETE', `/jobs/${JOB}`, async (c, id) => c.jobs.remove(id, await c.body(BODY.small))),
   jobAction('cancel', 'cancel'), jobAction('approve', 'approve'), jobAction('retry', 'retry'), jobAction('close', 'closeJob'),
+  route('GET', '/events', c => c.events.read(eventQuery(c.searchParams))),
+  // The stream answers on the response itself; the client key is the paired device's session, or the computer.
+  route('GET', '/events/stream', c => c.events.stream({ res: c.res, after: seq(c.searchParams.get('after')), client: c.req.promptboardRemote?.id ?? 'local' }), undefined, true),
+  route('GET', '/activity', c => activitySummary({ registry: c.network, jobs: c.jobs, events: c.events, board: c.board })),
 ]);
 
-export async function networkRoute({ network, jobs, req, res, pathname, searchParams, jsonBody, send }) {
+export async function networkRoute({ network, jobs, events, board, req, res, pathname, searchParams, jsonBody, send }) {
   const body = async limit => {
     const value = await jsonBody(req, limit);
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new NetworkError('Send a JSON object.');
@@ -115,7 +130,8 @@ export async function networkRoute({ network, jobs, req, res, pathname, searchPa
       if (row.method !== req.method) continue;
       const match = row.pattern.exec(pathname);
       if (!match) continue;
-      const answer = await row.run({ network, jobs, searchParams, body }, ...match.slice(1));
+      const answer = await row.run({ network, jobs, events, board, req, res, searchParams, body }, ...match.slice(1));
+      if (row.stream) return; // It answered on the response.
       return send(res, row.status ? row.status(answer) : 200, answer);
     }
     return send(res, 404, { error: 'This Network route does not exist.', code: 'NOT_FOUND' });

@@ -71,7 +71,7 @@ test('Network is the fifth page: nav, title, skip link and sidebar; back and for
   assert.deepEqual([win.document.activeElement.id, win.location.hash], ['network-view', '#/network']);
   assert.equal($('#network-view').getAttribute('aria-labelledby'), 'network-heading'); assert.equal($('#network-heading').textContent, 'Network');
   assert.deepEqual([...$('#network-view [role="tablist"]').querySelectorAll('[role="tab"]')].map(tab => [tab.dataset.tab, tab.getAttribute('aria-selected'), tab.dataset.available || 'true']),
-    [['agents', 'true', 'true'], ['graph', 'false', 'true'], ['pipelines', 'false', 'false'], ['activity', 'false', 'false'], ['library', 'false', 'true'], ['federation', 'false', 'false']]);
+    [['agents', 'true', 'true'], ['graph', 'false', 'true'], ['pipelines', 'false', 'false'], ['activity', 'false', 'true'], ['library', 'false', 'true'], ['federation', 'false', 'false']]);
   // Every page still opens, and history moves through all five pages and Network's own sub-routes.
   const open = page => () => Object.entries(VIEWS).every(([hash, id]) => $(id).hidden === (hash !== page));
   for (const hash of ['#/origin', '#/', '#/kanban', '#/base']) await visit(ctx, hash, open(hash));
@@ -274,12 +274,11 @@ test('keyboard and labels: tablists follow arrow keys, every control is named, E
   assert.equal($('#network-register').hidden, true, 'no Register agent outside Agents');
   key(ctx, tab('federation'), 'Home'); await until(() => selected('agents', '#/network')() && !$('#network-panel-agents').hidden, 'Home');
   await visit(ctx, `#/network/agents/${lead.id}`, () => $('#network-detail-heading'));
-  // Profile tabs: Activity is clearly unavailable; Tasks (Task 07), Memory and Posts work.
+  // Profile tabs: Tasks (Task 07), Activity (Task 08), Memory and Posts all work.
   const inner = id => $(`#network-profile-tab-${id}`);
   inner('profile').focus(); key(ctx, inner('profile'), 'ArrowRight');
   assert.deepEqual([win.document.activeElement, $('#network-profile-panel-tasks').hidden, $('#network-profile-panel-profile').hidden], [inner('tasks'), false, true]);
-  assert.match($('#network-profile-panel-activity').textContent, /Not available yet\./);
-  for (const id of ['tasks', 'memory', 'posts']) assert.doesNotMatch($(`#network-profile-panel-${id}`).textContent, /Not available yet/);
+  for (const id of ['tasks', 'activity', 'memory', 'posts']) assert.doesNotMatch($(`#network-profile-panel-${id}`).textContent, /Not available yet/);
   key(ctx, inner('tasks'), 'End'); assert.deepEqual([win.document.activeElement, $('#network-profile-panel-posts').hidden], [inner('posts'), false]);
   key(ctx, inner('posts'), 'Home'); assert.equal($('#network-profile-panel-profile').hidden, false);
 
@@ -444,9 +443,11 @@ test('Posts tab: a report in safe Markdown, labelled as yours and not as a run e
   $('#network-confirm-delete').click();
   await until(() => !$('#network-dialog').open && /No reports yet\./.test($('#network-post-empty').textContent), 'deleted'); await ctx.idle();
   assert.equal(win.document.activeElement, $('#network-post-write'));
-  // A report is never shown as activity or a job: Activity still has nothing, and no job exists.
-  assert.match($('#network-profile-panel-activity').textContent, /Not available yet\./);
+  // A report is never shown as activity or a job: no job exists and Activity has no event.
   assert.equal((await call(ctx, '/api/network/jobs')).json.total, 0);
+  $('#network-profile-tab-activity').click();
+  await until(() => /No activity yet\./.test($('#network-profile-panel-activity').textContent), 'no activity');
+  assert.doesNotMatch($('#network-profile-panel-activity').textContent, /Report|Week 1|digest/);
   assert.deepEqual([ctx.calls.length, (await ctx.app.board.view()).runs.length], [0, 0]);
 });
 

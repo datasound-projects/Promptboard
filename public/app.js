@@ -6319,9 +6319,11 @@ window.PromptboardLessonsView = window.PromptboardLessons?.create({ api, announc
 // Settings → Docker sandbox: Docker's status, the image build, and Claude Code's token for containers.
 window.PromptboardSandbox?.create({ api, announce });
 // Network: the agent directory over /api/network/*. Base stays the only editor of agent definitions: "Open in Base"
-// opens the real resource there. Opening or editing a registration never starts a job, a run or a model call.
+// opens the real resource there. Opening or editing a registration never starts a job, a run or a model call. Activity
+// reads the event stream with the token in a header (tokenFetch) and opens a Kanban run's card on its board.
 networkView = window.PromptboardNetwork?.create({ api, projects: () => board?.projects || [], ensureBoard: loadBoard,
-  openBase: id => { location.hash = '#/base'; baseView?.openResource(id); } }) || null;
+  openBase: id => { location.hash = '#/base'; baseView?.openResource(id); }, stream: (path, init) => tokenFetch(path, init),
+  openTask: async (projectId, taskId) => { await loadBoard().catch(() => {}); if (currentProject()?.id !== projectId) selectProject(projectId); location.hash = '#/kanban'; setTimeout(() => void openTaskDetails(taskId), 0); } }) || null;
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();

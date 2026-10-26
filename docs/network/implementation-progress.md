@@ -1014,3 +1014,164 @@ for Task 08, which can replace the Tasks tab's polling with the stream.
 
 **Commits** (local, `feat/network-07`, never pushed or merged): a6aab88 (worker, engine and shared changes, Tasks tab, tests),
 b3fa6fb (Chrome test, live smoke script, usage confirmed), then this entry with the last test additions and fixes.
+
+### Task 08 — Live activity and observability (2026-10-26, parallel wave A)
+
+**What was done.** A durable, append-only event journal for Network (`src/network/events.mjs`), the job engine reporting
+every saved status change to it, three read-only owner routes (the journal in pages, its NDJSON stream, and an Activity
+summary), and two working screens: Network → Activity and the agent profile's Activity tab (`public/network-activity.js`).
+Statuses come only from the job records and the journal (never from silence or a guess); each agent's status sits beside
+what its CLI can report; Kanban runs of registered Base agents are listed read only from the board's own run records and
+open their card. Costs and token counts appear only as reported; nothing shows a percentage. The stream replays from a
+cursor and reconnects with the last sequence number, so each event shows once, also across a restart. Built in parallel
+with Tasks 07 and 09 to architecture §17; decisions in architecture §19. The progress status table is left to the
+coordinator.
+
+**Files.** New: `src/network/events.mjs` (journal, pages, stream), `src/network/activity.mjs` (coverage, statuses, open
+jobs, Kanban runs), `public/network-activity.js` (Activity UI), `tests/network-events.test.mjs`,
+`tests/network-activity-ui.test.mjs`, `tests/network-activity-browser.test.mjs`. Changed: `src/network/jobs.mjs` (the
+`events` option and `job.status` emission only), `src/network/http.mjs` (3 routes, a `stream` flag on route rows, `events`
+and `board` in the route context), `src/server.mjs` (`NetworkEvents` created and given to the jobs and routes,
+`networkEventOptions` option, `networkEvents` on the returned handle, `/network-activity.js` asset), `public/network.js`
+(Activity section and profile tab, route `#/network/activity/<jobId>`), `public/app.js` (`stream` = `tokenFetch` and
+`openTask` for the Network view), `public/index.html` (script), `public/styles.css` (Activity styles),
+`tests/helpers/ui-harness.mjs` (evaluates `network-activity.js`; passes `networkWorker`/`networkEventOptions`),
+`tests/network-ui.test.mjs` (Activity is no longer "soon"), `tests/remote-access.test.mjs` (3 rows),
+`docs/network/architecture.md` (§19), this file.
+
+**Journal format** (architecture §19 items 1–5): `<data>/network/events/<16-digit first seq>.jsonl`, created on the first
+event; line 1 `{"schema":"promptboard.network-events","version":1,"first":n}`, then one event per line
+`{ seq, id: evt_…, at, type, jobId?, attemptId?, agentId?, pipelineRunId?, networkId?, projectId?, nodeId?, status?, from?,
+by?, kind?, errorCode?, coverage?, artifactRef?, message? }` (≤ 4 KiB; message one redacted line ≤ 500). `seq` strictly
+increases across segments and restarts; damaged, duplicate or reordered lines are skipped and counted; a torn tail is
+closed on load; 8 MiB segments, newest 16 kept, cursors survive retention (`gap`); a newer-version segment makes the
+journal refuse reads and writes without touching a file.
+
+**Routes** (behind `handle()`; allowed from a paired device, none local-only; rows in `tests/remote-access.test.mjs`):
+`GET /api/network/events?after|before&limit&agentId&jobId&networkId&pipelineRunId`, `GET /api/network/events/stream?after`
+(NDJSON: replay, `{"live":true}`, events, `{"ping":true}` every 15 s; 4 streams per client, 32 in all, 1 MiB unread →
+dropped), `GET /api/network/activity` (agents' statuses with coverage, open jobs, Kanban runs, journal status).
+
+**Job engine edit** (§17 item 2): `new NetworkJobs({ …, events })`; `#save` appends `job.status` when the saved status
+differs from the previous one (`from`), `submit` appends the new job's (`from: null`); fields per §17 plus `pipelineRunId`,
+`nodeId`, `coverage` and the completed result's `artifactRef`. Not awaited; every sink failure is swallowed.
+
+**UI.** Network → Activity: a live line (role=status: connecting, live, reconnecting, paused at the stream ceiling,
+stopped), each agent's card (status chip, provider and coverage label with its note, open-job counts, active Kanban runs),
+the timeline (newest first; agent and event-kind filters, search, "Show older events", the retention note), "Running and
+queued" (status, where it waits or since when it runs, what it reports, "Usage: not reported" unless reported, Details),
+"Kanban runs (read only)" (card, project, stage, provider, reported usage and cost, Open in Kanban). Details opens one
+job's record at `#/network/activity/<jobId>` (status, outcome, error, request summary, attempts with provider, coverage and
+usage, result size and text once Task 07's result route exists, status history, the job's events; Back returns focus). The
+agent profile's Activity tab shows that agent's status and coverage note, open jobs, Kanban runs and events, kept live. Zero
+events, zero agents, load errors (Retry) and a journal that cannot be read each have their own state; no percentage or
+progress bar anywhere; live redraws keep keyboard focus.
+
+**Tests** (temporary data folders; jobs only through the fake worker; `job.activity` and `pipeline.*` events are synthetic
+appends; no CLI):
+
+- `tests/network-events.test.mjs` 8 tests: (1) every saved transition of four jobs (completed; cancelled while running;
+  rejected; approved → unknown → retried → failed) is exactly one `job.status` event with the history's status, `from`
+  and `by`; seq 1…N, unique `evt_` IDs, attempt IDs, the result's `artifactRef`; a forged "completed" changes no job; a
+  restart journals the reconciled `interrupted` as the next seq; (2) a sink that throws, rejects, never answers, or a
+  journal whose folder is a file: every job still completes with the same history, failures counted; (3) 30 synthetic
+  events across types: forward pages of 7 and backward pages of 8 each give every event once; filters by agent, job,
+  network, pipeline run and combined; a filtered empty page moves its cursor; `reset` past the newest; 10 bad queries 400;
+  `kanban.*` and malformed types refused; unknown fields (`prompt`, `input`, `toolInput`, `result`) and bad shapes dropped;
+  the same over HTTP with 403 without the token; (4) the stream over HTTP: `{"live":true}`, four live events of a job, a
+  ping, close, a job while away, reconnect with the last seq → exactly the missed four before the live line, a restart of
+  the server on the same folder, reconnect → the next four; 12 events each once and equal to the journal; no cursor →
+  live only; a cursor past the newest → `reset`; `after=x` 400; (5) recovery: a non-JSON line, a duplicate seq, a corrupt
+  middle line and a torn tail skipped and counted (4), the next seq is 7, segment 1 byte-identical, segment 2 only
+  appended; a restart continues; a header-only segment fixes where seq continues (and a read moves past numbers no event
+  holds); rollover at 1 KiB with 3 kept: names are first seqs, `gap` for an older cursor, a restart continues; a newer
+  segment: read and stream 409, append null, files unchanged; (6) redaction: input, instructions, three secrets and a home
+  folder appear in no journal file and no answer; the activity label is one line ≤ 500 with the folder cut and the key
+  masked; every line ≤ 4 KiB; (7) four local streams, the fifth 429, a closed one torn down and its slot reused; a paired
+  device is its own client and hears events; revoking it closes its stream within 2 s, tears it down, and it gets 401; a
+  reader leaving more than 1 MiB unread is dropped; 32 streams in all, then 429; (8) `/api/network/activity`: statuses
+  running, unknown, waiting_for_approval, waiting_for_input and none; counts; coverage tools/partial-tools/final-only/
+  unknown with the Codex and Gemini notes; queue order and FIFO position; no input or result text and no "progress"; the
+  Kanban runs of registered agents only (active first, reported usage, `null` when not reported), `state.json`
+  byte-identical; a forged event moves nothing, an approval does; an interrupted job counts as unknown; pure
+  `coverageOf`/`kanbanRuns`.
+- `tests/network-activity-ui.test.mjs` 4 tests (jsdom, real server): (1) zero events and zero agents usable (each empty
+  state, Go to Agents), then live without a reload: preparing/running, queued with its slot message and position, a
+  synthetic web-search activity, waiting for input and unknown with different chip states, texts and marks, the Codex
+  "Limited activity" note, focus kept on a Details button across live redraws, the feed equal to the journal, no `%`, no
+  `$`, no progress bar, every control labelled; (2) all connections dropped: "reconnecting", then live again; events
+  written while away shown once, eight in order, equal to the journal; (3) filters by agent and kind, search and Clear
+  filters; a job's record (focus on its heading, four history entries, attempt, "Usage: not reported", result size, its
+  events; Back returns focus to the button); catching up after leaving the section; Kanban runs with reported usage and
+  cost, "cost: not reported" for tokens without a cost, Open in Kanban opens the card's details; the agent tab with its
+  status, coverage, Kanban run and events, live, and only its own events; (4) retention: the newest 100 first, Show older
+  events reads the rest (focus stays in the timeline), the retention note.
+- `tests/network-activity-browser.test.mjs` 1 test (Chrome): light and dark at 1440 px (timeline beside the queue, nothing
+  sideways) and 390 px (one column, queue first); waiting and unknown differ in colour, border (solid/dashed) and mark;
+  chips follow the theme; no `%`; a live event without a reload; a job's record with focus on its heading and "Usage: not
+  reported", Back returning focus; the agent tab with the Codex note; Tab into the timeline with a visible focus ring and
+  Enter opening a record; no exception or CSP message (the dock's xterm.js messages for the seeded running Kanban run are
+  excluded, as on Kanban). `PB_NETWORK_SCREENSHOTS=<folder>` saves the screenshots.
+- Changed: `tests/network-ui.test.mjs` (Activity tab and section no longer "soon"; a report never shows in Activity),
+  `tests/network-jobs.test.mjs` (the `network/` folder now also holds `events`), `tests/remote-access.test.mjs` (3 rows).
+- Mutation check (`$TMPDIR/network-logs/task-08-mutations.log`, scratch edits restored after each): 40 of 40 mutations
+  make a test fail (no emission, submit not journaled, a sink throw not caught, an awaited sink, duplicate seq accepted,
+  torn tail not closed, no retention, no rollover, newer version read, seq restarting, no redaction, any field copied,
+  kanban journaled, seq not advancing, a stuck filtered cursor, no gap, no reset, no replay, no per-client or total
+  ceiling, no teardown, no backpressure, no ping, unregistered Kanban runs, no coverage, interrupted not unknown, invented
+  usage, jobs without the journal, one client key for all, no reconnect, unknown drawn as waiting, cost always shown, no
+  live append, focus dropped, Kanban card not opened, no older pages, agent tab not live, no gap note, Activity still
+  "soon", the stream row missing from the paired-device table). Three survived the first round and each got a test
+  (the cursor past reserved numbers, an interrupted job in the summary, tokens without a cost).
+
+**Runs.** `npm run check` pass. New tests twice on the final code: 13/13 and 13/13 (12 non-browser, 1 Chrome;
+`$TMPDIR/network-logs/task-08-new-twice.log`). Touched modules, non-browser (`network-*`, `remote-access`, `server`, `ui`,
+`ui-2`, `ui-3`, `project-explorer-ui`, `sandbox-ui`, `base-server`, `cli`; `task-08-touched.log`): the first run found the
+one Task 06 assertion that pinned the `network/` folder to `agents.json` and `jobs` (now with `events`), then 18/18;
+the final run (`task-08-touched-final.log`) 278 tests, 277 pass, 1 fail: `network-jobs` "job routes over HTTP" with a
+client-side `ECONNRESET` while running four files at once (its 1.1 MiB 413 request); alone it passed 4 of 4, and it
+passed in the first run; it touches no Task 08 code path (the body is refused before a job exists). Touched browser files
+(`network-browser`, `network-graph-browser`, `network-review-browser`, `remote-access-browser`, `browser`,
+`app-fixes-browser`): 19/19 (`task-08-touched-browser.log`). The full `npm test` is left to the coordinator (parallel
+wave rule). Isolated instance on port 4918 (temporary data folder, PATH holding only a `node` symlink): events page,
+activity summary, stream `{"live":true,"last":0}`, 403 without the token; stopped and folder removed
+(`task-08-port-4918.log`). Paid CLI runs: 0.
+
+**Acceptance criteria and evidence** (screenshots in `$TMPDIR/network-logs/task-08-screens/`, all looked at:
+`activity-{1440,390}-{light,dark}.png`, `activity-390-{light,dark}-timeline.png`, `activity-job-{1440,390}-{light,dark}.png`,
+`agent-activity-1440-{light,dark}.png`):
+
+- *Starting a job emits truthful queued/running/waiting/done or uncertain events; the dashboard updates without a
+  refresh:* events tests 1, 4; UI test 1 (same window throughout); Chrome test (live event).
+- *Restart and reconnection replay exact events once using stable cursors:* events tests 4 (across a server restart), 5
+  (seq after restarts, cursors across retention); UI test 2.
+- *An agent's feed includes its actual work, not fake posts:* events test 1 (only saved transitions), test 1/8 (a forged
+  event changes nothing); UI test 3 (the agent tab shows only its own events); `network-ui` Posts test (a report never
+  appears in Activity).
+- *The Activity view is coherent when Codex only exposes limited lifecycle data:* events test 8 (partial-tools and its
+  note), UI test 1 (the Codex card), Chrome test (the agent tab).
+- acceptance.md Task 08 rows: 1 → events 1; 2 → events 3; 3 → events 4, UI 2; 4 → events 5; 5 → events 6 (+3); 6 → events
+  7; 7 → UI 1, UI 3, Chrome; 8 → events 8, UI 3 (`src/supervisor.mjs` and `src/board.mjs` untouched). Failure matrix rows
+  10, 11, 28 → events 5, 4, 7.
+- Task prompt extras: the sink failing never breaks a transition → events 2; coverage labels → events 8, UI 1; no "100%"
+  or fake completion → UI 1, Chrome, events 8.
+
+**For Tasks 07 and 09 at merge.** Nothing more is needed for their events to show: Task 07's `jobs.activity()` and Task
+09's runner call `append` with fields the journal keeps (checked against their worktrees while building, read only).
+Optional: Task 07 may add `kind: item.kind` to its `job.activity` event so the timeline names it ("Web search", "Tool")
+instead of "Activity". The job record shows result text through Task 07's `GET /jobs/:id/result` (`{ text }`) once
+merged. Expected merge overlaps: `src/network/jobs.mjs` (constructor and `#save`/`submit` lines), `src/network/http.mjs`
+route table, `src/server.mjs` near the `NetworkJobs` line, `public/network.js` (`PROFILE_TABS`), `tests/helpers/ui-harness.mjs`,
+`tests/remote-access.test.mjs`, `tests/network-jobs.test.mjs`, `tests/network-ui.test.mjs`; all additive.
+
+**Known limits.** Appends are not fsynced: a power loss (not an app crash) can lose the newest lines, and their numbers
+may then be given to new events, so a reader whose cursor lies in the lost range skips that many new events (or reloads
+when its cursor is past the newest). The summary re-reads every registration and open job (in memory) per call; the page
+asks after events (300 ms debounce) and every 20 s. Kanban runs come from the board's newest 500 runs and refresh every 20
+s (not streamed). Timeline search and filters work on the loaded events (newest 100, live ones, older pages); the server
+filters by ID are used by the agent tab and the job record. The computer counts as one stream client: a fifth Activity
+tab there pauses and retries every 15 s. A page read loads whole segment files (≤ 8 MiB) and looks at ≤ 50,000 lines.
+`failures` counts since the app started. Until Task 07 is merged there are no real `job.activity` events and the result
+text is not shown.
+
+**Commits.** 4d275e7 (code and tests), then the tests for the three first-round survivors and this log entry.

@@ -1,7 +1,8 @@
 'use strict';
 
 // Network page (#/network): the agent directory and agent profiles, over the owner routes /api/network/*; the Graph and
-// Library sections live in network-graph.js and are shown from here.
+// Library sections live in network-graph.js, Activity (and a profile's Activity tab) in network-activity.js, all shown
+// from here.
 // Base stays the only editor of agent definitions: this page reads Base, registers a Base agent by its ID, edits only the
 // Network identity (display name, tags, capabilities, projects, on/off) and opens the real resource in Base. A profile
 // also holds the agent's memory (proposed, then approved by the owner, with history and a preview of exactly what a job
@@ -15,14 +16,14 @@ window.PromptboardNetwork = (() => {
     ['agents', 'Agents', ''],
     ['graph', 'Graph', ''],
     ['pipelines', 'Pipelines', 'Build execution pipelines from a published network: parallel steps, joins, approvals and a saved report.'],
-    ['activity', 'Activity', 'Live status and events of Network jobs, with what each CLI can report shown next to every status.'],
+    ['activity', 'Activity', ''],
     ['library', 'Library', ''],
     ['federation', 'Federation', 'Work with trusted remote agents over A2A. It stays off until you turn it on.'],
   ];
   const PROFILE_TABS = [
     ['profile', 'Profile', ''],
     ['tasks', 'Tasks', ''],
-    ['activity', 'Activity', 'This agent’s live status and events will appear here once Network activity arrives in a later update.'],
+    ['activity', 'Activity', ''],
     ['memory', 'Memory', ''],
     ['posts', 'Posts', ''],
   ];
@@ -48,7 +49,7 @@ window.PromptboardNetwork = (() => {
     waiting_for_input: ['Waiting for input', 'warn'], completed: ['Completed', 'ok'], failed: ['Failed', 'error'], cancelled: ['Cancelled', 'off'], interrupted: ['Interrupted', 'warn'], unknown: ['Outcome unknown', 'warn'] };
   const JOB_OPEN = new Set(['queued', 'waiting_for_approval', 'preparing', 'running', 'waiting_for_input']);
   const COVERAGE = { tools: 'Tool-level activity reported', 'partial-tools': 'Some tool activity reported (web search)', 'final-only': 'Only the final answer is reported' };
-  const AGENT_ID = /^agt_[0-9a-f]{20}$/, NETWORK_ID = /^net_[0-9a-f]{20}$/;
+  const AGENT_ID = /^agt_[0-9a-f]{20}$/, NETWORK_ID = /^net_[0-9a-f]{20}$/, JOB_ID = /^job_[0-9a-f]{20}$/;
 
   const note = (text, className = 'note') => el('p', className, text);
   const labelled = (text, control, className = 'field-label') => { const label = el('label', className); label.append(text, control); return label; };
@@ -71,10 +72,12 @@ window.PromptboardNetwork = (() => {
   }
 
   // #/network (Agents), #/network/agents/<id>, #/network/<section>, #/network/library/<networkId>,
-  // #/network/graph/<networkId> and its published versions #/network/graph/<networkId>/v<n>. Anything else opens Agents.
+  // #/network/graph/<networkId> and its published versions #/network/graph/<networkId>/v<n>, #/network/activity/<jobId> (one
+  // job's record). Anything else opens Agents.
   function route() {
     const [section, id, extra] = location.hash.replace(/^#\/network\/?/, '').split('/');
     if (section === 'agents' && AGENT_ID.test(id || '')) return { section: 'agents', agentId: id };
+    if (section === 'activity' && JOB_ID.test(id || '')) return { section, agentId: null, networkId: null, version: null, jobId: id };
     if (['graph', 'library'].includes(section) && NETWORK_ID.test(id || '')) return { section, agentId: null, networkId: id, version: section === 'graph' && /^v[1-9]\d{0,8}$/.test(extra || '') ? Number(extra.slice(1)) : null };
     return { section: SECTIONS.some(([key]) => key === section) ? section : 'agents', agentId: null, networkId: null, version: null };
   }
@@ -124,7 +127,7 @@ window.PromptboardNetwork = (() => {
     titles.append(heading, note('Register Base agents once, then find them here. Their definitions stay in Base.', 'intro-description'));
     headActions.append(register); head.append(titles, headActions);
     const privacy = note('Network keeps references to Base agents in this computer’s data folder. Opening or editing them never runs an agent.', 'note network-privacy');
-    const panelOf = id => ({ agents: 'network-panel-agents', graph: 'network-panel-graph', library: 'network-panel-library' })[id] || 'network-panel-soon';
+    const panelOf = id => ({ agents: 'network-panel-agents', graph: 'network-panel-graph', library: 'network-panel-library', activity: 'network-panel-activity' })[id] || 'network-panel-soon';
     const sections = tablist('Network sections', SECTIONS.map(([id, label, soon]) => [id, label, Boolean(soon)]), 'network-tab', panelOf, id => go(hashFor(id)), 'network-tabs');
     const status = note('', 'note network-status'); status.id = 'network-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
     const alert = el('div', 'inline-error network-alert'); alert.id = 'network-error'; alert.setAttribute('role', 'alert'); alert.hidden = true;
@@ -161,7 +164,10 @@ window.PromptboardNetwork = (() => {
     // Graph and Library (network-graph.js): the networks, their versions and the editor, beside the same status line.
     const graphs = window.PromptboardNetworkGraph?.create({ request, say, go, showError, openDialog, closeDialog: () => closeDialog(),
       memoryPanel: networkId => memoryView(null, networkId), openAgent: id => go(hashFor('agents', id)) }) || null;
-    view.append(head, privacy, sections, status, alert, agentsPanel, soonPanel, ...(graphs ? [graphs.library, graphs.graph] : []));
+    // Activity (network-activity.js): agents' job status, the open jobs, Kanban runs and the live timeline.
+    const activity = window.PromptboardNetworkActivity?.create({ request, say, go, stream: context.stream, openTask: context.openTask,
+      openAgent: id => { profileTab = 'activity'; focusDetail = 'always'; go(hashFor('agents', id)); } }) || null;
+    view.append(head, privacy, sections, status, alert, agentsPanel, soonPanel, ...(graphs ? [graphs.library, graphs.graph] : []), ...(activity ? [activity.panel] : []));
 
     // The sidebar lists the same sections as links, so the phone drawer and the keyboard both reach them.
     const sideNav = el('nav', 'base-categories network-sections'); sideNav.id = 'network-sections'; sideNav.setAttribute('aria-label', 'Network sections');
@@ -178,11 +184,13 @@ window.PromptboardNetwork = (() => {
       if (graphs && !graphs.guard(where)) return; // A graph with unsaved changes asks first; "keep editing" brings its address back.
       sections.select(section);
       for (const link of sideNav.children) { if (link.dataset.section === section) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current'); }
-      const own = Boolean(graphs) && ['graph', 'library'].includes(section);
-      agentsPanel.hidden = section !== 'agents'; soonPanel.hidden = section === 'agents' || own;
+      const own = Boolean(graphs) && ['graph', 'library'].includes(section), watching = Boolean(activity) && section === 'activity';
+      agentsPanel.hidden = section !== 'agents'; soonPanel.hidden = section === 'agents' || own || watching;
       register.hidden = section !== 'agents';
       graphs?.show(own ? where : null);
-      if (own) return;
+      activity?.show(watching ? where : null);
+      activity?.live(watching || (section === 'agents' && Boolean(where.agentId) && profileTab === 'activity'));
+      if (own || watching) return;
       if (section !== 'agents') {
         const [, label, text] = SECTIONS.find(([id]) => id === section);
         soonPanel.setAttribute('aria-labelledby', `network-tab-${section}`);
@@ -279,10 +287,10 @@ window.PromptboardNetwork = (() => {
       const panels = PROFILE_TABS.map(([id, label, soon]) => {
         const panel = el('section', 'network-profile-panel'); panel.id = panelId(id); panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', `network-profile-tab-${id}`);
         if (soon) panel.append(el('h3', '', label), note('Not available yet.', 'note unavailable'), note(soon));
-        else panel.append(...(id === 'memory' ? [memoryView(agent)] : id === 'posts' ? [postsView(agent)] : id === 'tasks' ? [tasksView(agent)] : profileSections(agent)));
+        else panel.append(...(id === 'memory' ? [memoryView(agent)] : id === 'posts' ? [postsView(agent)] : id === 'tasks' ? [tasksView(agent)] : id === 'activity' ? (activity ? [activity.agentPanel(agent)] : []) : profileSections(agent)));
         return panel;
       });
-      function showInner() { inner.select(profileTab); for (const panel of panels) panel.hidden = panel.id !== panelId(profileTab); openTab(); }
+      function showInner() { inner.select(profileTab); for (const panel of panels) panel.hidden = panel.id !== panelId(profileTab); activity?.live(profileTab === 'activity'); openTab(); }
       showInner();
       box.append(inner, ...panels);
       return box;
@@ -394,6 +402,7 @@ window.PromptboardNetwork = (() => {
       if (profileTab === 'posts' && posts.agentId && !posts.data && !posts.loading) void loadPosts();
       if (profileTab === 'tasks' && tasks.agent) { if (!tasks.loading) void loadJobs(); if (tasks.previewKey !== jobPreviewKey()) void loadJobPreview(); }
       else stopPolling();
+      if (profileTab === 'activity') activity?.loadAgent();
     }
     async function loadMemory({ append = false } = {}) {
       const version = ++memory.version;
@@ -1050,7 +1059,7 @@ window.PromptboardNetwork = (() => {
     }
     function leave() {
       if (graphs && !graphs.guard(null)) return; // Unsaved graph changes: "keep editing" brings the editor's address back.
-      visible = false; graphs?.show(null); stopPolling();
+      visible = false; graphs?.show(null); stopPolling(); activity?.show(null); activity?.live(false);
       if (dialog.open) { opener = null; closeDialog(); } // A dialog never stays over another page.
     }
     return { show, leave, refresh: load };

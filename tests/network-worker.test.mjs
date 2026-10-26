@@ -107,7 +107,7 @@ test('each CLI runs headless and read-only with exactly the flags of its tool mo
   assert.deepEqual(activity(ids[1]), ['Claude Code started.', 'Searched the web.', 'Writing the answer.']);
   assert.deepEqual(activity(ids[3]), ['Codex started.', 'Searched the web.', 'Writing the answer.']);
   assert.deepEqual(activity(ids[4]), ['Gemini CLI started.'], 'Gemini reports only its final answer');
-  for (const [index, id] of ids.entries()) for (const event of events.filter(item => item.jobId === id)) assert.equal(event.coverage, jobs[index].attempts[0].coverage, 'each event names its CLI’s coverage');
+  for (const [index, id] of ids.entries()) for (const event of events.filter(item => item.jobId === id && item.type === 'job.activity')) assert.equal(event.coverage, jobs[index].attempts[0].coverage, 'each event names its CLI’s coverage');
   assert.ok(!JSON.stringify(events).includes('release notes') && !JSON.stringify(events).includes('/Users/someone'), 'events never carry a query or a local folder');
   const stream = (await readFile(join(ctx.attemptDir(ids[1], jobs[1].attempts[0].id), 'stream.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(stream.map(line => [line.kind, line.label]), [['status', 'Claude Code started.'], ['web', 'Searched the web.'], ['text', 'Writing the answer.']]);
