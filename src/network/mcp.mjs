@@ -9,8 +9,11 @@
  *
  * Tools: agents_list, agents_get, jobs_submit (answers the jobId at once and never waits for the run, so a host calling
  * Promptboard while a job of the same provider runs only queues work), jobs_get, jobs_cancel and artifacts_get (a
- * completed job's result in windows of at most 60 KB). Input schemas are strict (unknown fields refused); tool annotations
- * are hints for the host only: the machine listener decides every call.
+ * completed job's result in windows of at most 60 KB). Task 12's routes, one tool each (wave B integration): jobs_delegate
+ * (POST /jobs/:id/children), jobs_answer (POST /jobs/:id/answer), messages_list (GET /jobs/:id/messages, in windows),
+ * messages_post (POST /jobs/:id/messages) and messages_mark_read (POST /jobs/:id/messages/read). Input schemas are strict
+ * (unknown fields refused); tool annotations are hints for the host only: the machine listener decides every call, with the
+ * client's permissions and scope.
  */
 import { readFileSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/server';
@@ -20,7 +23,7 @@ import { VERSION } from '../version.mjs';
 import { MACHINE_TOKEN } from './machine-auth.mjs';
 
 export const MCP_LIMITS = Object.freeze({ answerBytes: 60_000, requestMs: 15_000, inputChars: 200_000 });
-const AGENT_ID = /^agt_[0-9a-f]{20}$/, JOB_ID = /^job_[0-9a-f]{20}$/, NETWORK_ID = /^net_[0-9a-f]{20}$/, PROJECT_ID = /^[A-Za-z0-9_-]{1,100}$/, KEY = /^[\x20-\x7e]{1,200}$/;
+const AGENT_ID = /^agt_[0-9a-f]{20}$/, JOB_ID = /^job_[0-9a-f]{20}$/, MESSAGE_ID = /^msg_[0-9a-f]{20}$/, NETWORK_ID = /^net_[0-9a-f]{20}$/, PROJECT_ID = /^[A-Za-z0-9_-]{1,100}$/, KEY = /^[\x20-\x7e]{1,200}$/;
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const SETUP = 'Create a client in Promptboard → Network → Settings and give its token to this server as PROMPTBOARD_MACHINE_TOKEN (or a file named by PROMPTBOARD_MACHINE_TOKEN_FILE).';
 
@@ -92,7 +95,7 @@ export function bridgeServer({ url, token, fetch = globalThis.fetch }) {
     const { jobId, status, deduplicated } = await call('/jobs', { method: 'POST', body, key: idempotencyKey });
     return answer({ jobId, status, deduplicated });
   }));
-  server.registerTool('jobs_get', { title: 'Get a job', description: 'The status of a job this client submitted: queued, waiting_for_approval, preparing, running, completed, failed, cancelled, unknown or interrupted (the last two wait for the owner’s decision).', inputSchema: z.object({ jobId: z.string().regex(JOB_ID) }).strict(), annotations: read },
+  server.registerTool('jobs_get', { title: 'Get a job', description: 'The status of a job this client submitted: queued, waiting_for_approval, preparing, running, waiting_for_input (it asked a question: read it with messages_list, answer with jobs_answer; or it waits for its sub-jobs), completed, failed, cancelled, unknown or interrupted (the last two wait for the owner’s decision).', inputSchema: z.object({ jobId: z.string().regex(JOB_ID) }).strict(), annotations: read },
     tool(async ({ jobId }) => answer(await call(`/jobs/${jobId}`))));
   server.registerTool('jobs_cancel', { title: 'Cancel a job', description: 'Cancel a job this client submitted that has not ended.', inputSchema: z.object({ jobId: z.string().regex(JOB_ID) }).strict(),
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false } },
@@ -109,6 +112,38 @@ export function bridgeServer({ url, token, fetch = globalThis.fetch }) {
     const meta = { jobId, offset: start, nextOffset: end < full.length ? end : null, totalChars: chars, ...(small ? { json } : json !== null && start === 0 ? { json: 'too large for this answer; fetch it over REST' } : {}) };
     return { content: [{ type: 'text', text: JSON.stringify(meta) }, { type: 'text', text: full.slice(start, end) }] };
   }));
+  // Task 12 (architecture §23 item 8), each tool one machine route on the client's own jobs; the permissions are the routes'.
+  const json = z.union([z.record(z.string(), z.unknown()), z.array(z.unknown())]);
+  const write = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
+  server.registerTool('jobs_delegate', {
+    title: 'Ask for a sub-job',
+    description: 'Ask for a sub-job of a job this client submitted, for another agent of this client: the owner’s handoff policy decides (switched off by default; a delegate relation in the job’s network is required) and the sub-job may wait for the owner’s approval. Answers its jobId at once. Reuse idempotencyKey when you retry, so it never makes a second sub-job.',
+    inputSchema: z.object({ jobId: z.string().regex(JOB_ID), agentId: z.string().regex(AGENT_ID), task: z.string().min(1).max(16_384), tools: z.enum(['none', 'web']).optional(), json: json.optional(), idempotencyKey: z.string().regex(KEY).optional() }).strict(),
+    annotations: { ...write, idempotentHint: false },
+  }, tool(async ({ jobId, idempotencyKey, ...task }) => {
+    const { jobId: id, status, deduplicated } = await call(`/jobs/${jobId}/children`, { method: 'POST', body: task, key: idempotencyKey });
+    return answer({ jobId: id, status, deduplicated });
+  }));
+  server.registerTool('jobs_answer', { title: 'Answer a job’s question', description: 'Answer the question a job this client submitted asked (its status is waiting_for_input; the question is in messages_list). The job then runs again with the answer.',
+    inputSchema: z.object({ jobId: z.string().regex(JOB_ID), text: z.string().min(1).max(16_384) }).strict(), annotations: { ...write, idempotentHint: false } },
+  tool(async ({ jobId, text: reply }) => answer(await call(`/jobs/${jobId}/answer`, { method: 'POST', body: { text: reply } }))));
+  server.registerTool('messages_list', {
+    title: 'List a job’s messages',
+    description: 'The handoff messages of a job this client submitted, oldest first: its question, requests, results and notes, and how many addressed to this client are unread. Long threads come in windows: pass nextOffset back as offset until it is null.',
+    inputSchema: z.object({ jobId: z.string().regex(JOB_ID), offset: z.number().int().min(0).optional() }).strict(), annotations: read,
+  }, tool(async ({ jobId, offset = 0 }) => {
+    const { messages, unread } = await call(`/jobs/${jobId}/messages`), start = Math.min(offset, messages.length), window = [];
+    // Whole messages within the answer limit (a message is at most 16 KiB of text and 16 KiB of json), at least one.
+    for (let size = 200, i = start; i < messages.length; i++) { size += Buffer.byteLength(JSON.stringify(messages[i])) + 1; if (window.length && size > MCP_LIMITS.answerBytes) break; window.push(messages[i]); }
+    const end = start + window.length;
+    return answer({ jobId, offset: start, nextOffset: end < messages.length ? end : null, total: messages.length, unread, messages: window });
+  }));
+  server.registerTool('messages_post', { title: 'Add a note to a job', description: 'Add a review note, or a request for its next attempt, to a job this client submitted. A record that a later attempt reads as data; it starts nothing.',
+    inputSchema: z.object({ jobId: z.string().regex(JOB_ID), kind: z.enum(['review', 'request']), text: z.string().min(1).max(16_384), json: json.optional() }).strict(), annotations: { ...write, idempotentHint: false } },
+  tool(async ({ jobId, ...note }) => answer(await call(`/jobs/${jobId}/messages`, { method: 'POST', body: note }))));
+  server.registerTool('messages_mark_read', { title: 'Mark messages read', description: 'Mark the messages addressed to this client on a job it submitted as read: all unread ones, or those listed. A read mark changes nothing about the job.',
+    inputSchema: z.object({ jobId: z.string().regex(JOB_ID), ids: z.array(z.string().regex(MESSAGE_ID)).max(500).optional() }).strict(), annotations: { ...write, idempotentHint: true } },
+  tool(async ({ jobId, ids }) => answer(await call(`/jobs/${jobId}/messages/read`, { method: 'POST', body: ids ? { ids } : {} }))));
   return server;
 }
 
