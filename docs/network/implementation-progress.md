@@ -26,7 +26,7 @@ Overnight, unattended implementation of the Promptboard Network feature (owner r
 | 01 | 01-audit-and-contracts.md | done | 27646ef |
 | 02 | 02-registry-and-storage.md | done | 7771788 |
 | 03 | 03-network-page-and-agent-profiles.md | done | 9edf549 |
-| 04 | 04-agent-memory-and-feed.md | done | (filled at commit) |
+| 04 | 04-agent-memory-and-feed.md | done | 1fc58b6 |
 | 05 | 05-graph-designer-and-subnetworks.md | pending | |
 | 06 | 06-general-purpose-job-engine.md | pending | |
 | 07 | 07-local-worker-runtime.md | pending | |
@@ -447,6 +447,6 @@ for all memory files and one for all report files; a report file is rewritten wh
 Job references on reports are refused until Task 06; machine-written reports wait for Task 11. Agent proposals of memory
 (`source.kind: 'job'`) arrive with Task 07. The memory list and reports are read again per visit, not pushed live.
 
-**Commit.** (filled at commit)
+**Commit.** 1fc58b6 (Task 04), then this log entry.
 
 **Next task: 05.**
