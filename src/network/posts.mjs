@@ -10,7 +10,7 @@
 import { join } from 'node:path';
 import { serial } from '../durable.mjs';
 import { escapeId } from '../origin.mjs';
-import { cleanText, conflict, fail, newId, object, only, page, readDocument, requireRevision, writeDocument } from './storage.mjs';
+import { cleanText, conflict, fail, LINE_BREAK, newId, object, only, page, readDocument, requireRevision, writeDocument } from './storage.mjs';
 
 const SCHEMA = 'promptboard.network-posts';
 export const POST_LIMITS = Object.freeze({ markdownBytes: 16 * 1024, posts: 2000, references: 10, reference: 300 });
@@ -36,6 +36,7 @@ function postFields(input, previous) {
   if (Object.hasOwn(input, 'references')) {
     const list = input.references;
     if (!Array.isArray(list) || list.length > LIMITS.references || list.some(item => typeof item !== 'string' || item.length > LIMITS.reference)) fail(`Add at most ${LIMITS.references} source references of up to ${LIMITS.reference} characters each.`);
+    if (list.some(item => LINE_BREAK.test(item.trim()))) fail('Each source reference is one line, without line breaks or tabs.');
     references = [...new Set(list.map(item => cleanText(item).replace(/\s+/g, ' ')).filter(Boolean))];
   }
   return { markdown, references };

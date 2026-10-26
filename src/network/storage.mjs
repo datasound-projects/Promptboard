@@ -43,6 +43,15 @@ const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
  * can reach a cloud-backed CLI or an export.
  */
 export const cleanText = value => redactLocal(noPaths(String(value).replace(/\r\n?/g, '\n').replace(CONTROL, ''))).trim();
+/** Line breaks (also the Unicode ones) and tabs: refused in one-line owner text (names, labels, keys), so none can start a prompt line. */
+export const LINE_BREAK = /[\t\n\r\u0085\u2028\u2029]/;
+/** Owner text placed on one line of a prompt: cleaned, every run of white space one space. */
+export const oneLine = value => cleanText(value).replace(/[\s\u0085]+/g, ' ');
+/**
+ * Multi-line text placed inside a delimited prompt section (memory records; Task 07: the job input and instructions):
+ * every line indented two spaces, so no line of it can close or forge a section delimiter.
+ */
+export const indent = value => String(value).split(/\r\n?|[\n\u0085\u2028\u2029]/).map(line => `  ${line}`).join('\n');
 
 const NEWER = 'This Network data was saved by a newer Promptboard version. Update the app; nothing was changed.';
 

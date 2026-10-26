@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { serial } from '../durable.mjs';
 import { lessonsPrompt } from '../lessons.mjs';
 import { escapeId } from '../origin.mjs';
-import { cleanText, conflict, fail, newId, object, only, page, readDocument, requireRevision, writeDocument } from './storage.mjs';
+import { cleanText, conflict, fail, indent, newId, object, oneLine, only, page, readDocument, requireRevision, writeDocument } from './storage.mjs';
 
 const SCHEMA = 'promptboard.network-memory';
 export const MEMORY_KINDS = Object.freeze(['fact', 'lesson', 'preference', 'procedure']);
@@ -95,13 +95,13 @@ export function memoryBlock({ agentId, access, agentRecords = [], network = null
   const approved = (records, scope, label) => records.filter(record => record.status === 'approved' && sameScope(record.scope, scope)).map(record => ({ record, label }));
   const pool = [
     ...(access.agent === 'allowed' ? approved(agentRecords, { kind: 'agent', agentId }, 'this agent') : []),
-    ...(access.network === 'allowed' && network ? approved(network.records, { kind: 'network', networkId: network.id }, `network “${cleanText(network.name)}”`) : []),
+    ...(access.network === 'allowed' && network ? approved(network.records, { kind: 'network', networkId: network.id }, `network “${oneLine(network.name)}”`) : []),
   ].sort((a, b) => newest(a.record, b.record));
   let room = LIMITS.block - HEAD.length - END.length - 1;
   const lines = [], included = [];
   for (const { record, label } of pool) {
     const day = new Date(record.decidedAt ?? record.updatedAt).toISOString().slice(0, 10);
-    const entry = `- ${record.id} · ${label} · ${record.kind} · approved ${day}\n${cleanText(record.text).split('\n').map(line => `  ${line}`).join('\n')}`;
+    const entry = `- ${record.id} · ${label} · ${record.kind} · approved ${day}\n${indent(cleanText(record.text))}`;
     if ((room -= entry.length + 1) < 0) break;
     lines.push(entry);
     included.push({ id: record.id, scope: record.scope, kind: record.kind, chars: entry.length, approvedAt: record.decidedAt });

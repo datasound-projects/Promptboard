@@ -24,7 +24,7 @@ import { primaryAgent } from '../base-resolver.mjs';
 import { serial } from '../durable.mjs';
 import { escapeId } from '../origin.mjs';
 import { MEMORY_MODES } from './memory.mjs';
-import { cleanText, conflict, fail, newId, NetworkError, object, only, page, readDocument, requireRevision, sha256, writeDocument, writeImmutable } from './storage.mjs';
+import { cleanText, conflict, fail, LINE_BREAK, newId, NetworkError, object, only, page, readDocument, requireRevision, sha256, writeDocument, writeImmutable } from './storage.mjs';
 
 const SCHEMA = { job: 'promptboard.network-job', request: 'promptboard.network-job-request', settings: 'promptboard.network-settings' };
 const KIB = 1024, MINUTE = 60_000, DAY = 86_400_000;
@@ -105,7 +105,7 @@ function submission(input) {
   if (projectId !== null && (typeof projectId !== 'string' || !EXTERNAL_ID.test(projectId))) fail('Choose a project from this board.');
   if (networkId !== null && (typeof networkId !== 'string' || !NETWORK_ID.test(networkId))) fail('Choose a saved network.');
   if (parentJobId !== null && (typeof parentJobId !== 'string' || !JOB_ID.test(parentJobId))) fail('The parent is a job ID.');
-  if (idempotencyKey !== null && (typeof idempotencyKey !== 'string' || !KEY.test(idempotencyKey))) fail(`The idempotency key is 1 to ${LIMITS.idempotencyKey} printable characters.`);
+  if (idempotencyKey !== null && (typeof idempotencyKey !== 'string' || !KEY.test(idempotencyKey) || LINE_BREAK.test(idempotencyKey))) fail(`The idempotency key is 1 to ${LIMITS.idempotencyKey} printable characters.`);
   if (memory === 'agent+network' && !networkId) fail('Network memory needs the network the job runs in (networkId).');
   if (projectLessons && !projectId) fail('Project lessons need the project (projectId).');
   return { agentId, input: { text, ...(json !== undefined ? { json } : {}) }, instructions: cleanText(instructions), tools, permissions: { filesystem, memory, projectLessons },

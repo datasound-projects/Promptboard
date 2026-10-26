@@ -19,7 +19,7 @@ import { serial, syncDir } from '../durable.mjs';
 import { escapeId } from '../origin.mjs';
 import { NetworkMemory } from './memory.mjs';
 import { NetworkPosts } from './posts.mjs';
-import { conflict, fail, newId, NetworkError, object, only, page, PAGE_LIMIT, readDocument, readImmutable, requireRevision as revision, sha256, writeDocument, writeImmutable } from './storage.mjs';
+import { conflict, fail, LINE_BREAK, newId, NetworkError, object, only, page, PAGE_LIMIT, readDocument, readImmutable, requireRevision as revision, sha256, writeDocument, writeImmutable } from './storage.mjs';
 
 const SCHEMA = { agents: 'promptboard.network-agents', draft: 'promptboard.network-draft', version: 'promptboard.network-version' };
 export const NETWORK_LIMITS = Object.freeze({ agents: 5000, nodes: 5000, edges: 20000, draftBytes: 8 * 1024 * 1024, name: 80, description: 2000, labels: 20, label: 40, projects: 200, page: PAGE_LIMIT, coordinate: 1e7 });
@@ -31,10 +31,15 @@ const EXTERNAL_ID = /^[A-Za-z0-9_-]{1,100}$/, SHA = /^[0-9a-f]{64}$/, CONTROL = 
 
 const invalidFile = () => fail('This is not a valid Promptboard Network export. Nothing was imported.', 'NETWORK_IMPORT_INVALID');
 const byCreated = (a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1);
-/** Owner text, trimmed; a credential typed into it is masked before it is saved. */
-function text(value, max, label, { required = false, nullable = false } = {}) {
+/**
+ * Owner text, trimmed; a credential typed into it is masked before it is saved. Names and labels are one line (they reach
+ * prompts as a line of their own, see memory.mjs), so a line break or tab inside them is refused; only `multiline` text
+ * (a description) keeps them.
+ */
+function text(value, max, label, { required = false, nullable = false, multiline = false } = {}) {
   if (!required && (value === undefined || value === null || value === '')) return nullable ? null : '';
   if (typeof value !== 'string' || CONTROL.test(value)) fail(`${label} must be text.`);
+  if (!multiline && LINE_BREAK.test(value.trim())) fail(`${label} must be one line, without line breaks or tabs.`);
   const clean = redactLocal(value.trim());
   if ((required && !clean) || clean.length > max) fail(`${label} must contain ${required ? 1 : 0} to ${max} characters.`);
   return clean || (nullable ? null : '');
@@ -106,7 +111,7 @@ function edgesOf(value, nodes) {
 function networkContent(input, previous = { description: '', nodes: [], edges: [] }) {
   const has = key => Object.hasOwn(input, key), nodes = has('nodes') ? nodesOf(input.nodes) : previous.nodes;
   return { name: has('name') || previous.name === undefined ? text(input.name, LIMITS.name, 'Network name', { required: true }) : previous.name,
-    description: has('description') ? text(input.description, LIMITS.description, 'Description') : previous.description,
+    description: has('description') ? text(input.description, LIMITS.description, 'Description', { multiline: true }) : previous.description,
     nodes, edges: has('nodes') || has('edges') ? edgesOf(has('edges') ? input.edges : previous.edges, nodes) : previous.edges };
 }
 /** The exact bytes of a published version, in a fixed key order: the same content always has the same hash. */
@@ -233,7 +238,7 @@ async function parseBundle(data) {
     if (typeof item.sha256 !== 'string' || !SHA.test(item.sha256) || !Number.isSafeInteger(item.number)) invalidFile();
     const nodes = nodesOf(item.nodes), key = `${item.networkId}@${item.number}`;
     const body = { networkId: item.networkId, number: item.number, publishedAt: time(item.publishedAt), name: text(item.name, LIMITS.name, 'Network name', { required: true }),
-      description: text(item.description, LIMITS.description, 'Description'), nodes, edges: edgesOf(item.edges, nodes) };
+      description: text(item.description, LIMITS.description, 'Description', { multiline: true }), nodes, edges: edgesOf(item.edges, nodes) };
     if (listed.get(key) !== item.sha256 || versions.has(key)) invalidFile();
     if (sha256(versionText(body)) !== item.sha256) fail('A published version in this file does not match its hash. Nothing was imported.', 'NETWORK_CONTENT_INVALID', 409);
     versions.set(key, body);
