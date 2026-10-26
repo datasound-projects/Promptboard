@@ -119,25 +119,46 @@ function networkContent(input, previous = { description: '', nodes: [], edges: [
 /** The exact bytes of a published version, in a fixed key order: the same content always has the same hash. */
 const versionText = ({ networkId, number, publishedAt, name, description, nodes, edges }) => JSON.stringify({ schema: SCHEMA.version, version: 1, networkId, number, publishedAt, name, description, nodes, edges });
 
+const breathe = () => new Promise(resolve => setImmediate(resolve));
 /**
  * The containment path from `rootId` back to itself through pinned published versions, or null. Pins name published
- * versions only, so drafts are reached only as the root; each version is walked once.
+ * versions only, so drafts are reached only as the root. Depth first with one shared path: each version is walked once,
+ * O(versions + pins); `within(networkId)` may leave out networks that cannot lead back. Every 1,000 versions it lets the
+ * event loop run, so a large walk never holds the server.
  */
-async function containmentCycle(rootId, nodes, versionOf) {
-  const walked = new Set();
-  const walk = async (children, path) => {
+async function containmentCycle(rootId, nodes, versionOf, within = () => true) {
+  const walked = new Set(), path = [rootId];
+  const walk = async children => {
     for (const node of children) {
       if (node.type !== 'subnetwork') continue;
       if (node.networkId === rootId) return [...path, rootId];
       const key = `${node.networkId}@${node.version}`;
-      if (walked.has(key)) continue;
+      if (walked.has(key) || !within(node.networkId)) continue;
       walked.add(key);
-      const found = await walk((await versionOf(node.networkId, node.version)).nodes, [...path, node.networkId]);
+      if (walked.size % 1000 === 0) await breathe();
+      path.push(node.networkId);
+      const found = await walk((await versionOf(node.networkId, node.version)).nodes);
       if (found) return found;
+      path.pop();
     }
     return null;
   };
-  return walk(nodes, [rootId]);
+  return walk(nodes);
+}
+/**
+ * The networks that can lie on a loop of pins (network A has a graph pinning a version of B, and so on back to A): what
+ * is left after taking away, again and again, every network nothing left pins, then every network that pins nothing
+ * left (Kahn's peeling, both ways), O(networks + pins). Any network that contains itself is on such a loop.
+ */
+function looped(pins) {
+  const left = new Set(pins.keys());
+  for (const forward of [true, false]) {
+    const count = new Map([...left].map(id => [id, 0])), next = new Map([...left].map(id => [id, []]));
+    for (const id of left) for (const to of pins.get(id)) if (left.has(to)) { const [a, b] = forward ? [id, to] : [to, id]; count.set(b, count.get(b) + 1); next.get(a).push(b); }
+    const queue = [...left].filter(id => !count.get(id));
+    for (const id of queue) { left.delete(id); for (const b of next.get(id)) { count.set(b, count.get(b) - 1); if (!count.get(b)) queue.push(b); } }
+  }
+  return left;
 }
 
 /** Why a stale Base agent cannot be used, as a graph issue says it (the registration view's `staleReason`). */
@@ -251,8 +272,18 @@ async function parseBundle(data) {
   const missingAgents = [...new Set(graphs.flatMap(([, nodes]) => nodes.filter(node => node.type === 'agent' && !agentIds.has(node.agentId)).map(node => node.agentId)))];
   const missingVersions = [...new Set(graphs.flatMap(([, nodes]) => nodes.filter(node => node.type === 'subnetwork' && !versions.has(`${node.networkId}@${node.version}`)).map(node => `${node.networkId}@${node.version}`)))];
   if (missingAgents.length || missingVersions.length) fail('The file names agents or published versions it does not contain. Nothing was imported.', 'NETWORK_IMPORT_UNRESOLVED', 409, { agentIds: missingAgents, versions: missingVersions });
+  // Every draft and version is a root, so a crafted loop that no saved network reaches is caught too. Only networks on a
+  // loop of pins can contain themselves, so only their graphs are walked, and only through each other (none in a file
+  // the app wrote, unless two networks pin versions of each other); the rest costs O(networks + pins).
+  // ponytail: a crafted file whose networks all pin each other in loops is walked once per root (O(roots × versions)),
+  // yielding to the event loop; keep a per-loop reachability index if such files ever matter.
+  const pins = new Map(networks.map(draft => [draft.id, new Set()]));
+  for (const [id, nodes] of graphs) for (const node of nodes) if (node.type === 'subnetwork') pins.get(id).add(node.networkId);
+  const loops = looped(pins);
   for (const [id, nodes] of graphs) {
-    const cycle = await containmentCycle(id, nodes, (networkId, number) => versions.get(`${networkId}@${number}`));
+    if (!loops.has(id)) continue;
+    await breathe();
+    const cycle = await containmentCycle(id, nodes, (networkId, number) => versions.get(`${networkId}@${number}`), networkId => loops.has(networkId));
     if (cycle) fail(`A network in the file contains itself: ${cycle.join(' → ')}. Nothing was imported.`, 'NETWORK_CYCLE', 400, { path: cycle });
   }
   return { agents, networks, versions: [...versions.values()] };

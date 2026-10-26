@@ -3,6 +3,7 @@
 // registry and job engine on temporary data folders; nothing here starts a process.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -136,4 +137,67 @@ test('P1-7: local folders in names, descriptions, display names and labels are c
     const files = name === 'networks' ? (await readdir(join(other, 'network', 'networks'), { recursive: true })).filter(item => item.endsWith('.json')).map(item => join('networks', item)) : [name];
     for (const item of files) assert.doesNotMatch(await readFile(join(other, 'network', item), 'utf8'), /\/Users\/bob/, item);
   }
+});
+
+const hexId = n => `net_${n.toString(16).padStart(20, '0')}`;
+/**
+ * A Network export of networks 0…n-1 with no agents: `versionPins[n]` lists, per published version, the `[network, version]`
+ * pins of that version; `draftPins[n]` the pins of network n's draft. Hashes are the registry's own (versionText).
+ */
+function exportFile(versionPins, draftPins = {}) {
+  const node = ([n, version], index) => ({ id: `n_${pad(index + 1)}`, type: 'subnetwork', networkId: hexId(n), version, position: { x: 0, y: 0 } });
+  const networks = [], versions = [];
+  versionPins.forEach((list, n) => {
+    const publishedVersions = list.map((pins, index) => {
+      const body = { networkId: hexId(n), number: index + 1, publishedAt: 1, name: `N${n}`, description: '', nodes: pins.map(node), edges: [] };
+      const hash = createHash('sha256').update(JSON.stringify({ schema: 'promptboard.network-version', version: 1, ...body })).digest('hex');
+      versions.push({ ...body, sha256: hash });
+      return { version: index + 1, sha256: hash, publishedAt: 1 };
+    });
+    networks.push({ id: hexId(n), name: `N${n}`, description: '', revision: 1, createdAt: 1, updatedAt: 1, nodes: (draftPins[n] || []).map(node), edges: [], publishedVersions });
+  });
+  return { application: 'Promptboard', kind: 'promptboard-network', version: 1, exportedAt: '2026-10-26T00:00:00.000Z', agents: [], networks, versions };
+}
+/** How long `work` took and the longest time the event loop could not run a 5 ms timer meanwhile. */
+async function timed(work) {
+  let last = performance.now(), stall = 0;
+  const timer = setInterval(() => { const at = performance.now(); stall = Math.max(stall, at - last); last = at; }, 5);
+  const started = performance.now();
+  try {
+    const outcome = await work().then(() => 'imported', error => error.code);
+    return { outcome, ms: Math.round(performance.now() - started), stall: Math.round(Math.max(stall, performance.now() - last)) };
+  } finally { clearInterval(timer); }
+}
+
+test('P1-2: import validation is linear: a chain of 2,000 networks validates in bounded time while the event loop keeps running; a loop through it is still refused', async t => {
+  const { registry } = await fixture(t);
+  const N = 2000, chain = Array.from({ length: N }, (_, n) => [n ? [[n - 1, 1]] : []]);
+  // A wrong expectedRevision: everything is validated, then the import is refused before it writes (no 4,000 files here).
+  const valid = await timed(() => registry.import({ data: exportFile(chain), expectedRevision: 999 }));
+  t.diagnostic(`chain of ${N}: ${JSON.stringify(valid)}`);
+  assert.equal(valid.outcome, 'REVISION_CONFLICT', 'the whole file validated');
+  assert.ok(valid.ms < 3000, `validated in ${valid.ms} ms (was about 6 s for this file, cubic)`);
+  assert.ok(valid.stall < 1000, `the event loop was held for at most ${valid.stall} ms`);
+  // Network 0's draft pins the last version: 0 → N-1 → … → 0. Found, with the whole path.
+  const looping = await timed(() => registry.import({ data: exportFile(chain, { 0: [[N - 1, 1]] }), expectedRevision: 999 }));
+  assert.equal(looping.outcome, 'NETWORK_CYCLE');
+  assert.ok(looping.ms < 3000 && looping.stall < 1000, JSON.stringify(looping));
+  const error = await registry.import({ data: exportFile(chain, { 0: [[N - 1, 1]] }), expectedRevision: 999 }).catch(failure => failure);
+  assert.deepEqual([error.details.path.length, error.details.path[0], error.details.path[1], error.details.path.at(-1)], [N + 1, hexId(0), hexId(N - 1), hexId(0)]);
+});
+
+test('P1-2: a crafted file whose networks all pin each other in one loop, without containing themselves, is walked root by root and never holds the event loop', async t => {
+  const { registry } = await fixture(t);
+  // Network i's v2 pins i+1's v2 (a long chain of distinct networks); the last one's v3 pins network 0's v1, so every
+  // network is on a loop of pins, yet no network contains itself.
+  const M = 1200, pins = Array.from({ length: M + 1 }, (_, n) => (n < M ? [[], [[n + 1, 2]]] : [[], [], [[0, 1]]]));
+  const result = await timed(() => registry.import({ data: exportFile(pins), expectedRevision: 999 }));
+  t.diagnostic(`loop of ${M + 1}: ${JSON.stringify(result)}`);
+  assert.equal(result.outcome, 'REVISION_CONFLICT', 'no network contains itself, so the file validates');
+  assert.ok(result.stall < 400, `the event loop was held for at most ${result.stall} ms`);
+  // With the last network's v2 pinning network 0's v1, network 0 contains itself: 0@2 → 1@2 → … → M@2 → 0@1.
+  pins[M] = [[], [[0, 1]], [[0, 1]]];
+  const looping = await registry.import({ data: exportFile(pins), expectedRevision: 999 }).catch(error => error);
+  assert.equal(looping.code, 'NETWORK_CYCLE');
+  assert.deepEqual([looping.details.path[0], looping.details.path.at(-1)], [hexId(0), hexId(0)]);
 });

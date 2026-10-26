@@ -235,6 +235,14 @@ above; the others fill in what it left open.
    versions (each once) and refuses when it reaches that network's ID again, whatever version (`NETWORK_CYCLE`,
    `details.path` = IDs, names in the message). Drafts of other networks are never containment. An import checks every
    draft and every version as a root, which also catches crafted cycles that do not involve a saved network.
+   *(Phase-1 review, P1-2)* The walk is one depth-first search with a shared path (each version once, O(versions +
+   pins)) that yields to the event loop every 1,000 versions. An import first peels off, in O(networks + pins), every
+   network that cannot lie on a loop of pins (Kahn's algorithm in both directions); only graphs of networks left on a
+   loop are walked, only through each other. A file the app wrote has none unless two networks pin versions of each
+   other, so a 13 MiB chain of 20,000 networks validates in about 150 ms (was more than ten minutes). A crafted file
+   whose networks all pin each other in loops is still walked once per root (quadratic, yielding between roots; a
+   `ponytail:` note in `registry.mjs`). Exact "contains itself" by network ID needs reachability between versions of the
+   same network, which has no linear algorithm in general; one shared visited set across roots would miss loops.
 6. **Loading.** A stored row or draft must be exactly what the registry writes (strict node/edge check, hash-shaped
    version entries); anything else is damaged. `agents.json` with no usable copy refuses the agent routes
    (`NETWORK_DATA_DAMAGED`). A draft with no usable copy, or a newer version, is listed under `unavailable` and refused
