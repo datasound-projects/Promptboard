@@ -140,3 +140,23 @@ test('P2-1 (Graph): an edit made while the network draft saves stays on the page
   saved = (await call(ctx, `/api/network/networks/${id}`)).json.network;
   assert.deepEqual([saved.nodes.length, saved.edges.length], [2, 1]);
 });
+
+test('P2-4: an interrupted run offers Cancel run, and it cancels', async t => {
+  const first = await setup(t, { hash: '#/', networkWorker: fakeWorker({ mode: 'manual' }) });
+  const seeded = await seed(first), pipeline = await approvalPipeline(first, seeded);
+  const { runId } = (await call(first, `/api/network/pipelines/${pipeline.id}/runs`, 'POST', { version: 1, confirm: true })).json;
+  const folder = join(first.dataDir, 'network', 'pipeline-runs', `run__${runId.slice(4)}`);
+  await until(async () => (await call(first, `/api/network/pipeline-runs/${runId}`)).json.run.revision >= 3, 'run saved a few times (a backup exists)');
+  await first.app.close();
+  await writeFile(join(folder, 'run.json'), '{ damaged'); // Its .bak is good: the run comes back interrupted.
+
+  const ctx = await setup(t, { dataDir: first.dataDir, hash: `#/network/runs/${runId}`, networkWorker: fakeWorker({ mode: 'manual' }) }); const { $ } = ctx;
+  await until(() => /run of version 1/.test(text(ctx, '#network-run-heading')) && text(ctx, '#network-run-status') === 'Interrupted', 'interrupted run view');
+  assert.equal($('#network-run-cancel').hidden, false, 'Cancel is offered for a run that has not ended');
+  $('#network-run-cancel').click();
+  await until(() => text(ctx, '#network-dialog-heading') === 'Cancel this run?', 'asks first');
+  $('#network-confirm').click();
+  await until(() => text(ctx, '#network-run-status') === 'Cancelled', 'cancelled');
+  assert.equal($('#network-run-cancel').hidden, true);
+  assert.equal((await call(ctx, `/api/network/pipeline-runs/${runId}`)).json.run.status, 'cancelled');
+});

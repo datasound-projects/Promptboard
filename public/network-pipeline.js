@@ -1312,7 +1312,7 @@ window.PromptboardNetworkPipeline = (() => {
       const ready = !rv.loading && !rv.loadError && rv.run;
       rTools.hidden = !ready || isPhone() || !window.cytoscape; rBody.hidden = !ready && !rv.loadError; rSummary.hidden = !ready; rPinned.hidden = !ready;
       rCollapse.hidden = !ready || !rv.plan.groups.length; rCollapse.disabled = !rv.expanded.size; rCollapse.title = rv.expanded.size ? '' : 'Every sub-pipeline is collapsed.';
-      rOpen.hidden = !ready; rCancel.hidden = !ready || !MOVING.has(rv.run.status);
+      rOpen.hidden = !ready; rCancel.hidden = !ready || ['completed', 'failed', 'cancelled'].includes(rv.run.status); // An interrupted run asks you to cancel it.
       if (rv.loadError) { rHeading.textContent = 'Run not available'; rMeta.replaceChildren(); rAlert.hidden = false; rAlert.replaceChildren(el('span', '', rv.loadError.message), button('All pipelines', () => go('#/network/pipelines'), 'secondary-button')); rCanvasBox.hidden = true; rLists.hidden = true; rDetails.hidden = true; return; }
       rCanvasBox.hidden = isPhone() || !window.cytoscape; rLists.hidden = false; rDetails.hidden = false;
       if (!ready) { rHeading.textContent = 'Loading the run…'; rMeta.replaceChildren(); return; }
