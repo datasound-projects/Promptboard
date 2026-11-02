@@ -2647,3 +2647,21 @@ Production Docker code and polling intervals are unchanged. A six-second observa
 and passes with the gate. The original progress, success, token secrecy, keyboard focus and phone-layout assertions all
 pass in real Chrome at 6× CPU throttling. The shared sandbox suite passes all 16 cases on Node 22 and Node 26, zero skips.
 Evidence: `.pb-shots/network-validation/final-sandbox-*`, `sandbox-old-delayed.log` and `sandbox-fixed-delayed.log`.
+
+The `d1d1ac8` Ubuntu/Node 22 push job catches another fixture timing assumption in the existing board Schedules dialog:
+400 zero-delay timer turns give Linux roughly half a second for a real disk-backed toggle request. The fixture now waits
+for its actual route responses before polling the rendered result. DOM polling, contents, consent, deletion, focus and
+service behaviour checks are unchanged. A controlled 1.2-second response delay fails the old fixture and passes after
+the correction. All 35 schedule/UI/custody cases pass on Node 22 and Node 26, zero skips. Eight repeated UI runs on each
+runtime add 64 passing executions. Evidence: `.pb-shots/network-validation/schedules-ui-*-delayed.log`,
+`final-schedules-ui-node*.log` and `final-schedules-ui-repeats-node*.log`.
+
+The same matrix's Windows/Node 22 push job reports an exit from the native-message custody test subprocess before any
+scenario or diagnostic, rather than an assertion failure; its complete browser phase passes. All 12 affected custody
+cases pass locally on Node 22. The initial log is retained in
+`.pb-shots/network-validation/d1d1ac8-windows22-initial-retained.log`; replacement full matrices must establish a clean
+result for the final commit. No speculative production change is made for this undiagnosed process exit.
+The separate Windows/Node 22 PR job on that same commit passes all 1,447 applicable non-browser cases, including the
+custody file, and all 158 applicable browser cases (300 and seven platform skips respectively).
+All six PR jobs on `d1d1ac8` finish successfully; the separate push matrix has four successful jobs and the two findings
+above. The published response-synchronization correction is verified by replacement full push and PR matrices.

@@ -25,9 +25,9 @@ async function setup(t, { linked = false } = {}) {
   if (linked) await board.store.update(state => { state.projects[0].repository = { path: '/repo', root: '/repo', commonDir: '/repo/.git' }; state.projects[0].revision++; });
   const refresh = async () => { project = (await board.view()).projects[0]; };
   await refresh();
-  const requests = [];
+  const requests = [], responses = [];
   // The page's api(): the real route handler with the real service, answering as the server does.
-  const api = async (path, { method = 'GET', body } = {}) => {
+  const route = async (path, { method = 'GET', body } = {}) => {
     requests.push({ method, path, body });
     const url = new URL(path, 'http://127.0.0.1'), [, projectId, scheduleId, run] = url.pathname.match(/^\/api\/projects\/([^/]+)\/schedules(?:\/([^/]+)(\/run)?)?$/);
     let data;
@@ -36,6 +36,10 @@ async function setup(t, { linked = false } = {}) {
       return { response: { ok: true, status: 200 }, data };
     } catch (error) { return { response: { ok: false, status: error.status }, data: { error: error.message, code: error.code } }; }
   };
+  const api = (...args) => { const response = route(...args); responses.push(response); return response; };
+  // Finish the real disk-backed response before polling the DOM. Counting zero-delay
+  // timer turns otherwise gives Linux only about 400 ms for the filesystem work.
+  const settled = () => Promise.all(responses);
   const dom = new JSDOM('<button id="schedules-open">Schedules</button><p id="announce"></p>', { url: 'http://127.0.0.1/', runScripts: 'outside-only' });
   const win = dom.window, $ = selector => win.document.querySelector(selector), $$ = selector => [...win.document.querySelectorAll(selector)];
   const errors = [];
@@ -48,8 +52,8 @@ async function setup(t, { linked = false } = {}) {
   const byText = text => $$('#schedules-dialog button').find(button => button.textContent === text);
   const submit = () => $('.schedule-form').dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
   const set = (selector, value) => { $(selector).value = value; $(selector).dispatchEvent(new win.Event('change', { bubbles: true })); };
-  const open = async () => { $('#schedules-open').click(); await until(() => !$('.schedules-body').textContent.includes('Loading'), 'list loaded'); };
-  return { win, $, $$, byText, submit, set, open, view, board, schedules, requests, errors, refresh, project: () => project };
+  const open = async () => { $('#schedules-open').click(); await settled(); await until(() => !$('.schedules-body').textContent.includes('Loading'), 'list loaded'); };
+  return { win, $, $$, byText, submit, set, open, settled, view, board, schedules, requests, errors, refresh, project: () => project };
 }
 
 test('the dialog starts from a quick start, shows the repeat in words with the next time, and Run now reports the new card', async t => {
@@ -67,6 +71,7 @@ test('the dialog starts from a quick start, shows the repeat in words with the n
   ui.set('#schedule-priority', '2');
   ui.$('#schedule-label-deps').checked = true;
   ui.submit();
+  await ui.settled();
   await until(() => ui.$('.schedule-item'), 'saved');
   const [saved] = ui.project().schedules;
   assert.deepEqual([saved.title, saved.priority, saved.labelIds, saved.cadence, saved.autopilot], ['Nightly dependency update', 2, ['deps'], { kind: 'daily', time: '02:00' }, false]);
@@ -76,6 +81,7 @@ test('the dialog starts from a quick start, shows the repeat in words with the n
   assert.equal(ui.$('.schedules-status').textContent, '“Nightly dependency update” saved. Its next card comes Thu 22 Oct, 02:00.');
   assert.equal(ui.$('.schedules-status').getAttribute('role'), 'status');
   ui.byText('Run now').click();
+  await ui.settled();
   await until(() => ui.$('.schedule-last').textContent === 'Created #1', 'card made');
   assert.equal(ui.$('#announce').textContent, 'Created #1 “Nightly dependency update” in To Do.');
   assert.equal(ui.win.document.activeElement.id, `schedule-run-${saved.id}`, 'focus stays on Run now');
@@ -103,6 +109,7 @@ test('Run with Autopilot needs a code folder, and a one-time confirm before agen
   ui.byText('Turn on Autopilot').click();
   assert.equal(toggle.checked, true);
   ui.submit();
+  await ui.settled();
   await until(() => ui.$('.schedule-item'), 'saved');
   assert.equal(ui.requests.find(request => request.method === 'POST').body.confirmAutopilot, true, 'the confirm is sent as the owner’s consent');
   assert.equal(ui.$('.schedule-when').textContent, 'Every Wednesday at 03:00 · Next Wed 28 Oct, 03:00 · With Autopilot');
@@ -111,6 +118,7 @@ test('Run with Autopilot needs a code folder, and a one-time confirm before agen
   assert.equal(ui.$('#schedule-autopilot').checked, true);
   ui.$('#schedule-title').value = 'Security sweep';
   ui.submit();
+  await ui.settled();
   await until(() => ui.$('.schedule-title')?.textContent === 'Security sweep', 'edited');
   assert.equal(ui.requests.at(-1).body.confirmAutopilot, undefined);
   assert.deepEqual(ui.errors, []);
@@ -132,6 +140,7 @@ test('weekly asks for days and monthly for a day of the month; the switch, the l
   ui.set('#schedule-month-day', '1');
   ui.set('#schedule-time', '08:30');
   ui.submit();
+  await ui.settled();
   await until(() => ui.$('.schedule-item'), 'saved');
   assert.equal(ui.$('.schedule-when').textContent, 'On the 1st of every month at 08:30 · Next Sun 1 Nov, 08:30');
   // A skipped slot is shown as a warning, with the reason.
@@ -145,6 +154,7 @@ test('weekly asks for days and monthly for a day of the month; the switch, the l
   const toggle = ui.$('.schedule-item input[role="switch"]');
   assert.equal(toggle.getAttribute('aria-label'), '“Release notes” makes cards');
   toggle.checked = false; toggle.dispatchEvent(new ui.win.Event('change'));
+  await ui.settled();
   await until(() => ui.$('.schedule-when')?.textContent.endsWith('· Off'), 'switched off');
   assert.equal(ui.$('.schedules-status').textContent, '“Release notes” is off. It makes no cards until you switch it on.');
   // Delete asks first; Cancel keeps it.
@@ -154,6 +164,7 @@ test('weekly asks for days and monthly for a day of the month; the switch, the l
   assert.equal(ui.project().schedules.length, 1);
   ui.$$('.schedule-actions button').find(button => button.textContent === 'Delete').click();
   ui.byText('Delete schedule').click();
+  await ui.settled();
   await until(() => ui.$('.schedule-empty'), 'deleted');
   assert.equal(ui.project().schedules.length, 0);
   assert.equal(ui.win.document.activeElement.id, 'schedule-new');
