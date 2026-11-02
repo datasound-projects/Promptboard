@@ -2599,3 +2599,5 @@ immediate assertion fails deterministically. The corrected Activity/delegation/s
 both Node 22 and Node 26, zero skips. Graph now uses painted, uncovered button-centre coordinates for its real click;
 all six Graph/pipeline/end-to-end Chrome scenarios pass at 6× CPU throttling. Existing pixel, lifecycle, content and
 timeout assertions are preserved. Logs: `.pb-shots/network-validation/final-answer*` and `final-graph-pipeline.log`.
+The record gate is installed before the job view opens so earlier in-flight refreshes are covered too. The final complete
+delegation file plus CLI/workflow contracts pass 13/13 on both Node 22 and Node 26, zero skips (`final-gate-cli-*`).

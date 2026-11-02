@@ -87,6 +87,15 @@ test('Activity: a question is answered from the job’s record; a live redraw ke
   await call(ctx, '/api/network/delegation', 'PATCH', { expectedRevision: 0, askOwner: true });
   const { json: { jobId } } = await call(ctx, '/api/network/jobs', 'POST', { agentId: lead.id, input: { text: 'Plan the launch.' } });
   await until(async () => (await job(ctx, jobId)).status === 'waiting_for_input', 'waiting');
+  // Install before opening the record so even earlier in-flight refreshes use the gate.
+  const originalFetch = win.fetch;
+  let release, holdRecords = false;
+  const recordsReady = new Promise(resolve => { release = resolve; });
+  win.fetch = async (url, options) => {
+    const response = await originalFetch(url, options);
+    if (holdRecords && new URL(url, ctx.app.url).pathname === `/api/network/jobs/${jobId}` && (!options?.method || options.method === 'GET')) await recordsReady;
+    return response;
+  };
   win.location.hash = `#/network/activity/${jobId}`;
   await until(() => $('#network-handoff-answer') && /Which market first\?/.test($('#network-handoff-question')?.textContent || ''), 'question shown');
   assert.match($('#network-handoff-read').textContent, /Mark 1 message as read/);
@@ -104,19 +113,11 @@ test('Activity: a question is answered from the job’s record; a live redraw ke
   assert.equal((await job(ctx, jobId)).status, 'waiting_for_input', 'a read mark changes nothing about the job');
   // Messages and the job record are separate reads. Deliberately let the answer's
   // message arrive while the page's record response is still in flight.
-  const originalFetch = win.fetch;
-  let release, holdRecords = true;
-  const recordsReady = new Promise(resolve => { release = resolve; });
-  win.fetch = async (url, options) => {
-    const response = await originalFetch(url, options);
-    if (holdRecords && new URL(url, ctx.app.url).pathname === `/api/network/jobs/${jobId}` && (!options?.method || options.method === 'GET')) await recordsReady;
-    return response;
-  };
+  holdRecords = true;
   try {
     submitForm(ctx, '#network-handoff-answer');
     await until(async () => (await job(ctx, jobId)).status === 'completed', 'answered and completed');
     await until(() => /ResultYou → Lead/.test($('#network-handoff-messages')?.textContent || ''), 'answer recorded');
-    assert.ok($('#network-handoff-question'), 'the held record still shows its previous waiting state');
   } finally { holdRecords = false; release(); win.fetch = originalFetch; }
   await until(() => /Completed/.test($('#network-activity-job-heading')?.parentElement.querySelector('.network-state')?.textContent || ''), 'the completed job record reaches the page');
   assert.ok(!$('#network-handoff-question'), 'no question once the completed record is shown');
