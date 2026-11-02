@@ -179,26 +179,30 @@ test('P2-8: a finished job read from its backup is recovered with a job.recovere
 });
 
 test('P2-9: a machine client’s open stream ends at its expiry and delivers nothing after it', async t => {
-  let skew = 0;
-  const ctx = await fixture(t, { worker: fakeWorker({ mode: 'manual' }), machineOptions: { now: () => Date.now() + skew } });
+  let clock = Date.now();
+  const ctx = await fixture(t, { worker: fakeWorker({ mode: 'manual' }), machineOptions: { now: () => clock } });
   const lead = await ctx.register('lead');
   const soon = await ctx.client({ agents: [lead.id] }, { expiresInDays: 1 }), later = await ctx.client({ agents: [lead.id] }, { expiresInDays: 2 });
   await ctx.on();
   const submitted = await ctx.machine(later.token, '/jobs', { method: 'POST', body: { agentId: lead.id, input: { text: 'Hello' } } });
   assert.equal(submitted.status, 202, submitted.text);
+  await until(async () => (await ctx.owner(`/api/network/events?jobId=${submitted.json.jobId}`)).json.events.some(event => event.type === 'job.status' && event.status === 'preparing'), 'preparation event saved before the quiet expiry check');
 
-  // A stream opened 400 ms before its client expires closes at the expiry (pings would keep it open otherwise).
-  skew = DAY - 400;
+  // Keep the logical clock before expiry until the handshake completes. A busy
+  // runner must not consume the client's lifetime before the stream is live.
+  clock = soon.client.expiresAt - 400;
   const first = openStream(ctx.machinePort, soon.token);
   t.after(() => first.close());
   await until(() => first.lines.some(line => line.live), 'stream live');
+  assert.equal(first.status, 200);
+  clock = soon.client.expiresAt;
   await until(() => first.ended, 'the stream ends at the expiry', 3000);
 
   // The clock passes a client's expiry while its stream is open: the next event closes the stream instead of reaching it.
   const second = openStream(ctx.machinePort, later.token);
   t.after(() => second.close());
   await until(() => second.lines.some(line => line.live), 'second stream live');
-  skew = 3 * DAY;
+  clock = later.client.expiresAt + DAY;
   assert.equal((await ctx.machine(later.token, '/agents')).status, 401, 'the token stopped working');
   assert.equal((await ctx.owner(`/api/network/jobs/${submitted.json.jobId}/cancel`, 'POST', {})).status, 200);
   await until(() => second.ended, 'the expired client’s stream ends', 3000);

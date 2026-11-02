@@ -2626,3 +2626,16 @@ also passes independently after consuming all fixture response bodies. Syntax an
 zero vulnerabilities. Evidence: `.pb-shots/network-validation/final-clock-before.log`, `final-schedule-clock-*`,
 `final-fixture-repeats.log`, `final-activity-focus-*`, `final-activity-units-*`, `final-activity-browsers.log` and
 `final-focus-*`. The full matrix for the resulting head is the remaining release gate, tracked on PR #142.
+
+### Machine-stream expiry fixture (2026-11-02)
+
+The `797ca74` Windows/Node 24 push job exposes a test setup race: its client has only 400 ms of wall time left before
+the stream handshake, so runner contention can expire the token before the test observes a live stream. The fixture
+now keeps its injected clock fixed during setup, waits for the initial preparation event to settle, and advances time
+only after the stream is live. Automatic stream closure keeps the same three-second deadline; expired credentials and
+the prohibition on delivering subsequent job data are still asserted. No authentication or expiry code changes.
+
+All 21 affected REST/MCP cases pass on Node 22 and Node 26, zero skips. An ignored copy with a controlled 600 ms
+connection delay reproduces the old `stream live` failure; the corrected fixture passes with the identical delay.
+Evidence: `.pb-shots/network-validation/final-expiry-node22.log`, `final-expiry-node26.log`,
+`expiry-old-delayed.log` and `expiry-fixed-delayed.log`. The replacement full CI matrices remain the publication gate.
