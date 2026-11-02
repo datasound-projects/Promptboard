@@ -43,10 +43,22 @@ test('Project card in Chrome: open a file from the tree, edit, Cmd+S writes it t
   await ev(`const editor = document.activeElement; editor.selectionStart = editor.selectionEnd = editor.value.length;`);
   await browser.type('// saved');
   await wait(`document.querySelector('.explorer-dialog .explorer-dot')`, 'unsaved dot');
+  await browser.layout(`const editor = document.querySelector('.explorer-dialog .file-editor');
+    return document.activeElement === editor && !editor.readOnly && editor.value.endsWith('// saved') && !document.querySelector('.explorer-dialog .explorer-save').disabled;`);
+  await ev(`window.__explorerSaveKeys = []; document.addEventListener('keydown', event => {
+    if (event.key.toLowerCase() === 's') window.__explorerSaveKeys.push({ key: event.key, ctrl: event.ctrlKey, meta: event.metaKey,
+      prevented: event.defaultPrevented, target: event.target.className, status: document.querySelector('.explorer-dialog .explorer-status')?.textContent });
+  });`);
   const modifiers = process.platform === 'darwin' ? 4 : 2; // ⌘ on macOS, Ctrl elsewhere.
   await browser.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 's', code: 'KeyS', windowsVirtualKeyCode: 83, modifiers });
   await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 's', code: 'KeyS', windowsVirtualKeyCode: 83, modifiers });
-  await wait(`document.querySelector('.explorer-dialog .explorer-status').textContent === 'Saved.' && !document.querySelector('.explorer-dialog .explorer-dot')`, 'saved');
+  try { await wait(`document.querySelector('.explorer-dialog .explorer-status').textContent === 'Saved.' && !document.querySelector('.explorer-dialog .explorer-dot')`, 'saved'); }
+  catch (error) {
+    const state = await ev(`return { status: document.querySelector('.explorer-dialog .explorer-status')?.textContent,
+      active: document.activeElement?.className, draft: document.querySelector('.explorer-dialog .file-editor')?.value,
+      conflict: document.querySelector('.explorer-dialog .explorer-confirm')?.textContent, keys: window.__explorerSaveKeys };`);
+    assert.fail(`${error.message}; ${JSON.stringify({ ...state, disk: await readFile(join(root, 'src', 'app.js'), 'utf8') })}`);
+  }
   assert.equal(await readFile(join(root, 'src', 'app.js'), 'utf8'), 'export const greeting = "hello";\n// saved');
   await wait(`document.querySelector('.explorer-dialog [data-path="src/app.js"] .explorer-mark')?.textContent === 'M'`, 'modified marker');
   const inside = await tree('.explorer-dialog');

@@ -2565,3 +2565,20 @@ the same visibility and focus-ring assertions; it never scrolls or focuses a con
 logged when focus scrolling settles, and a persistent failure includes the rectangle and viewport. The complete
 accessibility walk and Activity scenario pass locally on Node 22 with 6× CPU throttling, 2/2, zero skips; the changed file
 passes syntax validation. Log: `.pb-shots/network-validation/ci-focus-paint.log`. Windows CI confirmation remains required.
+
+### Final CI completion (2026-11-02)
+
+At `af29197`, all four Linux/Windows PR jobs pass, including the full Network accessibility walk. macOS/Node 24 also
+passes on the push run. The macOS/Node 22 push runner records 1,762 non-browser passes (one platform skip) and 164/164
+Chrome passes, but its job reaches the 45-minute workflow deadline during completion. Both macOS PR jobs are also
+canceled at that overall deadline without reported assertion failures. The workflow now allows 60 minutes for the full
+expanded suite; all individual scenario deadlines and runner concurrency remain unchanged.
+
+One Windows push job fails the existing project-explorer keyboard save check, while that platform's PR job passes.
+The unchanged explorer browser/UI/runner cases pass locally, 16/16 at 6× browser CPU throttling. The browser case now
+waits for the painted editor to be focused, editable, dirty and Save-enabled before issuing the real shortcut. Failure
+diagnostics record the delivered keys, status, conflict text, draft and actual disk content. The Saved-status and exact
+disk-content assertions remain intact. The revised cases also pass 16/16, with zero skips. Final syntax and runtime
+dependency audit pass (zero vulnerabilities); the isolated preview still responds on port 4955. Logs are retained as
+`.pb-shots/network-validation/final-*`. Final matrix results for this continuation are tracked on PR #142; the PR remains
+open for review and no merge or release is performed by this continuation.
