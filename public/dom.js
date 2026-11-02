@@ -51,5 +51,34 @@ window.PromptboardDom = (() => {
     };
     return bar.set(0);
   }
-  return { el, button, pref, setPref, plural, clip, safeUrl, download, duration, ago, left, estimate, remaining, meter };
+  /** An error line that screen readers announce when it appears. */
+  const errorLine = (text, tag = 'p') => { const node = el(tag, 'inline-error', text); node.setAttribute('role', 'alert'); return node; };
+  /**
+   * A modal dialog keeps keyboard focus: Tab and Shift+Tab wrap inside it, and focus that falls out while it is open (a
+   * focused submit button disabled during its request) comes back to the error the dialog shows, or else to that control.
+   */
+  function holdFocus(dialog) {
+    const stops = () => [...dialog.querySelectorAll('button, [href], input, select, textarea, summary, [tabindex]:not([tabindex="-1"])')].filter(node => !node.disabled && node.getClientRects().length);
+    let last = null;
+    dialog.addEventListener('focusin', event => { last = event.target; });
+    dialog.addEventListener('keydown', event => {
+      if (event.key !== 'Tab' || event.defaultPrevented) return;
+      const all = stops();
+      if (all.length && document.activeElement === (event.shiftKey ? all[0] : all.at(-1))) { event.preventDefault(); (event.shiftKey ? all.at(-1) : all[0]).focus(); }
+    });
+    new MutationObserver(() => {
+      if (!dialog.open || ![document.body, null].includes(document.activeElement)) return;
+      const shown = [...dialog.querySelectorAll('[role="alert"]')].find(node => node.textContent.trim() && node.getClientRects().length);
+      if (shown) { if (!shown.hasAttribute('tabindex')) shown.tabIndex = -1; shown.focus(); }
+      else if (last?.isConnected && dialog.contains(last) && !last.disabled) last.focus();
+    }).observe(dialog, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'disabled'] });
+  }
+  /** A persistent notice for settings whose backup was recovered with access and automation switched off. */
+  function recoveryNotice(parent, recovery) {
+    let notice = [...parent.children].find(node => node.hasAttribute('data-network-recovery'));
+    if (!recovery) { notice?.remove(); return; }
+    if (!notice) { notice = el('p', 'note network-stale'); notice.setAttribute('data-network-recovery', ''); notice.setAttribute('role', 'status'); parent.prepend(notice); }
+    notice.textContent = recovery.message;
+  }
+  return { el, button, pref, setPref, plural, clip, safeUrl, download, duration, ago, left, estimate, remaining, meter, errorLine, holdFocus, recoveryNotice };
 })();

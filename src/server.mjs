@@ -47,6 +47,18 @@ import { Schedules, scheduleRoute } from './schedules.mjs';
 import { projectInsights } from './insights.mjs';
 import { Lessons, LessonsError, lessonsRoute } from './lessons.mjs';
 import { Sandbox, sandboxRoute } from './sandbox.mjs';
+import { NetworkRegistry } from './network/registry.mjs';
+import { NetworkJobs } from './network/jobs.mjs';
+import { LocalJobWorker } from './network/worker-local.mjs';
+import { NetworkEvents } from './network/events.mjs';
+import { networkRoute } from './network/http.mjs';
+import { NetworkPipelines } from './network/pipeline-model.mjs';
+import { PipelineRunner } from './network/pipeline-runner.mjs';
+import { MachineListener } from './network/rest.mjs';
+import { Delegation } from './network/delegation.mjs';
+import { NetworkSchedules } from './network/schedules.mjs';
+import { A2AWorker } from './network/a2a-client.mjs';
+import { NetworkError } from './network/storage.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -76,15 +88,23 @@ const assets = new Map([
   ['/project-explorer.js', ['project-explorer.js', 'text/javascript; charset=utf-8']],
   ['/lessons.js', ['lessons.js', 'text/javascript; charset=utf-8']],
   ['/sandbox.js', ['sandbox.js', 'text/javascript; charset=utf-8']],
+  ['/network.js', ['network.js', 'text/javascript; charset=utf-8']],
+  ['/network-graph.js', ['network-graph.js', 'text/javascript; charset=utf-8']],
+  ['/network-activity.js', ['network-activity.js', 'text/javascript; charset=utf-8']],
+  ['/network-clients.js', ['network-clients.js', 'text/javascript; charset=utf-8']],
+  ['/network-pipeline.js', ['network-pipeline.js', 'text/javascript; charset=utf-8']],
+  ['/network-delegation.js', ['network-delegation.js', 'text/javascript; charset=utf-8']],
+  ['/network-federation.js', ['network-federation.js', 'text/javascript; charset=utf-8']],
 ]);
-// Pinned terminal assets, served from the installed packages by exact path only (no CDN,
-// no directory browsing). Missing files (no npm install) return 404 and the dock falls back.
-const vendorDir = fileURLToPath(new URL('../node_modules/@xterm/', import.meta.url));
+// Pinned terminal and graph assets, served from the installed packages by exact path only (no CDN,
+// no directory browsing). Missing files (no npm install) return 404: the dock and the Network graph fall back.
+const vendorDir = fileURLToPath(new URL('../node_modules/', import.meta.url));
 const vendor = new Map([
-  ['/vendor/xterm.js', ['xterm/lib/xterm.js', 'text/javascript; charset=utf-8']],
-  ['/vendor/xterm.css', ['xterm/css/xterm.css', 'text/css; charset=utf-8']],
-  ['/vendor/addon-fit.js', ['addon-fit/lib/addon-fit.js', 'text/javascript; charset=utf-8']],
-  ['/vendor/addon-webgl.js', ['addon-webgl/lib/addon-webgl.js', 'text/javascript; charset=utf-8']],
+  ['/vendor/xterm.js', ['@xterm/xterm/lib/xterm.js', 'text/javascript; charset=utf-8']],
+  ['/vendor/xterm.css', ['@xterm/xterm/css/xterm.css', 'text/css; charset=utf-8']],
+  ['/vendor/addon-fit.js', ['@xterm/addon-fit/lib/addon-fit.js', 'text/javascript; charset=utf-8']],
+  ['/vendor/addon-webgl.js', ['@xterm/addon-webgl/lib/addon-webgl.js', 'text/javascript; charset=utf-8']],
+  ['/vendor/cytoscape.min.js', ['cytoscape/dist/cytoscape.min.js', 'text/javascript; charset=utf-8']], // Network → Graph canvas (MIT).
 ]);
 
 function send(res, code, body) {
@@ -122,7 +142,7 @@ export async function generate(request, { runner = runProvider, signal, catalogR
 // Map internal codes to HTTP statuses. Message text always comes from fixed strings.
 const STATUS = { ABORTED: 499, TIMEOUT: 504, BUSY: 409, AUTH_IN_PROGRESS: 409, NOT_INSTALLED: 409, UNSUPPORTED: 400, INVALID_PROVIDER: 400, INVALID_MODEL: 400, INVALID_EFFORT: 400, INVALID_INPUT: 400 };
 // Domain errors whose messages are fixed, user-facing strings.
-const EXPOSED = [AgentError, BatchError, BaseDeliveryError, BaseError, BoardError, CoordinatorError, DeliveryError, GitError, GitHubError, LessonsError, NotificationError, OriginError, RepositoryPipelineError, ResearchError, StoreError, WorkspaceFileError];
+const EXPOSED = [AgentError, BatchError, BaseDeliveryError, BaseError, BoardError, CoordinatorError, DeliveryError, GitError, GitHubError, LessonsError, NetworkError, NotificationError, OriginError, RepositoryPipelineError, ResearchError, StoreError, WorkspaceFileError];
 /** The one error-to-HTTP mapping. Unexpected errors get the route's fallback text, never internal details. */
 function failureBody(error, fallback, unknown = { status: 502, code: 'UNKNOWN' }) {
   if (EXPOSED.some(Type => error instanceof Type)) return { status: error.status || 500, body: { error: error.message, code: error.code || 'INVALID_REQUEST' } };
@@ -356,7 +376,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch } = {}) {
+export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker, networkEventOptions = {}, machineOptions = {}, networkScheduleOptions = {}, networkPipelineOptions = {}, a2aOptions = {} } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   // One app per data folder; the board itself loads lazily, so starting never reads or writes board files.
   const lock = await lockDataDir(dataDir);
@@ -409,6 +429,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     // Changing sign-in under a running agent session would break it.
     if (kind === 'auth' && (board.executor?.pendingCount?.() ?? board.executor?.activeCount?.()) > 0) throw Object.assign(new ProviderError('Agent sessions are running. Stop them before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
     if (kind === 'auth' && batches.activeCount() > 0) throw Object.assign(new ProviderError('Compose Batch is running. Wait for it or cancel it before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
+    if (kind === 'auth' && networkJobs.activeCount() > 0) throw Object.assign(new ProviderError('Network jobs are running. Wait for them or cancel them before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
     // Project memory runs in the background: the owner's own CLI work, once allowed, stops it (it is queued again) and
     // gets the slot as soon as that run has stopped (src/lessons.mjs), never a BUSY refusal.
     if (busy?.kind === 'lessons' && kind !== 'lessons') { busy.controller.abort('yield'); await busy.done; }
@@ -420,7 +441,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     busy = { kind, provider, stage: 'starting', startedAt: Date.now(), controller: new AbortController(), done };
     const job = busy;
     return { job, release: () => {
-      const free = () => { if (busy === job) busy = null; release(); if (job.kind === 'auth') board.executor?.wake?.(); };
+      const free = () => { if (busy === job) busy = null; release(); if (job.kind === 'auth') { board.executor?.wake?.(); networkJobs.wake(); } };
       // The lessons worker releases only after its own CLI call has settled, so it waits for no unrelated work.
       if (!job.controller.signal.aborted || closing || job.kind === 'lessons') { free(); return; }
       // The UI can finish cancelling before provider pipes have closed. Keep the
@@ -448,6 +469,26 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const research = new ResearchStore(dataDir); // Creates nothing on disk until a chat is saved.
   const prompts = new PromptStore(dataDir);
   const coordinator = new Coordinator({ dataDir, board, origin });
+  // Network registrations and networks live in <dataDir>/network/ (created on the first save); Base is only read.
+  // Its `federation` (trusted A2A peers, inbound switches) is off until the owner turns it on; a2aOptions are test seams only.
+  const network = new NetworkRegistry({ dataDir, events: { append: event => networkEvents.append(event) }, base: board.base, projects: async () => (await board.state()).projects.map(project => project.id), federation: a2aOptions.federation });
+  // Network activity: an append-only event journal in <dataDir>/network/events/ (created on the first event); jobs report
+  // every saved status change to it. Observability only: nothing reads it to decide anything.
+  const networkEvents = new NetworkEvents({ dataDir, ...networkEventOptions });
+  // Network jobs run through the local headless worker (tests inject a fake, or null to keep jobs queued); their own pool,
+  // never the CLI slot above.
+  // A remote A2A peer's job runs on the A2A worker instead: an HTTPS call to a trusted peer, never a local process.
+  const networkJobs = new NetworkJobs({ dataDir, registry: network, worker: networkWorker === undefined ? new LocalJobWorker({ dataDir, registry: network }) : networkWorker,
+    peerWorker: new A2AWorker({ federation: network.federation, ...a2aOptions.worker }), authBusy: () => busy?.kind === 'auth', events: networkEvents });
+  // Pipelines (drafts, versions) and their runs; a run's steps are jobs of the engine above, never started by a save.
+  const pipelines = new NetworkPipelines({ dataDir, registry: network });
+  const pipelineRuns = new PipelineRunner({ dataDir, pipelines, jobs: networkJobs, events: networkEvents, ...networkPipelineOptions }); // Options: tests' clocks.
+  // External clients (REST and MCP): their own 127.0.0.1 listener, off until the owner turns it on; never this handle().
+  const machine = new MachineListener({ dataDir, registry: network, jobs: networkJobs, events: networkEvents, reservedPorts: () => [server.address()?.port, remoteAccess?.settings.port], a2a: a2aOptions.inbound, ...machineOptions });
+  // Task 12: the owner's handoff policy (off by default) checks every question and sub-job an agent or a client asks for, and
+  // job schedules start nothing until the owner confirms them at this computer.
+  networkJobs.delegation = new Delegation({ dataDir, registry: network, events: networkEvents, clients: () => machine.clients.list() });
+  const networkSchedules = new NetworkSchedules({ dataDir, jobs: networkJobs, runs: pipelineRuns, registry: network, events: networkEvents, ...networkScheduleOptions });
   // Project memory: a merged card queues one lessons job (Board.completeTask); the worker starts once the app listens.
   const lessons = new Lessons({ dataDir, board, claim, runner: call => track(runner(call)) });
   board.lessons = lessons;
@@ -467,6 +508,8 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     if (closing) { res.setHeader('Connection', 'close'); return send(res, 503, { error: 'The app is shutting down.', code: 'SHUTTING_DOWN' }); }
+    // A machine client's token never acts on the owner's routes, even beside the owner's own token (architecture §10.3).
+    if (/^\s*bearer\s+pbm_/i.test(req.headers.authorization || '')) return send(res, 403, { error: 'Client tokens work only on the machine listener.', code: 'MACHINE_TOKEN_REFUSED' });
     if (!remote) {
       const actualPort = server.address()?.port;
       const allowedHosts = [`127.0.0.1:${actualPort}`, `localhost:${actualPort}`];
@@ -519,6 +562,10 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     if (/^\/api\/coordinator(?:\/|$)/.test(pathname)) {
       try { return await coordinatorRoute({ coordinator, runner, track, claim, req, res, pathname, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The Coordinator request failed. Project data is unchanged.', { status: 500, code: 'COORDINATOR_FAILED' }); }
+    }
+    if (/^\/api\/network(?:\/|$)/.test(pathname)) {
+      try { return await networkRoute({ network, jobs: networkJobs, events: networkEvents, board: () => board.state(), pipelines, runs: pipelineRuns, machine, schedules: networkSchedules, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
+      catch (error) { return sendFailure(res, error, 'The Network request failed. Nothing was changed.', { status: 500, code: 'NETWORK_FAILED' }); }
     }
     if (/^\/api\/sandbox(?:\/|$)/.test(pathname)) {
       try { return await sandboxRoute({ sandbox, req, res, pathname, jsonBody, send }); }
@@ -781,6 +828,10 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   // Remote access stays off unless it was turned on; a listener that cannot start is reported in Settings.
   remoteAccess = await new RemoteAccess({ dataDir, localPort: server.address().port, handle: (req, res, who) => handle(req, res, who) }).load();
   lessons.start(); // Queued lessons jobs, also those a restart interrupted, run now (one at a time, through the job slot).
+  void networkJobs.start().catch(() => {}); // Reconciles jobs a stop interrupted (never relaunched); queued ones start only with a worker.
+  void pipelineRuns.start().catch(() => {}); // Open runs go on from what was saved and proven; approvals stay pending.
+  await machine.start().catch(() => {}); // Listens only when the owner turned external clients on; a failure is shown in Network → Settings.
+  networkSchedules.start(); // Fires only schedules the owner confirmed; a slot missed while closed fires once.
   let closed;
   // Idempotent and bounded: stop accepting, cancel owned work, close sockets, then
   // SIGKILL any owned CLI process group that is still alive.
@@ -788,10 +839,12 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     await lock.markStopping(); // First: once the port stops answering, a restart must not take the data folder yet.
     closing = true;
     await remoteAccess?.shutdown();
+    await machine.close();
+    networkSchedules.stop();
     notifications.close();
     const listening = new Promise(resolve => server.close(() => resolve()));
     busy?.controller.abort();
-    const batchesClosed = batches.close();
+    const batchesClosed = batches.close(), pipelineRunsClosed = pipelineRuns.close(), networkJobsClosed = networkJobs.close();
     baseRoutes.close();
     if (composeContext) (await composeContext).close();
     catalogAbort.abort();
@@ -805,7 +858,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     board.githubLogin.cancel('The app stopped.');
     board.delivery.stopAllTests();
     board.previews.stopAll();
-    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents, batchesClosed, lessonsClosed].filter(Boolean));
+    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents, batchesClosed, pipelineRunsClosed, networkJobsClosed, lessonsClosed].filter(Boolean));
     // An accepted shutdown must keep Node alive even when a broken adapter has
     // no remaining handles. Observe cleanup or reach this bounded terminal state.
     let cleanupTimer;
@@ -816,5 +869,5 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     await listening;
     await lock.release();
   })();
-  return { server, url: `http://127.0.0.1:${server.address().port}`, close, board };
+  return { server, url: `http://127.0.0.1:${server.address().port}`, close, board, networkEvents, machine };
 }

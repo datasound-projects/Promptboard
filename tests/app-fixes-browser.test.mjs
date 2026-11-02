@@ -278,12 +278,13 @@ test('the shell fits phones and tablets: a wrapping top bar, the drawer above Or
   await wait(`token`, 'session');
   assert.equal(await ev(`return (await fetch('/api/origin/projects', { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: ${JSON.stringify(long)}, description: '', createKanban: true }) })).ok;`), true);
   const page = async (hash, name) => { await ev(`location.hash = ${JSON.stringify(hash)};`); await wait(`document.documentElement.dataset.page === ${JSON.stringify(name)} && token`, name); };
-  // One row needs about 426 px: narrower, every page wraps the links below 44 px controls, so nothing scrolls sideways.
-  for (const width of [320, 375, 400, 414, 440]) {
+  // One row needs about 476 px: narrower, every page wraps the links below 44 px controls, so nothing scrolls sideways.
+  // Wider, the bar compacts at 610, 540 and 480 px; the widths just above each step are the tightest.
+  for (const width of [320, 375, 400, 414, 440, 470, 485, 530, 545, 600, 615, 735]) {
     await browser.resize(width, 800);
-    for (const [hash, name] of [['#/origin', 'origin'], ['#/', 'compose'], ['#/kanban', 'kanban'], ['#/base', 'base']]) {
+    for (const [hash, name] of [['#/origin', 'origin'], ['#/', 'compose'], ['#/kanban', 'kanban'], ['#/base', 'base'], ['#/network', 'network']]) {
       await page(hash, name);
-      const wide = width > 430;
+      const wide = width > 479;
       assert.equal(await browser.layout(`const root = document.documentElement, bar = [...document.querySelectorAll('.topbar :is(.icon-button, .help-pill), .page-nav a')];
         return root.scrollWidth <= root.clientWidth && bar.every(node => node.getBoundingClientRect().right <= root.clientWidth)
           && bar.filter(node => !node.matches('a')).every(node => ${wide} || (node.getBoundingClientRect().width === 44 && node.getBoundingClientRect().height === 44));`), true, `${name} at ${width} px`);
@@ -291,7 +292,7 @@ test('the shell fits phones and tablets: a wrapping top bar, the drawer above Or
   }
   // One row with the brand: around the CLI label's breakpoint, the longest labels it shows (at start, and when the app is down) never push the theme toggle into the bar's padding or off screen.
   await page('#/kanban', 'kanban');
-  for (const width of [761, 768, 790, 800, 820, 821, 840]) {
+  for (const width of [735, 761, 768, 790, 800, 820, 821, 840]) {
     await browser.resize(width, 800);
     for (const label of ['Checking your CLIs', 'Server unavailable']) {
       assert.equal(await browser.layout(`document.querySelector('#cli-status-label').textContent = ${JSON.stringify(label)};

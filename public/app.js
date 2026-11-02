@@ -261,7 +261,7 @@ function isMobile() { return window.innerWidth <= 730; }
 function syncSidebarToggle() {
   const expanded = isMobile() ? $('#sidebar').classList.contains('open') : document.documentElement.dataset.sidebar !== 'collapsed';
   $('#menu-toggle').setAttribute('aria-expanded', String(expanded));
-  const what = location.hash === '#/base' ? 'Base categories' : location.hash === '#/kanban' ? 'projects' : location.hash === '#/origin' ? 'blueprint sections' : 'prompt history';
+  const what = { base: 'Base categories', kanban: 'projects', origin: 'blueprint sections', network: 'Network sections' }[currentPage()] || 'prompt history';
   $('#menu-toggle').setAttribute('aria-label', expanded ? `Hide ${what}` : `Show ${what}`);
 }
 function setSidebar(open) {
@@ -414,6 +414,7 @@ async function loadProviders() {
     loadBoard();
     if (currentPage() === 'base') baseView?.show();
     if (currentPage() === 'origin') originView?.show();
+    if (currentPage() === 'network') networkView?.show();
     if (currentPage() === 'compose' && composeMode === 'batch') void batchView?.show(true);
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
@@ -1350,7 +1351,7 @@ function openHelp(privacy = false) {
 }
 
 // All views stay in the document. Routing does not replace forms, boards or terminals.
-let baseView = null, originView = null, projectsView = null, coordinatorView = null, batchView = null;
+let baseView = null, originView = null, projectsView = null, coordinatorView = null, batchView = null, networkView = null;
 // Compose has two modes: Single (one prompt, as before) and Batch (many Origin tasks). The choice is remembered.
 const COMPOSE_MODE_KEY = 'promptboard.compose.mode';
 let composeMode = (() => { try { return localStorage.getItem(COMPOSE_MODE_KEY) === 'batch' ? 'batch' : 'single'; } catch { return 'single'; } })();
@@ -1365,38 +1366,45 @@ function setComposeMode(mode, { focus = false } = {}) {
   }
   void batchView?.show(composeMode === 'batch' && currentPage() === 'compose' && Boolean(token));
 }
-function currentPage() { return location.hash === '#/kanban' ? 'kanban' : location.hash === '#/base' ? 'base' : location.hash === '#/origin' ? 'origin' : 'compose'; }
+// Network owns the sub-routes below #/network (an agent, a section); the other pages are exact hashes.
+function currentPage() { return location.hash === '#/kanban' ? 'kanban' : location.hash === '#/base' ? 'base' : location.hash === '#/origin' ? 'origin' : /^#\/network(?:\/|$)/.test(location.hash) ? 'network' : 'compose'; }
+let shownPage = null;
 function showPage() {
   const page = currentPage();
-  const kanban = page === 'kanban', base = page === 'base', origin = page === 'origin';
+  const kanban = page === 'kanban', base = page === 'base', origin = page === 'origin', network = page === 'network';
   workspaceFiles?.setVisible(kanban);
   $('#prompt-view').hidden = page !== 'compose';
   $('#kanban-view').hidden = !kanban;
   $('#base-view').hidden = !base;
   if ($('#origin-view')) $('#origin-view').hidden = !origin;
+  $('#network-view').hidden = !network;
   document.documentElement.dataset.page = page;
-  ({ compose: $('#prompt-view'), kanban: $('#kanban-view'), base: $('#base-view'), origin: $('#origin-view') })[page]?.prepend($('#app-error'));
+  ({ compose: $('#prompt-view'), kanban: $('#kanban-view'), base: $('#base-view'), origin: $('#origin-view'), network: $('#network-view') })[page]?.prepend($('#app-error'));
   for (const link of document.querySelectorAll('.page-nav a')) {
-    if (link.getAttribute('href') === ({ compose: '#/', kanban: '#/kanban', base: '#/base', origin: '#/origin' })[page]) link.setAttribute('aria-current', 'page');
+    if (link.getAttribute('href') === ({ compose: '#/', kanban: '#/kanban', base: '#/base', origin: '#/origin', network: '#/network' })[page]) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
-  document.title = `${({ compose: 'Compose', kanban: 'Kanban', base: 'Base', origin: 'Origin' })[page]} · Promptboard`;
-  $('#skip-link').setAttribute('href', base ? '#base-view' : kanban ? '#kanban-view' : origin ? '#origin-view' : '#prompt-input');
+  document.title = `${({ compose: 'Compose', kanban: 'Kanban', base: 'Base', origin: 'Origin', network: 'Network' })[page]} · Promptboard`;
+  $('#skip-link').setAttribute('href', base ? '#base-view' : kanban ? '#kanban-view' : origin ? '#origin-view' : network ? '#network-view' : '#prompt-input');
   $('#history-panel').hidden = page !== 'compose';
   $('#workspace-panel').hidden = !kanban;
   $('#base-sidebar-panel').hidden = !base;
   if ($('#origin-sidebar-panel')) $('#origin-sidebar-panel').hidden = !origin;
+  $('#network-sidebar-panel').hidden = !network;
   $('#sidebar').hidden = false;
   $('#menu-toggle').hidden = false;
-  $('#sidebar').setAttribute('aria-label', base ? 'Base library' : kanban ? 'Projects' : origin ? 'Blueprint sections' : 'Prompt history');
-  $('#sidebar-scrim').setAttribute('aria-label', base ? 'Close Base categories' : kanban ? 'Close projects' : origin ? 'Close blueprint sections' : 'Close history');
+  $('#sidebar').setAttribute('aria-label', base ? 'Base library' : kanban ? 'Projects' : origin ? 'Blueprint sections' : network ? 'Network sections' : 'Prompt history');
+  $('#sidebar-scrim').setAttribute('aria-label', base ? 'Close Base categories' : kanban ? 'Close projects' : origin ? 'Close blueprint sections' : network ? 'Close Network sections' : 'Close history');
   if (kanban) renderBoard();
   void batchView?.show(page === 'compose' && composeMode === 'batch' && Boolean(token));
   if (base && token) baseView?.show();
   // Leaving Origin saves pending blueprint edits; opening it reads the selected project's blueprint.
   if (origin && token) void originView?.show(); else if (!origin) void originView?.leave();
+  if (network && token) void networkView?.show(); else if (!network) networkView?.leave();
   setSidebar(false);
-  window.scrollTo(0, 0);
+  // Moving between Network's own sub-routes (an agent, a section) keeps the scroll position.
+  if (!(network && shownPage === 'network')) window.scrollTo(0, 0);
+  shownPage = page;
 }
 function showPromptPage() { if (currentPage() !== 'compose') location.hash = '#/'; }
 // Origin handoff: targeted context only. Compose waits for the person to review it and choose Generate.
@@ -4138,7 +4146,7 @@ async function addToKanban(event) {
 }
 window.addEventListener('hashchange', showPage);
 // The skip link must not change the hash, which selects the page.
-$('#skip-link').addEventListener('click', event => { event.preventDefault(); ($({ base: '#base-view', kanban: '#kanban-view', origin: '#origin-view' }[currentPage()] || '#prompt-input')).focus(); });
+$('#skip-link').addEventListener('click', event => { event.preventDefault(); ($({ base: '#base-view', kanban: '#kanban-view', origin: '#origin-view', network: '#network-view' }[currentPage()] || '#prompt-input')).focus(); });
 // A name cut off with an ellipsis shows in full as a tooltip, on every page. A title set by the page wins.
 document.addEventListener('pointerover', ({ target }) => {
   if (!(target instanceof Element) || target.closest('[title]:not([data-full-text])')) return;
@@ -5902,7 +5910,7 @@ const UI_PREFS = { startPage: ['promptboard.settings.start-page', 'compose'], op
   keepTabs: ['promptboard.settings.keep-tabs', '1'], termFont: ['promptboard.settings.terminal-font', '12'], dockStart: ['promptboard.settings.dock-start', 'last'], cardPreview: ['promptboard.settings.card-preview', '1'], cardAgent: ['promptboard.settings.card-agent', '0'], cardSpacing: ['promptboard.settings.card-spacing', '0'] };
 function uiPref(name) {
   const [key, fallback] = UI_PREFS[name];
-  const allowed = { startPage: ['origin', 'compose', 'kanban', 'base'], termFont: ['11', '12', '13', '14', '16'], dockStart: ['last', 'collapsed', 'open'] }[name] || ['0', '1'];
+  const allowed = { startPage: ['origin', 'compose', 'kanban', 'base', 'network'], termFont: ['11', '12', '13', '14', '16'], dockStart: ['last', 'collapsed', 'open'] }[name] || ['0', '1'];
   try { const value = localStorage.getItem(key); return allowed.includes(value) ? value : fallback; } catch { return fallback; }
 }
 function setUiPref(name, value) { savePref(UI_PREFS[name][0], value); }
@@ -6310,6 +6318,14 @@ window.PromptboardLessonsView = window.PromptboardLessons?.create({ api, announc
   openKanban: (projectId, then) => { setSelectedProject(projectId); location.hash = '#/kanban'; setTimeout(then, 0); } }) || null;
 // Settings → Docker sandbox: Docker's status, the image build, and Claude Code's token for containers.
 window.PromptboardSandbox?.create({ api, announce });
+// Network: the agent directory over /api/network/*. Base stays the only editor of agent definitions: "Open in Base"
+// opens the real resource there. Opening or editing a registration never starts a job, a run or a model call. Activity
+// reads the event stream with the token in a header (tokenFetch) and opens a Kanban run's card on its board. A pipeline
+// run view's "Open job" opens Activity's record of that job.
+networkView = window.PromptboardNetwork?.create({ api, projects: () => board?.projects || [], ensureBoard: loadBoard,
+  openBase: id => { location.hash = '#/base'; baseView?.openResource(id); }, stream: (path, init) => tokenFetch(path, init),
+  openJob: jobId => { location.hash = `#/network/activity/${jobId}`; },
+  openTask: async (projectId, taskId) => { await loadBoard().catch(() => {}); if (currentProject()?.id !== projectId) selectProject(projectId); location.hash = '#/kanban'; setTimeout(() => void openTaskDetails(taskId), 0); } }) || null;
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();

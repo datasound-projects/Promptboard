@@ -52,7 +52,11 @@ export function deliveryFor(resource, provider, columnId, capabilities = null, r
   return { delivery: resource.kind === 'skill' ? 'instruction' : 'context' };
 }
 
-export function resolveBase({ state, project, task, columnId, provider, capabilities = null }) {
+/**
+ * `layers` (optional, Network jobs): [[origin, binding, profileId], …] in place of the global, project, column and task
+ * layers below; without it the Kanban layers are used exactly as before.
+ */
+export function resolveBase({ state, project, task, columnId, provider, capabilities = null, layers: custom = null }) {
   const pipeline = project?.workflowMode === 'pipeline';
   // As buildSession runs it: strict read-only sessions get no MCP servers or subagents, so none is recorded as supplied.
   const readOnly = pipeline ? strictReadOnlyColumn(project.pipeline, columnId) : ['planning', 'code_review'].includes(columnId);
@@ -60,7 +64,7 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
   const exclusions = [], warnings = [], errors = [], profiles = [];
   const canExpand = resource => resource?.enabled && resource.trust === 'trusted' && resource.contentStatus !== 'omitted' && !deliveryFor(resource, provider, columnId, capabilities, readOnly).issue;
   const subagentsSupported = resource => ADAPTERS[provider]?.capabilities?.base?.subagents && !readOnly && (!resource?.configuration?.agent?.provider || resource.configuration.agent.provider === provider);
-  const layers = [
+  const layers = custom || [
     ['global', state?.settings?.baseBinding, state?.settings?.agentProfileId],
     [`project:${project?.id || ''}`, project?.baseBinding, project?.agentProfileId],
     [`column:${columnId}`, project?.baseColumns?.[columnId]?.binding, project?.baseColumns?.[columnId]?.profileId],

@@ -335,8 +335,9 @@ export async function remoteRoute(remote, req, res, pathname, { jsonBody, send }
 /**
  * What needs someone at the computer: remote access itself, CLI and GitHub sign-in (they open a browser or terminal
  * there), native dialogs, opening a project folder, terminal or editor there, starting or stopping a card's live preview
- * (a dev server whose 127.0.0.1 link works only there), and Base imports (Claude Desktop's own
- * configuration, a repository scan). Everything else is allowed: a paired device has the same control as the computer,
+ * (a dev server whose 127.0.0.1 link works only there), Base imports (Claude Desktop's own
+ * configuration, a repository scan), and Network external clients: creating or rotating one (a new token) and the machine
+ * listener (a new way in). Everything else is allowed: a paired device has the same control as the computer,
  * so Compose's MCP test and local folder sources stay allowed, like agents, test commands and Base MCP tests.
  * tests/remote-access.test.mjs walks every route against this list.
  */
@@ -345,7 +346,12 @@ function localOnly(method, path) {
   return /^\/api\/remote(\/|$)/.test(path) || path === '/api/editors' || /^\/api\/auth\/(login|logout|cancel)$/.test(path) || /^\/api\/github\/login(\/cancel)?$/.test(path) || path === '/api/folder/choose' || /^\/api\/base\/(?:mcp\/import(?:\/preview)?|markdown\/(?:scan|import))$/.test(path)
     || /^\/api\/projects\/[^/]+\/open$/.test(path) // Opens a window on the computer's screen.
     || /^\/api\/tasks\/[^/]+\/preview$/.test(path) // Starts or stops a dev server whose link works only on the computer.
-    || path === '/api/sandbox/claude-token'; // A CLI sign-in, like the ones above: set or removed at the computer.
+    || path === '/api/sandbox/claude-token' // A CLI sign-in, like the ones above: set or removed at the computer.
+    || /^\/api\/network\/(?:clients(?:\/[^/]+\/rotate)?|listener)$/.test(path) // A new machine token is shown, or the machine listener opens (revoking stays allowed).
+    || /^\/api\/network\/(?:delegation|schedules\/[^/]+\/confirm)$/.test(path) // Standing automation (Task 12): handoffs switched on, a schedule switched on.
+    // Federation changes trust or exposure: previewing a card (an outbound request), approving or changing a peer, the
+    // outbound and inbound switches. Reading it and removing a peer (which only removes trust) stay allowed.
+    || /^\/api\/network\/federation\/(?:peers(?:\/preview)?|outbound|inbound)$/.test(path) || (method === 'PATCH' && /^\/api\/network\/federation\/peers\/[^/]+$/.test(path));
 }
 /** This computer's private addresses, offered as listening addresses for Twingate. */
 function localAddresses() {

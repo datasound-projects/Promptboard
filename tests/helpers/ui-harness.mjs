@@ -35,7 +35,7 @@ export function fakeAuth(overrides = {}) {
     logout: async provider => { log.push(['logout', provider]); return { state: 'signed-out' }; }, ...overrides };
 }
 const running = new Map(); // Data folder → the app serving it.
-export async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner, dataDir, executor = 'auto', folderPicker, usageReader } = {}) {
+export async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner, dataDir, executor = 'auto', folderPicker, usageReader, networkWorker = null, networkEventOptions } = {}) {
   // Every page gets a private board folder unless a test shares one to simulate a reload.
   const ownsDataDir = !dataDir;
   if (!dataDir) dataDir = await mkdtemp(join(tmpdir(), 'pb-ui-'));
@@ -61,7 +61,7 @@ export async function setup(t, { catalogReader = async id => ({ provider: id, ..
   const requests = [];
   // A shared folder simulates a restart and reload: one app runs per data folder, so the earlier one stops first.
   await running.get(dataDir)?.close();
-  app = await startServer({ port: 0, dataDir, executor, authAdapter, usageReader, ...(folderPicker ? { folderPicker } : {}), detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
+  app = await startServer({ port: 0, dataDir, executor, authAdapter, usageReader, networkWorker, ...(networkEventOptions ? { networkEventOptions } : {}), ...(folderPicker ? { folderPicker } : {}), detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
     runner: runner ? async request => { calls.push(request); return runner(request); } : async request => { calls.push(request); return { text: request.prompt.includes('prose in Polish') ? 'Dodaj test.' : request.prompt.includes('prose in German') ? 'Füge einen Test hinzu.' : 'Add a test.', reportedModels: ['actual-model'], durationMs: 3 }; } });
   const dom = new JSDOM(await readFile(new URL('../../public/index.html', import.meta.url), 'utf8'), { url: app.url + hash, runScripts: 'outside-only' });
   running.set(dataDir, app);
@@ -101,6 +101,14 @@ export async function setup(t, { catalogReader = async id => ({ provider: id, ..
   win.eval(await readFile(new URL('../../public/prefs.js', import.meta.url), 'utf8'));
   win.eval(await readFile(new URL('../../public/dom.js', import.meta.url), 'utf8'));
   win.eval(await readFile(new URL('../../public/base.js', import.meta.url), 'utf8'));
+  win.eval(await readFile(new URL('../../public/markdown-view.js', import.meta.url), 'utf8'));
+  win.eval(await readFile(new URL('../../public/network-graph.js', import.meta.url), 'utf8'));
+  win.eval(await readFile(new URL('../../public/network-activity.js', import.meta.url), 'utf8'));
+  win.eval(await readFile(new URL('../../public/network-delegation.js', import.meta.url), 'utf8'));
+  win.eval(await readFile(new URL('../../public/network-clients.js', import.meta.url), 'utf8'));
+  win.eval(await readFile(new URL('../../public/network-pipeline.js', import.meta.url), 'utf8'));
+  win.eval(await readFile(new URL('../../public/network-federation.js', import.meta.url), 'utf8'));
+  win.eval(await readFile(new URL('../../public/network.js', import.meta.url), 'utf8'));
   // Browsers share one global scope across classic scripts; jsdom's eval does not, so evaluate them together.
   // Test-only export appended by the harness (not part of the app): reload the board and read the token.
   win.eval(`${await readFile(new URL('../../public/app.js', import.meta.url), 'utf8')}\n${await readFile(new URL('../../public/dock.js', import.meta.url), 'utf8')}\nwindow.__pbTest = { loadBoard, refreshRepositoryPipelineStatus, attachComposeContext, get token() { return token; } };`);
