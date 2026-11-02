@@ -160,7 +160,10 @@ test('Graph in Chrome: build a 3-agent network with a nested 2-agent network by 
     await ev(`location.hash = '#/network/graph/${parentId}';`); await wait(`document.querySelector('#network-graph-heading')?.textContent === 'Research team' && document.querySelectorAll('#network-graph-nodes [data-node-id]').length === 4`, `${theme} at 390`);
     assert.equal(await browser.layout(`return ${noSideways} && getComputedStyle(document.querySelector('.network-canvas-box')).display === 'none' && !(${CY}) && getComputedStyle(document.querySelector('#network-graph-details')).display === 'none' && document.querySelector('#network-graph-nodes').getBoundingClientRect().width > 300;`), true, `${theme}: lists, no canvas at 390`);
     await shot(`graph-390-${theme}-list`);
-    const row = await ev(`const node = document.querySelector('[data-node-id="${ids.Lead}"]'); node.scrollIntoView({ block: 'center' }); const r = node.getBoundingClientRect(); return { x: r.left + 40, y: r.top + 15 };`);
+    const row = await wait(`(async () => { const node = document.querySelector('#network-graph-nodes [data-node-id="${ids.Lead}"]');
+      node.scrollIntoView({ block: 'center' }); await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
+      const r = node.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2, top = document.elementFromPoint(x, y);
+      return top && node.contains(top) ? { x, y } : false; })()`, `${theme}: painted graph row`);
     await browser.click(row.x, row.y);
     await wait(`document.activeElement?.id === 'network-graph-detail-heading' && document.querySelector('#network-panel-graph').dataset.view === 'detail'`, `${theme}: details at 390`);
     assert.equal(await browser.layout(`return ${noSideways} && getComputedStyle(document.querySelector('.network-graph-lists')).display === 'none' && document.querySelector('#network-graph-connect-add').getBoundingClientRect().right <= innerWidth;`), true, `${theme}: one node at 390`);

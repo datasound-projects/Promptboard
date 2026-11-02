@@ -102,10 +102,24 @@ test('Activity: a question is answered from the job’s record; a live redraw ke
   $('#network-handoff-read').click();
   await until(() => !$('#network-handoff-read') && !$('#network-handoff-messages .network-handoff-unread'), 'read');
   assert.equal((await job(ctx, jobId)).status, 'waiting_for_input', 'a read mark changes nothing about the job');
-  submitForm(ctx, '#network-handoff-answer');
-  await until(async () => (await job(ctx, jobId)).status === 'completed', 'answered and completed');
-  await until(() => /ResultYou → Lead/.test($('#network-handoff-messages')?.textContent || ''), 'answer recorded');
-  assert.ok(!$('#network-handoff-question'), 'no question once it is answered');
+  // Messages and the job record are separate reads. Deliberately let the answer's
+  // message arrive while the page's record response is still in flight.
+  const originalFetch = win.fetch;
+  let release, holdRecords = true;
+  const recordsReady = new Promise(resolve => { release = resolve; });
+  win.fetch = async (url, options) => {
+    const response = await originalFetch(url, options);
+    if (holdRecords && new URL(url, ctx.app.url).pathname === `/api/network/jobs/${jobId}` && (!options?.method || options.method === 'GET')) await recordsReady;
+    return response;
+  };
+  try {
+    submitForm(ctx, '#network-handoff-answer');
+    await until(async () => (await job(ctx, jobId)).status === 'completed', 'answered and completed');
+    await until(() => /ResultYou → Lead/.test($('#network-handoff-messages')?.textContent || ''), 'answer recorded');
+    assert.ok($('#network-handoff-question'), 'the held record still shows its previous waiting state');
+  } finally { holdRecords = false; release(); win.fetch = originalFetch; }
+  await until(() => /Completed/.test($('#network-activity-job-heading')?.parentElement.querySelector('.network-state')?.textContent || ''), 'the completed job record reaches the page');
+  assert.ok(!$('#network-handoff-question'), 'no question once the completed record is shown');
 });
 
 test('Activity: Schedules — new (off), switched on after a confirmation, Run now, an edit that switches it off, delete', async t => {

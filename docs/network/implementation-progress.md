@@ -2589,3 +2589,13 @@ Both completed Windows/Node 24 browser phases pass all 157 applicable scenarios 
 editor shortcut and Network accessibility checks. Their only failure is the release/CI budget contract. The correction
 passes all nine CLI contract tests on both Node 22 and Node 26, zero skips, before publishing; the superseded failing runs
 retain their logs. Logs: `.pb-shots/network-validation/final-cli-node22.log` and `final-cli-node26.log`.
+
+The `2c5c740` PR matrix passes all four Linux/Windows jobs. Its separate push matrix exposes two remaining fixture races:
+the delegation UI assertion treats a newly loaded answer message as proof the independently loaded job record is already
+rendered, and Graph's phone click samples coordinates before scroll paint (the same pattern already fixed for Pipeline).
+The answer test now holds only the page's record responses, proves the message can arrive first, then releases them and
+waits for the displayed completed record before asserting the question is absent. With this controlled delay, the old
+immediate assertion fails deterministically. The corrected Activity/delegation/schedule/CLI selection passes 18/18 on
+both Node 22 and Node 26, zero skips. Graph now uses painted, uncovered button-centre coordinates for its real click;
+all six Graph/pipeline/end-to-end Chrome scenarios pass at 6× CPU throttling. Existing pixel, lifecycle, content and
+timeout assertions are preserved. Logs: `.pb-shots/network-validation/final-answer*` and `final-graph-pipeline.log`.
