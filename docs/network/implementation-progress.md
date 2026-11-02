@@ -2582,3 +2582,10 @@ disk-content assertions remain intact. The revised cases also pass 16/16, with z
 dependency audit pass (zero vulnerabilities); the isolated preview still responds on port 4955. Logs are retained as
 `.pb-shots/network-validation/final-*`. Final matrix results for this continuation are tracked on PR #142; the PR remains
 open for review and no merge or release is performed by this continuation.
+
+The first 60-minute CI run catches a workflow contract omitted from the focused selection: the release job must have at
+least the CI job's time allowance. Release is now also set to 60 minutes; no release is triggered without a version tag.
+Both completed Windows/Node 24 browser phases pass all 157 applicable scenarios (seven platform skips), including the
+editor shortcut and Network accessibility checks. Their only failure is the release/CI budget contract. The correction
+passes all nine CLI contract tests on both Node 22 and Node 26, zero skips, before publishing; the superseded failing runs
+retain their logs. Logs: `.pb-shots/network-validation/final-cli-node22.log` and `final-cli-node26.log`.
