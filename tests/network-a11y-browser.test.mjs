@@ -217,6 +217,8 @@ test('Network keyboard and screen-reader basics in Chrome: every section in both
     if (!(await tabTo(opener, where))) return;
     await enter();
     if (!(await browser.until(`[...document.querySelectorAll('dialog')].some(node => node.open)`, `${where}: dialog`, 10000).catch(() => false))) { report(where, [`${opener} opened no dialog`]); return; }
+    // The pipeline dialog loads its pinned version's members before enabling Create.
+    await browser.until(`document.querySelector('dialog[open] ${submit}')?.disabled === false`, `${where}: form ready`, 10000);
     if (!(await tabTo(`dialog[open] ${submit}`, where))) { await escape(); return; }
     await enter();
     const shownError = await browser.until(`[...document.querySelectorAll('dialog[open] [role="alert"]')].some(node => !node.hidden && node.textContent.trim())`, `${where}: error`, 10000).catch(() => false);

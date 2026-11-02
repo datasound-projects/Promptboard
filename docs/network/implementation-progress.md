@@ -2536,3 +2536,24 @@ The entire Network/remote-access suite was rechecked on Node 22 with idle sleep 
 (42 files) and 18/18 Chrome scenarios (14 files), zero failures, cancellations or skips, exit 0. No timing threshold was
 relaxed. The preview/report data and local runtime helpers remain ignored and are excluded from the commit.
 Logs: `.pb-shots/network-validation/pr-*`. The branch is ready to publish for the full GitHub CI matrix and review.
+
+### CI follow-up (2026-11-02)
+
+PR #142's first matrix was not merge-ready: five of six PR jobs failed tests. The push matrix also exposed a Windows
+job-fixture race. Linux Chrome launchers lost `readlink`, `dirname`, `mkdir` and `cat` when the fake-CLI fixtures replaced
+the application's PATH. The browser helper now supplies its captured host PATH only to Chrome, leaving application
+provider isolation intact. A shell-wrapper regression reproduces the failure without relying on the host being Linux.
+
+The shared dialog focus helper had a real cross-platform error path: a disabled submit button could retain or regain
+focus before the refusal appeared, so the error never received focus. It now remembers the pending control across
+disable/re-enable and moves focus to the shown error, while respecting a user who moved to another field. Regressions
+cover retained focus, dropped focus, one-batch refusals and deliberate focus movement. The retained/dropped cases failed
+against the previous helper. The accessibility scenario waits for asynchronously loaded pipeline members to enable
+Create before walking to it. The phone pipeline scenario checks painted, uncovered coordinates before its real click.
+
+The 80 ms preparation-timeout fixture is now closed before the separate 1-second run-timeout case starts on a fresh
+engine with the normal fixture preparation allowance. Both timeout assertions and their limits are preserved. These
+changes do not relax product timeouts, pixel assertions or performance budgets. Focused non-browser validation passes
+33/33 tests, including all job scenarios and browser startup/cleanup. All eight affected Chrome scenarios pass on Node
+22 with 4× CPU throttling, zero skips; syntax checks pass. Logs: `.pb-shots/network-validation/ci-*`. The new commit's
+complete CI matrix must pass before a merge recommendation.

@@ -59,19 +59,24 @@ window.PromptboardDom = (() => {
    */
   function holdFocus(dialog) {
     const stops = () => [...dialog.querySelectorAll('button, [href], input, select, textarea, summary, [tabindex]:not([tabindex="-1"])')].filter(node => !node.disabled && node.getClientRects().length);
-    let last = null;
-    dialog.addEventListener('focusin', event => { last = event.target; });
+    let last = null, pending = null;
+    dialog.addEventListener('focusin', event => { last = event.target; if (last !== pending) pending = null; });
     dialog.addEventListener('keydown', event => {
       if (event.key !== 'Tab' || event.defaultPrevented) return;
       const all = stops();
       if (all.length && document.activeElement === (event.shiftKey ? all[0] : all.at(-1))) { event.preventDefault(); (event.shiftKey ? all.at(-1) : all[0]).focus(); }
     });
-    new MutationObserver(() => {
-      if (!dialog.open || ![document.body, null].includes(document.activeElement)) return;
+    new MutationObserver(records => {
+      if (!dialog.open) { pending = null; return; }
+      // Disabling a focused button may blur it, retain it, or restore it on re-enable,
+      // depending on Chrome/platform. Remember the submit across all three cases.
+      if (records.some(record => record.attributeName === 'disabled' && record.oldValue === null && record.target === last)) pending = last;
+      const outside = [document.body, null].includes(document.activeElement);
+      if (!outside && document.activeElement !== pending) return;
       const shown = [...dialog.querySelectorAll('[role="alert"]')].find(node => node.textContent.trim() && node.getClientRects().length);
-      if (shown) { if (!shown.hasAttribute('tabindex')) shown.tabIndex = -1; shown.focus(); }
-      else if (last?.isConnected && dialog.contains(last) && !last.disabled) last.focus();
-    }).observe(dialog, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'disabled'] });
+      if (shown) { pending = null; if (!shown.hasAttribute('tabindex')) shown.tabIndex = -1; shown.focus(); }
+      else if (outside && last?.isConnected && dialog.contains(last) && !last.disabled) last.focus();
+    }).observe(dialog, { subtree: true, childList: true, attributes: true, attributeOldValue: true, attributeFilter: ['hidden', 'disabled'] });
   }
   /** A persistent notice for settings whose backup was recovered with access and automation switched off. */
   function recoveryNotice(parent, recovery) {

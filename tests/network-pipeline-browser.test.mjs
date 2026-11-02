@@ -164,7 +164,10 @@ test('Pipelines in Chrome: the MVP from the template, drag and connect by mouse,
     await wait(`document.querySelectorAll('#network-run-steps [data-step-id]').length === 7 && document.querySelector('#network-run-status')?.textContent === 'Completed'`, `${theme} run at 390`);
     assert.equal(await browser.layout(`return ${noSideways} && !(${RCY}) && getComputedStyle(document.querySelector('#network-run-view .network-canvas-box')).display === 'none' && getComputedStyle(document.querySelector('#network-run-details')).display === 'none';`), true, `${theme}: ordered steps, no canvas at 390`);
     await shot(`run-390-${theme}-list`);
-    const row = await ev(`const node = document.querySelector('#network-run-steps [data-step-id="${ids['Your approval']}"]'); node.scrollIntoView({ block: 'center' }); const r = node.getBoundingClientRect(); return { x: r.left + 40, y: r.top + 15 };`);
+    const row = await wait(`(async () => { const node = document.querySelector('#network-run-steps [data-step-id="${ids['Your approval']}"]');
+      node.scrollIntoView({ block: 'center' }); await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
+      const r = node.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2, top = document.elementFromPoint(x, y);
+      return top && node.contains(top) ? { x, y } : false; })()`, `${theme}: painted approval row`);
     await browser.click(row.x, row.y);
     await wait(`document.activeElement?.id === 'network-run-detail-heading' && document.querySelector('#network-panel-pipelines').dataset.view === 'detail'`, `${theme}: one step at 390`);
     assert.equal(await browser.layout(`return ${noSideways} && getComputedStyle(document.querySelector('#network-run-view .network-graph-lists')).display === 'none';`), true);

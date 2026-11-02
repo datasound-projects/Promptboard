@@ -8,6 +8,11 @@ import { join } from 'node:path';
 import { closeChrome, sweepChromes, trackChrome } from './browser-cleanup.mjs';
 import { BrowserStartup } from './browser-startup.mjs';
 
+// App fixtures deliberately replace PATH to prevent real provider CLIs from running.
+// Chrome's Linux shell launcher still needs its host utilities (readlink, dirname, cat).
+// Capture this before those fixtures run; only the browser child receives it.
+const browserPath = process.env.PATH;
+
 const CANDIDATES = {
   darwin: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium'],
   linux: ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'],
@@ -37,7 +42,7 @@ async function launchOnce({ width = 1280, height = 900, motion = false } = {}) {
   if (!binary || typeof WebSocket !== 'function') return null;
   const profile = await mkdtemp(join(tmpdir(), `pb-chrome-${process.pid}-`)); // The owner's PID lets a later sweep find orphans.
   const chrome = trackChrome(spawn(binary, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
-    '--disable-extensions', '--disable-background-networking', `--window-size=${width},${height}`, '--use-angle=swiftshader', '--enable-unsafe-swiftshader', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] }));
+    '--disable-extensions', '--disable-background-networking', `--window-size=${width},${height}`, '--use-angle=swiftshader', '--enable-unsafe-swiftshader', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, PATH: browserPath } }));
   const startup = new BrowserStartup(chrome, profile);
   let socket;
   try {

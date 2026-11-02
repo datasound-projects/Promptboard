@@ -504,11 +504,15 @@ test('claim-time checks fail a job without a process; a worker can refuse; prepa
   let entry = await next;
   job = await until(async () => { const { job } = await timed.read(stuck); return job.status === 'failed' && job; }, 'preparation limit');
   assert.deepEqual([job.errorCode, slow.cancels.includes(entry.own.attemptId), entry.own.signal.aborted], ['PREPARE_TIMEOUT', true, true]);
+  await timed.close();
+  // The run-limit case must not also race the deliberately tiny preparation limit above.
+  const running = ctx.open({ worker: slow });
+  await running.start();
   next = slow.next();
-  const long = (await submit(timed, ctx.lead.id, { limits: { timeoutMs: 1000 } })).jobId;
+  const long = (await submit(running, ctx.lead.id, { limits: { timeoutMs: 1000 } })).jobId;
   entry = await next;
   await entry.own.launching(); await entry.own.spawned({ pid: 31 }); entry.process = 'running';
-  job = await until(async () => { const { job } = await timed.read(long); return job.status === 'failed' && job; }, 'run time limit', 6000);
+  job = await until(async () => { const { job } = await running.read(long); return job.status === 'failed' && job; }, 'run time limit', 6000);
   assert.deepEqual([job.errorCode, job.attempts[0].status, entry.killed], ['TIMEOUT', 'failed', true]);
   assert.match(job.reason, /1-second limit/);
 });
