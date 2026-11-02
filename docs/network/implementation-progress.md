@@ -2639,3 +2639,11 @@ All 21 affected REST/MCP cases pass on Node 22 and Node 26, zero skips. An ignor
 connection delay reproduces the old `stream live` failure; the corrected fixture passes with the identical delay.
 Evidence: `.pb-shots/network-validation/final-expiry-node22.log`, `final-expiry-node26.log`,
 `expiry-old-delayed.log` and `expiry-fixed-delayed.log`. The replacement full CI matrices remain the publication gate.
+
+The last `797ca74` macOS/Node 24 PR job also misses Docker Settings' simulated build progress. The fake build completed
+after 4.5 seconds even if a loaded browser had not observed it. An optional file gate in the fake Docker client now holds
+after the first output line until the browser asserts both the live log and Cancel control, then lets the build finish.
+Production Docker code and polling intervals are unchanged. A six-second observation delay reproduces the old failure
+and passes with the gate. The original progress, success, token secrecy, keyboard focus and phone-layout assertions all
+pass in real Chrome at 6× CPU throttling. The shared sandbox suite passes all 16 cases on Node 22 and Node 26, zero skips.
+Evidence: `.pb-shots/network-validation/final-sandbox-*`, `sandbox-old-delayed.log` and `sandbox-fixed-delayed.log`.
