@@ -47,7 +47,9 @@ async function fixture(t) {
   const open = ({ worker = null } = {}) => {
     const jobs = new NetworkJobs({ dataDir, registry, worker, now, prepareTimeoutMs: 600_000, events: sink });
     const pipelines = new NetworkPipelines({ dataDir, registry, now });
-    const runs = new PipelineRunner({ dataDir, pipelines, jobs, now, pollMs: 5, events: sink });
+    // These schedule tests jump the fake clock by days. Advance the pipeline
+    // explicitly too, rather than letting a real 5 ms timer expire its deadline.
+    const runs = new PipelineRunner({ dataDir, pipelines, jobs, now, schedule: () => null, events: sink });
     const schedules = new NetworkSchedules({ dataDir, jobs, runs, registry, events: sink, now, zone, setTimer: () => null, clearTimer: () => {} });
     const instance = { jobs, pipelines, runs, schedules, worker, ready: Promise.all([jobs.start(), runs.start()]) };
     made.push(instance);
@@ -218,8 +220,10 @@ test('a pipeline schedule saves its slot before the run starts and skips while a
   await schedules.tick();
   const started = await ctx.row(schedules, made.id);
   assert.deepEqual([started.lastSlot, started.lastJobId], [local(15, 2), null]);
+  await runs.tick();
   const { run } = await runs.read(started.lastRunId);
   assert.deepEqual([run.pipelineId, run.pipelineVersion, run.status], [pipeline.id, 1, 'running']);
+  assert.ok(run.nodes[N('step')].jobId, 'the scheduled pipeline actually submits its step job');
   ctx.clock.at = local(16, 2, 1);
   await schedules.tick();
   const skipped = await ctx.row(schedules, made.id);
@@ -234,7 +238,9 @@ test('a pipeline schedule saves its slot before the run starts and skips while a
   assert.deepEqual([(await ctx.row(schedules, made.id)).lastSlot, (await runs.list({ pipelineId: pipeline.id })).total], [local(17, 2), 1]);
   await schedules.tick();
   assert.equal((await runs.list({ pipelineId: pipeline.id })).total, 1, 'the same slot is not started again');
-  assert.equal((await jobs.list()).jobs.every(job => job.requester.kind === 'pipeline'), true, 'a pipeline schedule submits no job of its own');
+  const scheduledJobs = (await jobs.list()).jobs;
+  assert.equal(scheduledJobs.length, 1);
+  assert.equal(scheduledJobs.every(job => job.requester.kind === 'pipeline'), true, 'a pipeline schedule submits no job of its own');
 });
 
 test('over HTTP: schedules are definitions in the Network export, come back switched off from an import that checks them first, and the routes answer as documented', async t => {

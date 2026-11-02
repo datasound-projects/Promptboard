@@ -14,6 +14,43 @@ import { fakeWorker } from './helpers/network-worker.mjs';
 const chrome = await findChrome();
 const J = JSON.stringify;
 
+test('Activity keeps a visible focused filter on screen when delayed summary data arrives, and respects scrolling away', { skip: !chrome, timeout: 120000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const register = async index => {
+    await app.board.base.create({ id: `focus-${index}`, kind: 'profile', name: `Focus agent ${index}`, configuration: { agent: { provider: 'claude' } } });
+    const response = await fetch(`${app.url}/api/network/agents`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' },
+      body: J({ baseResourceId: `focus-${index}`, expectedRevision: index }) });
+    assert.equal(response.status, 200, J(await response.json()));
+  };
+  for (let index = 0; index < 8; index++) await register(index);
+  const browser = await launch({ width: 390, height: 844 }); assert.ok(browser); t.after(() => browser.close());
+  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `{
+    const original = window.fetch.bind(window), gate = new Promise(resolve => { window.__releaseActivitySummary = resolve; });
+    window.__heldActivitySummaries = 0;
+    window.fetch = async (input, options) => {
+      const response = await original(input, options);
+      if (new URL(input.url || input, location.href).pathname === '/api/network/activity') { window.__heldActivitySummaries++; await gate; }
+      return response;
+    };
+  }` });
+  await browser.goto(`${app.url}/#/network/activity`); await browser.resize(390, 844);
+  await browser.until(`window.__heldActivitySummaries > 0 && document.querySelector('#network-activity-live')?.dataset.state === 'live' && /No schedules/.test(document.querySelector('#network-schedules')?.textContent || '')`, 'summary held while the rest of Activity loads');
+  await browser.eval(`document.querySelector('#network-tab-activity').focus();`);
+  for (let stop = 0; stop < 40 && !(await browser.eval(`return document.activeElement?.id === 'network-activity-agent';`)); stop++) await browser.key('Tab', 'Tab', 9);
+  const focusedAndVisible = `const field = document.querySelector('#network-activity-agent'), r = field.getBoundingClientRect(); return document.activeElement === field && r.bottom > 0 && r.top < innerHeight;`;
+  assert.equal(await browser.layout(focusedAndVisible), true, 'Tab naturally reveals the filter before summary data arrives');
+  await browser.eval(`window.__releaseActivitySummary();`);
+  await browser.until(`document.querySelectorAll('#network-activity-agents > li').length === 8`, 'delayed agents rendered');
+  assert.equal(await browser.layout(focusedAndVisible), true, 'summary layout changes keep the focused filter visible');
+  await browser.eval(`window.scrollTo(0, 0);`);
+  await browser.layout(`return scrollY === 0 && document.querySelector('#network-activity-agent').getBoundingClientRect().top >= innerHeight;`);
+  await register(8);
+  await app.networkEvents.append({ type: 'pipeline.run', pipelineRunId: `run_${'a'.repeat(20)}`, status: 'running', message: 'Refresh the Activity summary.' });
+  await browser.until(`document.querySelectorAll('#network-activity-agents > li').length === 9`, 'later summary rendered');
+  assert.equal(await browser.layout(`return scrollY === 0 && document.activeElement?.id === 'network-activity-agent';`), true, 'a live update respects the reader deliberately scrolling away');
+});
+
 test('Activity in Chrome: both themes at 1440 and 390 px, distinct waiting and unknown, live updates, a job record, the agent tab and the keyboard', { skip: !chrome, timeout: 240000 }, async t => {
   const worker = fakeWorker({ mode: 'manual' });
   const app = await startTestServer(t, { port: 0, executor: null, networkWorker: worker });

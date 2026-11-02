@@ -2601,3 +2601,28 @@ all six Graph/pipeline/end-to-end Chrome scenarios pass at 6× CPU throttling. E
 timeout assertions are preserved. Logs: `.pb-shots/network-validation/final-answer*` and `final-graph-pipeline.log`.
 The record gate is installed before the job view opens so earlier in-flight refreshes are covered too. The final complete
 delegation file plus CLI/workflow contracts pass 13/13 on both Node 22 and Node 26, zero skips (`final-gate-cli-*`).
+
+### Clock control and live Activity layout (2026-11-02)
+
+The complete `a86bf8a` push/PR matrices finish with ten successful jobs and two failures. Linux/Node 24's PR job catches
+a fixture clock race: schedule tests advance their fake clock by a day while PipelineRunner still polls every 5 ms of
+real time, correctly expiring the run's two-hour deadline before the fixture cancels it. The schedule fixture now uses
+the runner's injected manual scheduler, advances it explicitly, and asserts that exactly one real pipeline step job was
+submitted. Overlap and slot-deduplication assertions remain intact. The old setup reproduces `RUN_FINISHED` in an ignored
+copy; all 23 schedule/pipeline cases pass on Node 22 and Node 26, including the separate deadline-enforcement tests.
+Eight repetitions of the job/schedule/delegation/Activity fixtures pass 33/33 each: 264 executions, zero failures or skips.
+
+macOS/Node 24's push job reveals an actual Activity layout defect: delayed cards above a focused filter can move it below
+the phone viewport without blurring it. Waiting for paint alone does not fix this. A new real-browser regression holds
+the initial summary until the filter is reached with Tab, releases eight agent cards, then checks focus and visibility.
+It fails on the previous implementation. Activity now restores focus without an implicit scroll, and scrolls a control
+back into view only if it was visible before the redraw and moved out of view. A later update respects the reader
+deliberately scrolling away. The same guard covers schedule-list and live-status layout changes and ignores disposed
+views when a stream settles after cleanup.
+
+Final focused validation: 41 unit/UI/contract cases pass on both Node 22 and Node 26, zero skips; all five accessibility,
+Activity, handoff and typed-answer Chrome scenarios pass at 6× CPU throttling, zero skips. The new delayed-summary case
+also passes independently after consuming all fixture response bodies. Syntax and runtime dependency audit pass, with
+zero vulnerabilities. Evidence: `.pb-shots/network-validation/final-clock-before.log`, `final-schedule-clock-*`,
+`final-fixture-repeats.log`, `final-activity-focus-*`, `final-activity-units-*`, `final-activity-browsers.log` and
+`final-focus-*`. The full matrix for the resulting head is the remaining release gate, tracked on PR #142.

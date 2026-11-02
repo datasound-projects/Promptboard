@@ -95,25 +95,34 @@ window.PromptboardNetworkActivity = (() => {
      * it again with its caret, so live updates never drop focus.
      */
     function keepFocus(root, draw) {
+      if (!root.ownerDocument.defaultView?.document) return; // A stream can settle after its view was disposed.
       const active = root.contains(document.activeElement) ? document.activeElement : null, key = active?.dataset.focusKey, id = active?.id;
       const { selectionStart: start, selectionEnd: end, selectionDirection: direction } = active || {};
+      const visible = node => { const r = node.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.right > 0 && r.bottom > 0 && r.left < window.innerWidth && r.top < window.innerHeight; };
+      const wasVisible = active && visible(active);
       draw();
-      if (!active || document.activeElement === active) return;
+      if (!active) return;
       // A kept node (the answer and note forms) was taken out and put back, which blurs it in Chrome: focus it again, caret kept.
-      if (active.isConnected) { active.focus(); if (typeof start === 'number') active.setSelectionRange(start, end, direction); return; }
-      (key ? root.querySelector(`[data-focus-key="${key}"]`) : id ? document.getElementById(id) : null)?.focus();
+      const again = active.isConnected ? active : key ? root.querySelector(`[data-focus-key="${key}"]`) : id ? document.getElementById(id) : null;
+      if (document.activeElement !== active) {
+        again?.focus({ preventScroll: true });
+        if (again === active && typeof start === 'number') active.setSelectionRange(start, end, direction);
+      }
+      // Async cards can grow above a retained control without blurring it. Keep
+      // that control visible, but respect the reader deliberately scrolling away.
+      if (wasVisible && again === document.activeElement && !visible(again)) again.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
     const names = () => new Map((data.summary?.agents || []).map(agent => [agent.agentId, agent.name]));
     const agentName = id => names().get(id) || (id ? `Agent ${short(id)}` : '');
     // Task 12 (network-delegation.js): a job's origin, approval request, question, sub-jobs and messages; the Schedules list.
     const handoffs = window.PromptboardNetworkDelegation?.create({ request: host.request, say: host.say, go: host.go, rerender: () => scheduleRender(),
-      reloadJob: () => { if (job) void loadJob(job.id, { quiet: true }); }, chip, agentName }) || null;
+      reloadJob: () => { if (job) void loadJob(job.id, { quiet: true }); }, keepFocus: draw => keepFocus(panel, draw), chip, agentName }) || null;
     if (handoffs) side.append(handoffs.schedules);
 
     // ---- Live: one stream while Activity or an agent's Activity tab shows.
     const live = { wanted: false, generation: 0, controller: null, last: null, state: 'off', attempts: 0, wake: null };
     // `host.onLive(state, was)` hears every change, so a view that relies on the stream (the Tasks tab) can poll again when it drops.
-    const setLive = (state, extra = '') => { const was = live.state; live.state = state; liveLine.dataset.state = state; liveLine.textContent = extra || LIVE[state]; if (was !== state) { try { host.onLive?.(state, was); } catch {} } }; // A listener never stops the stream.
+    const setLive = (state, extra = '') => { const was = live.state; live.state = state; keepFocus(panel, () => { liveLine.dataset.state = state; liveLine.textContent = extra || LIVE[state]; }); if (was !== state) { try { host.onLive?.(state, was); } catch {} } }; // A listener never stops the stream.
     const sleep = ms => new Promise(resolve => { const timer = setTimeout(resolve, ms); live.wake = () => { clearTimeout(timer); resolve(); }; });
     function want(on) {
       if (on === live.wanted) return;

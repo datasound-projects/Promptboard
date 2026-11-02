@@ -48,7 +48,7 @@ window.PromptboardNetworkDelegation = (() => {
 
   /**
    * The Activity part. `host`: { request, say, go, rerender (draw Activity again), reloadJob (read the shown job again),
-   * chip(status) (Activity's state chip), agentName(id) }.
+   * chip(status) (Activity's state chip), agentName(id), keepFocus(draw)? }.
    */
   function create(host) {
     const dialog = dialogBox('network-handoff-dialog');
@@ -274,13 +274,17 @@ window.PromptboardNetworkDelegation = (() => {
       return item;
     }
     function renderSchedules() {
+      if (host.keepFocus) return host.keepFocus(drawSchedules);
+      drawSchedules();
+    }
+    function drawSchedules() {
       const data = schedules.data;
       window.PromptboardDom.recoveryNotice(section, data?.recovery);
       failure.hidden = !schedules.error; failure.textContent = schedules.error ? `Could not load the schedules. ${schedules.error}` : '';
       zoneNote.textContent = data ? `Times are this computer’s (${data.timeZone}). A schedule starts nothing until you switch it on at this computer; missed times run once, and a time is skipped while its previous job is open.` : '';
       const focused = list.contains(document.activeElement) ? document.activeElement.id : null;
       list.replaceChildren(...(data?.schedules || []).map(scheduleRow));
-      if (focused) document.getElementById(focused)?.focus();
+      if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
       empty.replaceChildren(...(data && !data.schedules.length ? [note('No schedules. A schedule runs a job for an agent, or a published pipeline, daily, on weekdays, weekly, monthly or when you choose Run now.')] : []));
       empty.hidden = !data || data.schedules.length > 0;
     }
