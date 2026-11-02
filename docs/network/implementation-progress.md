@@ -2557,3 +2557,11 @@ changes do not relax product timeouts, pixel assertions or performance budgets. 
 33/33 tests, including all job scenarios and browser startup/cleanup. All eight affected Chrome scenarios pass on Node
 22 with 4× CPU throttling, zero skips; syntax checks pass. Logs: `.pb-shots/network-validation/ci-*`. The new commit's
 complete CI matrix must pass before a merge recommendation.
+
+The replacement matrix passes both Linux PR jobs and Windows/Node 22. The failed Windows jobs now have zero
+non-browser failures and one failing browser scenario: the phone Activity keyboard walk sometimes measures a focused
+control outside the viewport immediately after Tab. The walk now measures after two natural animation frames, preserving
+the same visibility and focus-ring assertions; it never scrolls or focuses a control itself. Before/after geometry is
+logged when focus scrolling settles, and a persistent failure includes the rectangle and viewport. The complete
+accessibility walk and Activity scenario pass locally on Node 22 with 6× CPU throttling, 2/2, zero skips; the changed file
+passes syntax validation. Log: `.pb-shots/network-validation/ci-focus-paint.log`. Windows CI confirmation remains required.

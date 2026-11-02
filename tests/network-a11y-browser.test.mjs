@@ -85,7 +85,8 @@ function install() {
     if (!window.__a11yKeys.has(node)) window.__a11yKeys.set(node, window.__a11yKeys.size || Math.random());
     const box = node.getBoundingClientRect();
     return { out: false, key: describe(node) + (node.dataset.a11yKey ||= String(Math.random()).slice(2)), what: describe(node), name: name(node), shown: shown(node),
-      onScreen: box.right > 0 && box.bottom > 0 && box.left < innerWidth && box.top < innerHeight, ring: ring(node) };
+      onScreen: box.right > 0 && box.bottom > 0 && box.left < innerWidth && box.top < innerHeight, ring: ring(node),
+      rect: box.toJSON(), viewport: { width: innerWidth, height: innerHeight, scrollX, scrollY } };
   }
   window.__a11y = { audit, focused, name, shown, describe, ring };
 }
@@ -157,11 +158,17 @@ test('Network keyboard and screen-reader basics in Chrome: every section in both
     const keys = new Set();
     for (let stop = 0; stop < max; stop++) {
       await tab();
-      const at = await page(`return window.__a11y.focused(${J(root)});`);
+      const beforePaint = await page(`return window.__a11y.focused(${J(root)});`);
+      // A CDP key acknowledgement need not include Chrome's focus-scroll paint (notably on Windows).
+      // Observe natural scrolling; never scroll/focus the control on behalf of the app.
+      const at = await page(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); return window.__a11y.focused(${J(root)});`);
+      if (!beforePaint.out && (!beforePaint.shown || !beforePaint.onScreen) && !at.out && at.shown && at.onScreen) {
+        t.diagnostic(`${where}: focus scroll settled after paint: ${JSON.stringify({ beforePaint, afterPaint: at })}`);
+      }
       if (at.out) return stop;
       if (keys.has(at.key)) { report(where, [`focus cycles back to ${at.what} (a keyboard trap)`]); return stop; }
       keys.add(at.key);
-      if (!at.shown || !at.onScreen) report(where, [`focus lands on something not visible: ${at.what}`]);
+      if (!at.shown || !at.onScreen) report(where, [`focus lands on something not visible after paint: ${at.what}; ${JSON.stringify({ rect: at.rect, viewport: at.viewport })}`]);
       if (!at.name) report(where, [`focus lands on a control without a name: ${at.what}`]);
       if (!at.ring) report(where, [`no visible focus ring on ${at.what}`]);
     }
