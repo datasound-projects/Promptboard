@@ -7,7 +7,7 @@
 // Switching a schedule or handoffs on works only at the computer (the server refuses it from a paired phone). Text is set as
 // text only.
 window.PromptboardNetworkDelegation = (() => {
-  const { el, button, plural, ago, clip } = window.PromptboardDom;
+  const { el, button, plural, ago, clip, errorLine, holdFocus } = window.PromptboardDom;
   const note = (text, className = 'note') => el('p', className, text);
   const labelled = (text, control, className = 'field-label') => { const label = el('label', className); label.append(text, control); return label; };
   const short = id => (id ? String(id).replace(/^[a-z]+_/, '').slice(0, 6) : '');
@@ -24,7 +24,7 @@ window.PromptboardNetworkDelegation = (() => {
   /** The module's own dialog (as network-clients.js has): Escape and × close it and give focus back. */
   function dialogBox(id) {
     const dialog = el('dialog', 'kanban-dialog network-dialog network-handoff-dialog'); dialog.id = id; dialog.setAttribute('aria-labelledby', `${id}-heading`);
-    document.body.append(dialog);
+    document.body.append(dialog); holdFocus(dialog);
     let opener = null;
     const close = () => {
       if (dialog.open) dialog.close();
@@ -33,7 +33,8 @@ window.PromptboardNetworkDelegation = (() => {
       (back?.isConnected ? back : back?.id && document.getElementById(back.id))?.focus?.();
     };
     dialog.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); close(); } });
-    dialog.addEventListener('close', () => { if (dialog.childElementCount) close(); });
+    // A close event can arrive after the dialog was opened again (it is queued): only a dialog that is really closed is cleared.
+    dialog.addEventListener('close', () => { if (!dialog.open && dialog.childElementCount) close(); });
     const open = (title, nodes, focus) => {
       opener = dialog.open ? opener : document.activeElement;
       const x = button('×', close, 'dialog-close icon-button'); x.setAttribute('aria-label', 'Close');
@@ -185,7 +186,7 @@ window.PromptboardNetworkDelegation = (() => {
       nodes.push(el('h3', '', 'Sub-jobs'), ...(shown.tree === null ? [note(shown.error ? '' : 'Loading sub-jobs…')] : shown.tree.length ? [tree(shown.tree)]
         : [note('No sub-jobs. A job gets them when its agent delegates along a delegate relation and your handoff policy allows it.')]));
       nodes.push(el('h3', '', 'Handoffs and messages'));
-      if (shown.error) nodes.push(el('p', 'inline-error', `Could not load the messages and sub-jobs. ${shown.error}`));
+      if (shown.error) nodes.push(errorLine(`Could not load the messages and sub-jobs. ${shown.error}`));
       else if (!shown.messages) nodes.push(note('Loading messages…'));
       else {
         nodes.push(note('A record of this job’s handoffs: what it asked, what it delegated and what came back. A read mark only says you read a message; the job’s status says what ran.'));
@@ -203,7 +204,7 @@ window.PromptboardNetworkDelegation = (() => {
     const originFact = record => ['Started by', origin(record)];
 
     // ---- Schedules (Activity's side column).
-    const schedules = { data: null, agents: [], pipelines: [], error: '', loading: false };
+    const schedules = { data: null, agents: [], pipelines: [], error: '', loading: false }, running = new Set();
     /** Every saved pipeline (all pages): names for pipeline schedules, and the published versions the editor offers. */
     async function readPipelines() {
       const items = [];
@@ -229,7 +230,7 @@ window.PromptboardNetworkDelegation = (() => {
     const heading = el('h3', '', 'Schedules'); heading.id = 'network-schedules-heading';
     const add = button('New schedule', () => editor(null), 'secondary-button'); add.id = 'network-schedule-new';
     const zoneNote = note('', 'note network-schedules-zone'), list = el('ul', 'network-activity-rows'); list.id = 'network-schedules-list'; list.setAttribute('aria-labelledby', heading.id);
-    const empty = el('div', 'network-empty'), failure = el('p', 'inline-error'); failure.hidden = true;
+    const empty = el('div', 'network-empty'), failure = errorLine(''); failure.hidden = true;
     const top = el('div', 'network-schedules-head'); top.append(heading, add);
     section.append(top, zoneNote, failure, list, empty);
     async function loadSchedules() {
@@ -264,7 +265,7 @@ window.PromptboardNetworkDelegation = (() => {
       const actions = el('div', 'detail-actions network-schedule-actions');
       const control = (text, run, id, className = 'secondary-button') => { const node = button(text, run, className); node.id = `${id}-${row.id}`; node.setAttribute('aria-describedby', name.id); actions.append(node); return node; };
       if (row.cadence.kind !== 'on_demand') control(row.enabled && !row.zoneMismatch ? 'Switch off' : 'Switch on…', () => (row.enabled && !row.zoneMismatch ? switchOff(row) : confirmOn(row)), 'network-schedule-toggle');
-      control('Run now', () => runNow(row), 'network-schedule-run');
+      const run = control('Run now', () => runNow(row, run), 'network-schedule-run'); run.disabled = running.has(row.id);
       if (row.lastJobId) control('Last job', () => host.go(`#/network/activity/${row.lastJobId}`), 'network-schedule-last', 'text-button');
       if (row.lastRunId) control('Last run', () => host.go(`#/network/runs/${row.lastRunId}`), 'network-schedule-last-run', 'text-button');
       control('Edit', () => editor(row), 'network-schedule-edit', 'text-button');
@@ -274,6 +275,7 @@ window.PromptboardNetworkDelegation = (() => {
     }
     function renderSchedules() {
       const data = schedules.data;
+      window.PromptboardDom.recoveryNotice(section, data?.recovery);
       failure.hidden = !schedules.error; failure.textContent = schedules.error ? `Could not load the schedules. ${schedules.error}` : '';
       zoneNote.textContent = data ? `Times are this computer’s (${data.timeZone}). A schedule starts nothing until you switch it on at this computer; missed times run once, and a time is skipped while its previous job is open.` : '';
       const focused = list.contains(document.activeElement) ? document.activeElement.id : null;
@@ -287,7 +289,7 @@ window.PromptboardNetworkDelegation = (() => {
       await loadSchedules();
     }
     const switchOff = row => change(() => host.request(`/api/network/schedules/${row.id}`, { method: 'PATCH', body: { expectedRevision: row.revision, enabled: false } }), `“${row.name}” is off. Nothing starts on its own.`);
-    function runNow(row) {
+    function runNow(row, node) {
       if (row.target.pipelineId) {
         // Starting a run is never implicit (architecture §21 item 10): the same facts as Run, then Start run.
         const fail = failureLine(), go = button('Start run', async () => {
@@ -301,9 +303,12 @@ window.PromptboardNetworkDelegation = (() => {
         dialog.open(`Run “${row.name}” now?`, [note(`It starts one run of ${pipelineName(row.target)} now, as Run in Pipelines does. Its steps are agent jobs that use your CLI sign-in.`), factsBox(row.target, go), fail, footer], go);
         return;
       }
+      running.add(row.id); node.disabled = true;
       return change(async () => {
-        const answer = await host.request(`/api/network/schedules/${row.id}/run`, { method: 'POST', body: { idempotencyKey: key() } });
-        if (answer.jobId) host.say(`Started job ${short(answer.jobId)}.`);
+        try {
+          const answer = await host.request(`/api/network/schedules/${row.id}/run`, { method: 'POST', body: { idempotencyKey: key() } });
+          if (answer.jobId) host.say(`Started job ${short(answer.jobId)}.`);
+        } finally { running.delete(row.id); node.disabled = false; }
       }, `Started “${row.name}” now.`);
     }
     function confirmOn(row) {
@@ -427,6 +432,7 @@ window.PromptboardNetworkDelegation = (() => {
     let policy = null, visible = false;
     function render() {
       if (!policy) { status.textContent = 'Loading…'; return; }
+      window.PromptboardDom.recoveryNotice(card, policy.recovery);
       ask.checked = policy.askOwner; delegate.checked = policy.delegate; approve.checked = policy.requireApproval;
       for (const [input, value] of [[depth, policy.maxDepth], [children, policy.maxChildren], [share, policy.budgetShare]]) if (document.activeElement !== input) input.value = String(value);
       status.dataset.state = policy.askOwner || policy.delegate ? 'on' : 'off';

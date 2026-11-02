@@ -57,6 +57,7 @@ import { PipelineRunner } from './network/pipeline-runner.mjs';
 import { MachineListener } from './network/rest.mjs';
 import { Delegation } from './network/delegation.mjs';
 import { NetworkSchedules } from './network/schedules.mjs';
+import { A2AWorker } from './network/a2a-client.mjs';
 import { NetworkError } from './network/storage.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
@@ -93,6 +94,7 @@ const assets = new Map([
   ['/network-clients.js', ['network-clients.js', 'text/javascript; charset=utf-8']],
   ['/network-pipeline.js', ['network-pipeline.js', 'text/javascript; charset=utf-8']],
   ['/network-delegation.js', ['network-delegation.js', 'text/javascript; charset=utf-8']],
+  ['/network-federation.js', ['network-federation.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal and graph assets, served from the installed packages by exact path only (no CDN,
 // no directory browsing). Missing files (no npm install) return 404: the dock and the Network graph fall back.
@@ -374,7 +376,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker, networkEventOptions = {}, machineOptions = {}, networkScheduleOptions = {}, networkPipelineOptions = {} } = {}) {
+export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker, networkEventOptions = {}, machineOptions = {}, networkScheduleOptions = {}, networkPipelineOptions = {}, a2aOptions = {} } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   // One app per data folder; the board itself loads lazily, so starting never reads or writes board files.
   const lock = await lockDataDir(dataDir);
@@ -468,21 +470,24 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const prompts = new PromptStore(dataDir);
   const coordinator = new Coordinator({ dataDir, board, origin });
   // Network registrations and networks live in <dataDir>/network/ (created on the first save); Base is only read.
-  const network = new NetworkRegistry({ dataDir, base: board.base, projects: async () => (await board.state()).projects.map(project => project.id) });
+  // Its `federation` (trusted A2A peers, inbound switches) is off until the owner turns it on; a2aOptions are test seams only.
+  const network = new NetworkRegistry({ dataDir, events: { append: event => networkEvents.append(event) }, base: board.base, projects: async () => (await board.state()).projects.map(project => project.id), federation: a2aOptions.federation });
   // Network activity: an append-only event journal in <dataDir>/network/events/ (created on the first event); jobs report
   // every saved status change to it. Observability only: nothing reads it to decide anything.
   const networkEvents = new NetworkEvents({ dataDir, ...networkEventOptions });
   // Network jobs run through the local headless worker (tests inject a fake, or null to keep jobs queued); their own pool,
   // never the CLI slot above.
-  const networkJobs = new NetworkJobs({ dataDir, registry: network, worker: networkWorker === undefined ? new LocalJobWorker({ dataDir, registry: network }) : networkWorker, authBusy: () => busy?.kind === 'auth', events: networkEvents });
+  // A remote A2A peer's job runs on the A2A worker instead: an HTTPS call to a trusted peer, never a local process.
+  const networkJobs = new NetworkJobs({ dataDir, registry: network, worker: networkWorker === undefined ? new LocalJobWorker({ dataDir, registry: network }) : networkWorker,
+    peerWorker: new A2AWorker({ federation: network.federation, ...a2aOptions.worker }), authBusy: () => busy?.kind === 'auth', events: networkEvents });
   // Pipelines (drafts, versions) and their runs; a run's steps are jobs of the engine above, never started by a save.
   const pipelines = new NetworkPipelines({ dataDir, registry: network });
   const pipelineRuns = new PipelineRunner({ dataDir, pipelines, jobs: networkJobs, events: networkEvents, ...networkPipelineOptions }); // Options: tests' clocks.
   // External clients (REST and MCP): their own 127.0.0.1 listener, off until the owner turns it on; never this handle().
-  const machine = new MachineListener({ dataDir, registry: network, jobs: networkJobs, events: networkEvents, reservedPorts: () => [server.address()?.port, remoteAccess?.settings.port], ...machineOptions });
+  const machine = new MachineListener({ dataDir, registry: network, jobs: networkJobs, events: networkEvents, reservedPorts: () => [server.address()?.port, remoteAccess?.settings.port], a2a: a2aOptions.inbound, ...machineOptions });
   // Task 12: the owner's handoff policy (off by default) checks every question and sub-job an agent or a client asks for, and
   // job schedules start nothing until the owner confirms them at this computer.
-  networkJobs.delegation = new Delegation({ dataDir, registry: network, clients: () => machine.clients.list() });
+  networkJobs.delegation = new Delegation({ dataDir, registry: network, events: networkEvents, clients: () => machine.clients.list() });
   const networkSchedules = new NetworkSchedules({ dataDir, jobs: networkJobs, runs: pipelineRuns, registry: network, events: networkEvents, ...networkScheduleOptions });
   // Project memory: a merged card queues one lessons job (Board.completeTask); the worker starts once the app listens.
   const lessons = new Lessons({ dataDir, board, claim, runner: call => track(runner(call)) });

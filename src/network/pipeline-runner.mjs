@@ -36,6 +36,8 @@ const JOB_OPEN = new Set(['queued', 'waiting_for_approval', 'preparing', 'runnin
 /** Refusals that say the step's outcome is not proven (block), rather than that it failed. */
 const UNPROVEN = new Set(['ARTIFACT_INVALID', 'IDEMPOTENCY_CONFLICT']);
 const SHA = /^[0-9a-f]{64}$/;
+/** Steps that run as Network jobs: a local agent's, or a remote A2A peer's (Task 13, `sideEffects: 'external_unknown'`). */
+const JOB_STEPS = new Set(['agent', 'federated']);
 const later = (work, ms) => { const timer = setTimeout(work, ms); timer.unref?.(); return timer; };
 
 const storedRun = data => RUN_ID.test(data.id) && Number.isSafeInteger(data.revision) && RUN_STATUSES.includes(data.status) && SHA.test(data.planSha256) && object(data.input)
@@ -194,7 +196,7 @@ export class PipelineRunner {
       if (!(error instanceof NetworkError)) throw error;
       return block('JOB_UNAVAILABLE', `Its job ${node.jobId} cannot be read (${error.code}), so what it did is not known. Restore the job’s files, or cancel the run.`);
     }
-    if (job.pipelineRunId !== r.id || job.nodeId !== step.id || job.requester?.kind !== 'pipeline' || job.requester.id !== r.id || job.agentId !== step.config.agentId) {
+    if (job.pipelineRunId !== r.id || job.nodeId !== step.id || job.requester?.kind !== 'pipeline' || job.requester.id !== r.id || (step.type === 'federated' ? job.peerId !== step.config.peerId : job.agentId !== step.config.agentId)) {
       return node.errorCode === 'RECEIPT_INVALID' ? undefined : block('RECEIPT_INVALID', `Job ${job.id} is not this step’s job, so nothing it reports is used.`);
     }
     if (JOB_OPEN.has(job.status)) { if (node.status !== 'running') set(step.id, 'running', { errorCode: null, reason: '' }); return; } // An owner retry resumes a blocked step.
@@ -255,7 +257,7 @@ export class PipelineRunner {
   }
   /** Settle a step whose edges allow it: an agent step becomes ready; the others run here at once. */
   async #begin(r, plan, step, inputs, set, at) {
-    if (step.type === 'agent') return set(step.id, 'ready', { inputs });
+    if (JOB_STEPS.has(step.type)) return set(step.id, 'ready', { inputs });
     if (step.type === 'approval') return set(step.id, 'waiting_for_approval', { inputs, startedAt: at, approval: { prompt: step.config.prompt, requestedAt: at, decision: null, decidedAt: null, by: null } });
     if (step.type === 'condition') {
       const values = new Map();
@@ -291,8 +293,8 @@ export class PipelineRunner {
     }
   }
   async #submit(r, plan, step) {
-    const node = r.nodes[step.id], { agentId, instructions, tools, timeoutMs } = step.config;
-    const accepted = await this.jobs.submit({ agentId, input: await this.#compose(r, plan, step, node.inputs), instructions, tools, ...(timeoutMs ? { limits: { timeoutMs } } : {}), networkId: step.networkId,
+    const node = r.nodes[step.id], { agentId, peerId, instructions, tools, timeoutMs } = step.config;
+    const accepted = await this.jobs.submit({ ...(step.type === 'federated' ? { peerId } : { agentId, tools }), input: await this.#compose(r, plan, step, node.inputs), instructions, ...(timeoutMs ? { limits: { timeoutMs } } : {}), networkId: step.networkId,
       idempotencyKey: `run:${r.id}:node:${step.id}:a${node.attempt}`, pipeline: { runId: r.id, nodeId: step.id } }, { requester: { kind: 'pipeline', id: r.id } });
     return accepted.jobId;
   }
@@ -302,7 +304,7 @@ export class PipelineRunner {
     const plan = this.#plans.get(id);
     if (!MOVING.has(run.status)) return false;
     run = await this.#change(run, async (r, set, at) => {
-      for (const step of plan.nodes) { const node = r.nodes[step.id]; if (step.type === 'agent' && node.jobId && (node.status === 'running' || node.status === 'blocked')) await this.#follow(r, step, node, set); }
+      for (const step of plan.nodes) { const node = r.nodes[step.id]; if (JOB_STEPS.has(step.type) && node.jobId && (node.status === 'running' || node.status === 'blocked')) await this.#follow(r, step, node, set); }
       if (r.status === 'running' && at > r.deadlineAt) { halted = this.#halt(r, set, at, 'failed', 'DEADLINE', `The run passed its deadline (${Math.round(plan.settings.deadlineMs / 60_000)} minutes of running) and was stopped.`); return; }
       await this.#settle(r, plan, set, at);
       const stop = plan.settings.failurePolicy === 'stop' && plan.nodes.find(step => r.nodes[step.id].status === 'failed' || r.nodes[step.id].errorCode === 'APPROVAL_REJECTED');
@@ -315,7 +317,7 @@ export class PipelineRunner {
       this.#admit(r, plan, set, at, ceiling);
     });
     for (const step of plan.nodes) {
-      if (step.type !== 'agent' || run.nodes[step.id].status !== 'running' || run.nodes[step.id].jobId) continue;
+      if (!JOB_STEPS.has(step.type) || run.nodes[step.id].status !== 'running' || run.nodes[step.id].jobId) continue;
       run = await this.#change(run, async (r, set) => {
         try { const jobId = await this.#submit(r, plan, step); set(step.id, 'running', { jobId, jobIds: [...r.nodes[step.id].jobIds, jobId] }); } catch (error) {
           if (!(error instanceof NetworkError) || error.status >= 500) return; // Not refused: the intent stays and the next pass submits again under the same key.

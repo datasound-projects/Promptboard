@@ -1,5 +1,12 @@
 # Network implementation progress
 
+**Publication follow-up, 2026-11-02:** the owner explicitly authorized the isolated preview, commit, push and a pull
+request for CI/review. This supersedes the earlier no-commit/no-push instruction. Main remains unchanged.
+
+**Continuation, 2026-10-30:** the combined review copy is `network-continuation/`, branch
+`codex/network-continuation`. The final verification record is at the end of this document. The earlier task entries
+and their local commits are historical evidence; the October 30 continuation made no new commit or push.
+
 Overnight, unattended implementation of the Promptboard Network feature (owner request, 2026-10-26).
 
 - **Branch:** `feat/network`, worktree `.claude/worktrees/network`, cut from `origin/main` 67aff01. Never pushed, merged or force-pushed by this run.
@@ -44,15 +51,16 @@ branch from the same verified base, merged by the coordinator in order, then int
 | 10 | 10-pipeline-designer-and-network-run-ui.md | done (merged) | 6bc96d1 |
 | 11 | 11-private-api-and-mcp.md | done (merged) | a1d6642 |
 | 12 | 12-delegation-and-triggers.md | done (merged) | 7d3adb5 |
-| 13 | 13-a2a-federation.md | in progress (lane `feat/network-13`) | |
-| 14 | 14-verification-and-release.md | pending | |
+| 13 | 13-a2a-federation.md | done; combined with wave B and all reviews | 2ab3277, 69f1c8f; uncommitted continuation |
+| 14 | 14-verification-and-release.md | done; syntax, full regression, Chrome, compatibility and audit verified | 6318d2c, 140b67e; uncommitted continuation |
 
-**Next:** Wave A integrated (730c862, cd8f5f6) and wave B integrated (Tasks 10–12 merged at f3c5e19 and 5aceacb, then the
-wave B integration pass; see its section). Then: the Task 13 merge, the Task 12 review fixes, and Task 14.
+**Next:** Ready for review in the combined continuation at `network-continuation/`, branch
+`codex/network-continuation` (based on `feat/network` 970eaea). The owner's 2026-10-30 handoff instruction supersedes
+the earlier local-commit rules: no new commit, push or change to main. Original worktrees remain preserved.
 
 ## Live provider runs
 
-Every real (paid) CLI run, in order. Seven in all so far.
+Every real (paid) CLI run, in order. Eight in all so far.
 
 | When (UTC) | Task | Provider | Model / effort | Purpose | Result |
 |---|---|---|---|---|---|
@@ -63,6 +71,7 @@ Every real (paid) CLI run, in order. Seven in all so far.
 | 2026-10-26 11:07 | wave A integration | Codex CLI | CLI default, effort low | pipeline step "Risk" (the parallel branch) | completed, exit 0, 5.5 s, `partial-tools`, usage reported |
 | 2026-10-26 12:30 | 12 | Claude Code | haiku | delegation: parent emits the request block (`scripts/network-delegation-live.mjs`) | completed; request exactly as specified; $0.0015 |
 | 2026-10-26 12:30 | 12 | Claude Code | haiku | delegation: parent's second attempt reads the sub-job result | completed; its new delegation refused by fan-out, recorded; $0.0017 |
+| 2026-10-26 (afternoon) | 13 | Codex CLI | CLI default, effort low | one inbound A2A task (official SDK client → machine listener → local worker; `scripts/network-a2a-live-smoke.mjs`) | task COMPLETED in 6 s, job `completed` (`source: a2a`), exit 0, `partial-tools`, usage reported |
 
 ## Task log
 
@@ -2090,3 +2099,440 @@ step's job, so it applies to it unchanged.
 **Commits** (local `feat/network`, never pushed or merged): 1bd3407, a0bc6e0, 4c53a6f, d9447df, 8651ae4, 720989f, 27ff897 (this
 entry with architecture §19 item 8, §20 items 11, 14 and 16, §21 items 10 and 11, §22 item 11 and §23 items 8, 12, 14 and 16),
 fe464c1 (the layout fix), then this entry's suite results with §12.1 item 6.
+
+### Task 12 review fixes (phase 3)
+
+An independent review of Task 12 at 80c0693 (`$TMPDIR/network-logs/review-p3/FINDINGS.txt`, its repros and outputs beside
+it) listed one P2 and six P3 findings. All seven are fixed at their root on `feat/network-review3` (base 5aceacb), each with
+a test that failed before its fix and passes after: `tests/network-review3.test.mjs` (server, 10 tests;
+`review3-fix-before-server.log`: 10 of 10 failing), `tests/network-review3-ui.test.mjs` (jsdom) and
+`tests/network-review3-browser.test.mjs` (Chrome; jsdom cannot show the focus loss) (`review3-fix-before-page.log`: 2 of 2
+failing); the final versions of all 12 fail on an exported copy of the base 5aceacb (`review3-fix-before-final.log`). The race the review reasoned about but did not reproduce (a tick that read the rows once) was reproduced
+deterministically with a gate and is fixed with P3-4. Architecture §23 items 4, 6, 7, 8, 9 and 14 are updated in place.
+
+| Finding | Fix | Test | Commit |
+|---|---|---|---|
+| P3-1 (P2) the answer and note fields lose focus on every redraw in Chrome | `keepFocus` gives focus back to a kept node that lost it (it was taken out and put back), with its caret and selection, instead of returning because the node is still connected | `network-review3-browser` "P3-1…" (answer: focus and caret 3,3 kept, the next key lands at the caret; note field the same; each redraw from a live `job.message`) | a663563 |
+| P3-2 the policy checks fail open at an unreadable ancestor | `#chain` marks a chain that stops short of its root (`broken`); `#rootClient`, which plan, recheck and guide all call, refuses it (`DELEGATION_NOT_ALLOWED`): plan refuses, a queued sub-job fails `DELEGATION_REVOKED` at its claim, the prompt offers no agent | `network-review3` "P3-2…" ×2 (the review's repro at the claim; an owner-linked job under a damaged client root: no agent offered, its delegation refused) | d5c492b |
+| P3-3 a cancel that meets a handoff does not stop the tree | `cancel()` stops only an attempt that is still open, and when the attempt ended by itself while it was stopped (a handoff saved first) it cancels the job that now waits; its sub-jobs follow. `plan` refuses under a cancelled ancestor (`DELEGATION_CANCELLED`), `recheck` fails a claim under one (`DELEGATION_REVOKED`) | `network-review3` "P3-3 (b)…" (the worker has not returned), "P3-3 (a)…" ×2 (direct and cascade, the stop window held open by a gate in the fake worker's cancel), "P3-3: under a cancelled ancestor…" | 16d4295, 3216b87 (test) |
+| P3-4 a schedule time that fires during shutdown is lost | for a job target, a 5xx refusal (`SHUTTING_DOWN`, `NETWORK_WRITE_FAILED`) or `BASE_CHANGED` is rethrown without using the slot (key `slot:<ms>` makes the retry safe); `#fire` also fires only the slot the row as saved now has due (the tick race) | `network-review3` "P3-4: a time that fires while the job engine shuts down…" (nothing used up; after the restart one job for that slot over two ticks), "P3-4: a time due before the schedule was switched off and on again…" | e9ccfea |
+| P3-5 answers count against the 200-note ceiling | only `review` and `request` notes count; an answer (one per handoff, at most five) is bounded by the 500 in all. The Task 12 messages test counted the answer as a note and now posts 200 notes | `network-review3` "P3-5…" (answered after 200 notes; the 201st note still refused) | 3f9fa64 |
+| P3-6 the children route answers a used key with another task as deduplicated | the existing sub-job's stored request (agent, task text, json, tools) is compared with the client's, `IDEMPOTENCY_CONFLICT` 409 when it differs; still before the policy, so a true retry is answered | `network-review3` "P3-6…" (same task: same sub-job; another task, tools or json: 409 naming the first) | 3f9fa64 |
+| P3-7 a double-click on Run now starts two jobs | Run now is off until its request is answered, on the clicked button and on a row drawn again meanwhile (the schedules in flight are kept in a set): one click intent, one request, one key | `network-review3-ui` "P3-7…" (the test holds the request in flight and the list is drawn again meanwhile: one request, one job; a later click starts a second) | 538cb35, 3216b87 |
+
+Also 802931b: `tests/network-delegation-http.test.mjs` raises the machine request ceiling, as 3d3a79a did for the MCP tests.
+It polls every few ms and failed with `RATE_LIMITED` under a five-file load, identically on an exported copy of the base
+5aceacb (`review3-base-quick.log`).
+
+**Test runs** on the final code 3216b87 (PATH: a `node` symlink plus `/usr/bin:/bin:/usr/sbin:/sbin`, no AI CLI): `npm run
+check` passes; the new and changed tests (`network-review3`, `network-review3-ui`, `network-review3-browser`,
+`network-delegation`, `network-delegation-http`) twice, 23 of 23 each time (`review3-fix-new-run1.log`, `-run2.log`); every
+non-browser `tests/network-*.test.mjs` (30 files) with `remote-access`, `schedules`, `schedules-ui`, `project-explorer-ui`,
+`sandbox-ui`, `ui`, `ui-2` and `ui-3` (38 files, concurrency 2): 357 of 358 (`review3-fix-touched-final-run1.log`; the one
+failure, `network-worker` "a CLI killed from outside…", is a read of the fake CLI's run log while it is being written,
+`JSON.parse` "Unexpected end of JSON input" in the test's `runs()`, in files this work does not touch; that file passed 11 of 11
+alone twice), then 358 of 358 (`review3-fix-touched-final-run2.log`); every `tests/network-*browser*.test.mjs` (9 files): 13 of
+13 (`review3-fix-browser.log`). An earlier pass on 538cb35 was 358 of 358 and 13 of 13. The full `npm test` is left to the
+coordinator after the merge.
+
+**Mutation check** (`review3-fix-mutations.log`; a throw-away script outside the repo, each source file restored from HEAD and
+hash-checked, `git stash` never used): 14 mutations, each a fix or one part of it reverted on its own; **14 of 14** make their
+test fail. A first pass had two survivors, which led to 3216b87: the in-flight click guard of P3-7 was redundant beside the
+disabled button (removed), and the P3-3 (b) test used a worker that ended on cancel, so it did not need the open-attempt check
+(it now models a worker that has not returned). That one mutant hangs rather than fails: `cancel()` then spins on microtasks
+(the memoised stop of the ended attempt), so even the test's timeout cannot fire; its process was killed by hand after about
+10 minutes and the runner reported it failed.
+
+**Expected merge overlaps** (wave-B integration on `feat/network`, Task 13 on `feat/network-13`): `src/network/jobs.mjs`
+(`#chain`, the body of `cancel()`, the existing-key block of `delegate()`), `src/network/delegation.mjs` (one line each in
+`#rootClient`, `plan` and `recheck`), `src/network/messages.mjs` (`post`'s ceiling), `src/network/schedules.mjs` (`#fire`),
+`public/network-activity.js` (`keepFocus`), `public/network-delegation.js` (the `schedules` state line, the Run now line of
+`scheduleRow`, `runNow`), `tests/network-delegation.test.mjs` (one line), `tests/network-delegation-http.test.mjs` (the
+fixture line), `docs/network/architecture.md` §23 items 4, 6–9 and 14, this section. Not touched: `mcp.mjs`,
+`pipeline-runner.mjs`, `rest.mjs`, `http.mjs`, `server.mjs`.
+
+**Known limits.** The cancelled-ancestor check covers delegation and the claim of sub-jobs (`job.delegation`); a job the owner
+linked under a parent has no claim check and is cancelled by the cascade as before. A schedule time refused with "try again"
+is retried at every check (at most a minute apart) with no `lastSkip` recorded until it starts or is refused for good.
+`cancel()` ends because a stop always saves the end or finds the attempt ended; a change that broke that would spin (see the
+mutation note). Paid CLI runs: 0.
+
+### Task 13 — Minimal native A2A federation and remote Agent Cards (2026-10-26, wave C, branch `feat/network-13`)
+
+**What was done.** Controlled A2A 1.x with trusted remote agents, both directions off until the owner turns them on, built on
+the official `@a2a-js/sdk` 1.3.0. **Outbound:** the owner previews a peer's Agent Card (one SSRF-guarded fetch, nothing
+saved), reviews its untrusted text as text, and approves exactly that card (hash-checked); only bounded public card fields and
+the *name* of a credential environment variable are kept. A peer is a `federated` node in Graph and a `federated` step in
+pipelines; its steps are Network jobs (`peerId`, `sideEffects: 'external_unknown'`) run by an A2A worker through the SDK's
+`ClientFactory`/`JsonRpcTransportFactory` with the guarded `fetchImpl`: streaming with a poll fallback or polling, remote
+states mapped to the job lifecycle, the remote task ID kept opaque, a time limit or lost stream `unknown` (descendants blocked),
+cancellation "confirmed" only when the protocol confirms it. **Inbound:** on the machine listener only, a public Agent Card and
+a JSON-RPC endpoint serve agents published for A2A to callers that hold a machine-client token of `kind: 'a2a'`; each task is
+a Network job through the engine (`source: 'a2a'`), and its status and result come from that job. Network → Federation holds
+it all. Decisions and the two deviations (own inbound request handler instead of `DefaultRequestHandler`; peers never
+exported) in architecture §24. The progress status table is left to the coordinator.
+
+**Files.** New: `src/network/a2a-registry.mjs`, `src/network/a2a-client.mjs`, `src/network/a2a-server.mjs`,
+`public/network-federation.js`, `scripts/network-a2a-live-smoke.mjs` (opt-in, never in `npm test`), `tests/network-a2a.test.mjs`,
+`tests/network-a2a-ssrf.test.mjs`, `tests/network-a2a-browser.test.mjs`, `tests/helpers/a2a-peer.mjs`. Changed (small, additive):
+`src/network/jobs.mjs` (peer jobs, `peerWorker`, timeout → unknown and cancel confirmation for peer jobs, `remoteTaskId` on
+`spawned`), `src/network/registry.mjs` (owns `federation`; `federated` Graph nodes, refs, issues, import keeps them),
+`src/network/pipeline-{model,compiler,runner}.mjs` (`federated` step), `src/network/machine-auth.mjs` (`kind: 'a2a'`),
+`src/network/rest.mjs` (A2A paths before the `/machine/v1/` check), `src/network/http.mjs` (7 routes), `src/network/activity.mjs`
+(`peerId` on job rows), `src/base-context.mjs` (`isPublicAddress` hardening), `src/server.mjs` (A2A worker, `a2aOptions` test
+seam, asset), `src/remote-access.mjs` (`localOnly`), `public/network.js` (Federation section), `public/network-graph.js`,
+`public/network-pipeline.js`, `public/index.html`, `public/styles.css`, `tests/remote-access.test.mjs` (7 rows),
+`tests/helpers/network-machine.mjs` (`serverOptions`), `tests/helpers/ui-harness.mjs` (evaluates `network-federation.js`),
+`tests/network-ui.test.mjs` (Federation is no longer "not available"), `package.json`, `package-lock.json`,
+`THIRD_PARTY_NOTICES.md`, `docs/network/architecture.md` (§24), this file.
+
+**Dependency.** `@a2a-js/sdk` 1.3.0 exactly (Apache-2.0, published 2026-09-29, older than two weeks); its only hard dependency
+`jose ^6.2.3` is the already installed 6.2.12; no Express or other peer installed. `npm audit`: 0 vulnerabilities. Interfaces
+checked in the installed package (architecture §24 item 1); `A2A_PROTOCOL_VERSION` is `"1.0"`.
+
+**Tests and results** (logs in `$TMPDIR/network-logs/task-13-*.log`). `npm run check`: all files pass. New tests twice:
+`network-a2a` + `network-a2a-ssrf` 21/21 and 21/21 (`task-13-new-run{1,2}.log`); `network-a2a-browser` 1/1 and 1/1
+(`task-13-browser-new-run{1,2}.log`). Touched modules: every non-browser `tests/network-*.test.mjs` + `remote-access` +
+`base-delivery` 202/202 (`task-13-touched.log`); an earlier run of the same set had 3 failures under parallel load: my own
+journal-timing race in the A2A test (fixed: it now waits for the event), `network-mcp` `RATE_LIMITED` (the same failure on the
+base commit 96987d8 in the same combined run, 180/181, `task-13-base-touched.log`: a known load flake of Task 11's test, which
+passes alone 3/3) and `network-review` P1-2's 912 ms event-loop check (passed in the rerun). All Network browser tests 12/12
+(`task-13-browser.log`); the other UI-harness tests 145/145 (`task-13-ui-harness.log`). The full `npm test` was not run (lane
+rule). **Mutation check** (`task-13-mutation*.log`, 36 mutants on a separate copy): 35 killed. SSRF guard 13/13 (public-address
+check, local-test loopback rule, cross-origin redirect, credential per origin, origin allowlist, https only, every DNS answer,
+caller headers, size limit, userinfo, NAT64, re-resolution on every hop, POST redirects); auth and scopes 12/12 (client kind,
+other callers' tasks, caller permissions, caller agent scope, unpublished agents, endpoint while inbound off, outbound switch for
+calls and previews, peer job scope, phone local-only rules, reviewed card hash, card change at claim); state mapping 10/11
+(completed, undefined states, failed, rejected, remote time limit, cancel confirmation, another task ID, refusal vs unknown,
+result limit, inbound unknown state). The survivor (a lost stream before a task reported as `completed`) is equivalent: the
+engine itself refuses `completed` without a running attempt and saves the same `unknown REMOTE_STREAM_LOST`. Four first-pass
+survivors led to stronger tests (a POST 302 that would succeed on its second hop, the claim-time card change with no attempt,
+the inbound unknown state, caller scopes and permissions).
+
+**Live provider run.** 1 of the allowed 1: an inbound A2A task executed by the real local worker (Codex, low effort) through an
+isolated app on 4913 — see "Live provider runs" above. Outbound calls to real remote peers were not made (no real internet
+call; peers in tests are SDK mock servers on 127.0.0.1).
+
+**Acceptance criteria and evidence.**
+
+| Criterion | Evidence |
+|---|---|
+| A trusted external A2A agent performs a task and returns a result into a Promptboard pipeline | `network-a2a` "acceptance: … flows into a Promptboard pipeline" (federated step → local agent → report; remote ID exact, `external_unknown`, the report holds the remote answer) |
+| A permissioned A2A client submits to one explicitly published local agent through a private, authenticated endpoint | `network-a2a` "acceptance: a permissioned A2A client …" (official SDK client; card lists only the published agent; job `source: a2a` run by the engine's worker; GetTask after a restart; wrong kinds and missing tokens 401; revoke) and the live run |
+| Remote state/monitoring limited to protocol evidence | `network-a2a` "outbound states" (every remote state, stream/poll fallback, fixed reasons, never the peer's words), "a remote step … past its time limit ends unknown", "cancelling … confirmed only when the protocol confirms it", "remote answers Promptboard cannot trust"; `network-a2a-ssrf` state mapping |
+| Federation off/private until deliberately enabled | `network-a2a` "off by default" (no file, no outbound call, no card or endpoint, 127.0.0.1 only), local-only rows in `remote-access` |
+| Task 13 rows of acceptance.md: SSRF (http, private/loopback, redirects, DNS change, credentials after redirect) | `network-a2a-ssrf` (5 tests on the guard, real sockets on 127.0.0.1 for timeouts, pinning and sizes) |
+| Malicious card metadata | `network-a2a` "malicious or broken Agent Cards …", `network-a2a-ssrf` "card normalisation", `network-a2a-browser` (markup never becomes HTML) |
+| Privacy and secrets | `network-a2a` "outbound credentials …" (the value in no file, event or answer), inbound privacy assertions, "inbound tasks report the job's state honestly" |
+| Failure matrix 35, 36, 37 | timeout test (35), SSRF tests (36), duplicate `messageId` → one job (37) |
+
+**Known limits.** A2A 1.x JSON-RPC only (no v0.3 compatibility, gRPC or HTTP+JSON transports). Credentials: bearer and header
+API keys from environment variables only (no OAuth 2.0, OpenID Connect or mTLS). Card signatures are not verified. Inbound:
+one message per task (no follow-ups or INPUT_REQUIRED answers), no streaming, `ListTasks` or push notifications, agents only
+(no pipeline versions), blocking sends return after at most 10 minutes. Remote INPUT_REQUIRED/AUTH_REQUIRED end the job as
+failed. Peers are never exported; an imported remote peer node shows as missing until the peer is added again. A sign-in change
+also pauses peer jobs (they share the pool). The public card lists the published agents' names to anyone who can reach
+127.0.0.1 on the listener port. Real remote peers over the internet were not exercised.
+
+**Expected merge overlaps.** With Task 12 (`feat/network-12`): `src/network/jobs.mjs` (submission, `#pin`, submit, claim,
+`#stop`, `spawned`, `#run`, `#pump`), `src/network/http.mjs` (routes appended after `/listener`; the header comment),
+`src/network/rest.mjs` (constructor, the A2A branch in `#serve`, `#a2a`, the constant before `route`), `public/network.js`
+(sections, `panelOf`, module creation, `render`), `tests/remote-access.test.mjs` (rows beside Task 11's), `src/remote-access.mjs`
+(`localOnly`), `src/server.mjs` (wiring), `src/network/activity.mjs` (`jobRow`), `docs/network/architecture.md` (§23 goes
+before this §24), this file. With the review fixes (`feat/network-wave-b`): `public/network-pipeline.js`, `public/network-graph.js`,
+`src/network/{rest,jobs,pipeline-runner,machine-auth}.mjs` at the places listed in architecture §24 items 7–13.
+
+**Commits.** 40c123b (core: dependency, federation, guard, worker, inbound, Graph and pipeline model), then this entry's commit
+(UI, browser test, live smoke script, test additions, docs).
+
+### Security audit fixes (review 4)
+
+An independent security audit of every Network route and the first review of Task 13 at 6d53a9e
+(`$TMPDIR/network-logs/review-p4/FINDINGS.txt`, `ROUTES.txt`, repros beside them) listed two P2 and seven P3 findings, no P1.
+All nine are fixed on `feat/network-review4` (base 6d53a9e). Each code fix has a test that asserts the correct behaviour in
+`tests/network-review4.test.mjs` (server, 17 tests) or `tests/network-review4-ui.test.mjs` (jsdom, 1 test); the final versions
+of all 18 were run on an exported copy of the base: 17 fail there, and the one that passes is the env-proxy guard, which
+documents behaviour that was already right (`review4-fix-before-final.log`). Architecture §11.2, §11.5 and §24 items 2, 4, 5,
+6, 8, 12 and 13 are updated in place; SECURITY.md has two Network paragraphs and one review bullet.
+
+| Finding | Fix | Test (`network-review4*`) | Commit |
+|---|---|---|---|
+| P4-1 (P2) a peer's result json became a Task 12 question and wedged the job | `finish()` never parses a handoff for a `peerId` job: its json is data only | "P4-1…" (askOwner on: completed, json kept, no message, no handoff event) | fa29758 |
+| P4-2 (P2) withdrawing trust did not stop a running peer job | the guarded fetch asks `federation.trusts()` before every request (`PEER_WITHDRAWN`, nothing sent); every saved federation change tells the A2A worker, which aborts the open attempts of a peer no longer trusted; they end `unknown PEER_WITHDRAWN`; the Federation page says so | "P4-2…" ×6 (outbound off, peer off, peer removed, a new card kept: zero transport calls after the withdrawal; an open stream closed; the guard alone) | d63df54, 5407e00 |
+| P4-3 the A2A worker kept every attempt | the attempt is forgotten when it ends, or by `cancel()` when the engine stopped it; one stopped during its claim is never kept | "P4-3…" (completed, stopped, stopped before start, stopped during claim) | d63df54, 5407e00 |
+| P4-4 refused answers were drained, not closed | `destroy()` instead of `resume()` for refused redirects and non-2xx answers; each attempt's controller is aborted when it ends, so no request or stream outlives its job | "P4-4…" ×2 (a trickling 500 and 302 closed within 1 s; every request signal of an ended attempt aborted) | 1fc326c |
+| P4-5 a refresh that moved the endpoint kept the credential | `update()` drops the reference when the endpoint origin changes unless the same PATCH names it; Refresh card… shows the credential, says "moved from A to B" and starts the field empty | "P4-5…" (server: same origin kept, moved dropped and no Authorization sent there, named again kept); `-ui` "P4-5…" | 5fa1f70 |
+| P4-6 the private address accepted 0.0.0.0, ::, 169.254.169.254, multicast, broadcast | `privateRange` (RFC 1918, 100.64.0.0/10, fc00::/7: remote access's check minus loopback) for the owner's choice, and again in `allowedAddress`, so a peer saved earlier with another address never reaches it | "P4-6…" | c05184c |
+| P4-7 card text kept invisible characters; a peer's name was a prompt label | `said()` removes every `\p{Cf}` character and U+E0000–E007F; an unlabelled remote step is "Remote step" (the run view's Remote peer row shows the peer ID) | "P4-7…" ×2 (normalisation; the next agent's input header) | c05184c |
+| P4-8 a credential could name any variable | new references must match `PROMPTBOARD_A2A_[A-Z0-9_]{1,48}`; a peer saved with another name loads with `renameNeeded`, is refused at submit and claim (`CREDENTIAL_REFERENCE_INVALID`, nothing sent) until renamed; never migrated silently; UI help and the Task 13 tests use the new name | "P4-8…" | 5fa1f70 |
+| P4-9 (docs) SECURITY.md had no Network section | two paragraphs (external clients; A2A federation) and a review bullet | — (docs) | the docs commit |
+| Also | `http.mjs` header: ten local-only routes, not three. DNS lookups in the guard give up after the connect limit or on cancel ("DNS…"). Env proxy: not reachable, see below ("env proxy…") | | 1fc326c, the docs commit |
+
+**Env proxy.** With `NODE_USE_ENV_PROXY=1` (or `--use-env-proxy`) and `HTTP(S)_PROXY` set, Node 24.14.1 sends requests of
+the global agents through the proxy, but the guarded transport connects straight to the pinned address: each request has
+its own agent (`agent: false`), and Node configures `proxyEnv` only for the global agents. Measured (a probe and the test
+"env proxy…": the control request reached the proxy, the guarded one reached the target, plain and TLS), so no change was
+needed; the test keeps it that way.
+
+**Test runs** (PATH: a `node` symlink plus `/usr/bin:/bin:/usr/sbin:/sbin`, no AI CLI; logs `$TMPDIR/network-logs/review4-fix-*.log`):
+`npm run check` passes. New and changed tests (`network-review4`, `network-review4-ui`, `network-a2a`, `network-a2a-ssrf`) twice
+on the final code: 39 of 39 each time (`review4-fix-new-run1.log`, `-run2.log`). Every non-browser `tests/network-*.test.mjs`
+(34 files) with `remote-access`, `base-delivery`, `ui`, `ui-2`, `ui-3`, `sandbox-ui` and `project-explorer-ui` (41 files,
+concurrency 2): 393 of 394 passed, 0 failed, 1 cancelled (`review4-fix-touched.log`): Compose's "UI sends selected model,
+effort, and language…" in `ui.test.mjs` hit the 300 s test timeout under the parallel load; alone it passes in 11 s
+(`review4-fix-touched-rerun.log`) and the whole `ui.test.mjs` passes 31 of 31 (`review4-fix-touched-rerun-ui.log`). That run
+was on the final source; the two tests added afterwards (5407e00) are in the twice-run above. Every
+`tests/network-*browser*.test.mjs` (10 files): 14 of 14 (`review4-fix-browser.log`). The full `npm test` is left to the
+coordinator.
+
+**Mutation check** (`review4-fix-mutations.log`; a script outside the repo on an exported copy, each file restored and
+hash-checked, `git stash` never used): 24 mutations, each one fix or one part of it reverted on its own; **24 of 24** make
+their test fail. The first pass had one survivor, `trusts()` without the card hash, which led to the "a new card kept" case
+(5407e00).
+
+**Expected merge overlaps.** Task 14 part 1 (`feat/network-14`) and the wave-B integration (`feat/network`):
+`src/network/jobs.mjs` (one line in `finish()`), `src/network/a2a-client.mjs` (`guardedFetch`, `within`, `privateRange`,
+`allowedAddress`, the `A2AWorker` constructor, `claim`, `start`, `cancel`, `#withdraw`, `#run`), `src/network/a2a-registry.mjs`
+(imports, constants, `said`, `privateAddressOf`, `#write`/`onChange`/`trusts`, `#view`, `#credential`, `update`, `remove`'s
+comment, `#usable`, `callable`), `src/network/pipeline-compiler.mjs` (the federated label line), `public/network-pipeline.js`
+(the run view's Remote peer row), `public/network-federation.js` (texts, peer row, `openPreview`, `openCredential`,
+`confirmRemove`), `src/network/http.mjs` (header comment), `tests/network-a2a.test.mjs` (`PEER_TOKEN` →
+`PROMPTBOARD_A2A_PEER_TOKEN`; any new test there that names a credential needs the prefix), `SECURITY.md`,
+`docs/network/architecture.md` §11.2, §11.5, §24, and the end of this file. Not touched: `rest.mjs`, `mcp.mjs`,
+`schedules.mjs`, `pipeline-runner.mjs`, `server.mjs`, CHANGELOG.md.
+
+**Known limits.** A changed credential reference (Credential…) does not stop a running job; it keeps the value read at its
+claim. Cards stored before this fix keep any invisible characters in their saved name until the owner refreshes them (their
+hash is pinned, so they are not rewritten); the name is no longer a prompt label either way. A DNS lookup that never answers
+keeps its libuv thread until getaddrinfo gives up; Promptboard only stops waiting. Paid CLI runs: 0.
+
+### Task 14 part 1 — End-to-end scenarios, fault injection and performance (2026-10-26, branch `feat/network-14`)
+
+**Scope.** Items 2–6 of `14-verification-and-release.md` on the base 6d53a9e (Tasks 01–13 and every review fix). Not in this
+part: README and the docs user guide, the accessibility pass, the security audit (a separate read-only review runs in
+parallel), CHANGELOG and the final full regression. No paid or real CLI ran; every scenario uses the fake headless CLIs on a
+PATH that holds only them and `node`, or the deterministic fake worker. No live external A2A service was used: the A2A peers
+are SDK mock servers on 127.0.0.1.
+
+**Scenarios (permanent tests).**
+
+| Item | Test | What it proves |
+|---|---|---|
+| 2 local, API | `network-e2e` "local scenario: …" | Base agents created through `POST /api/base/resources` and registered; a nested graph (Desk pins Review desk v1) published, a containment loop refused (`NETWORK_CYCLE`, draft unchanged); a pipeline of two parallel research steps (a barrier in the fake CLIs proves they ran together) → join → a sub-pipeline reviewer from the inner network → approval → report, followed on the NDJSON stream; while the approval waits the Base agent, both networks and the pipeline change and are republished (v2): `plan.json` stays byte for byte, the report is v1's; restart while waiting (nothing runs again), approve, restart after the end (no replay); one job, one CLI run and one key per step, one report per output step, every event of the run exactly once across both restarts; the reviewer ran with the model accepted before the Base edit; a v2 run pins pipeline v2 and the new model; a rejected approval writes no report |
+| 2 local, Chrome by mouse | `network-e2e-browser` "Network by mouse in Chrome on the real worker: …" | Real pointer events (at each control's centre, after checking nothing covers it) and typed input only: template → drag a step → save → publish (dialog) → run (confirmation, typed input) → live run view → page reload → app restart (new port, new browser) → approve on the run canvas → the report shown in the page; 3 jobs, 3 CLI runs, one report, exact run history |
+| 3 outside client | `network-e2e` "outside client: …" | A real `@modelcontextprotocol/client` host over stdio (`bin/ste.mjs --mcp`) with a token scoped to one agent and one project: agents_list, jobs_submit, jobs_get until completed on the real worker, artifacts_get, a retried key → the same job. The same token: another project, agent, network, memory, lessons and the owner's job are tool errors and start nothing; on the owner API (bearer or `X-STE-Token`) 403; owner paths on the machine listener 404; on a really paired remote listener 401/403; the owner token and a `pb_remote` cookie on the machine listener `MACHINE_CREDENTIAL_REQUIRED`; the token in no file, answer or log |
+| 4 federation | `network-e2e` "federation: …" | A mock peer (official `@a2a-js/sdk` server classes) with a card and bearer auth (credential from an environment variable) is approved and is one parallel step of a pipeline beside a local step on the real worker → join → reviewer → approval → report; one remote task, the credential only at the endpoint. Refused before anything is sent: `https://10.0.0.1`, `169.254.169.254`, `127.0.0.1` and an IPv4-mapped private address (`A2A_ADDRESS_REFUSED`), plain http outside a local test (`A2A_URL_INSECURE`), a card whose endpoint is a metadata address (`CARD_ENDPOINT_REFUSED`), a peer nobody approved (`PEER_NOT_FOUND`; a network cannot name it), and an approved peer that redirects to an unapproved origin (`A2A_REDIRECT_REFUSED`; that origin received no request) |
+| 5 faults | `network-faults`, `network-faults-worker` | See the matrix below and "Fault cases" |
+| 6 performance | `network-perf`, `network-perf-browser`, opt-in `scripts/network-perf.mjs` | See `docs/network/performance.md` |
+
+**Fault cases (item 5).** `network-faults` "a crash after every durable write …": the `network/` folder is copied after
+every atomic rename while the MVP pipeline runs on the fake worker (32 distinct crash points: plan, run, request, job, attempt
+result, report) and the app restarts on each copy (6 at a time): every job of the copy is kept; one job per step; a job that
+had ended is untouched; one that may have started (claimed, launching or running) is `interrupted` (`not_started` or
+`uncertain`), not relaunched, and the run `blocked`; only queued jobs and steps without a job start; an approval saved as given
+is never asked again and one not given is never assumed; one report, bytes kept; the recorded pid (a live process in its own
+group) is never signalled (`process.kill` spy) and outlives every restart. "power loss and damaged files …": every file of a
+finished scenario (29 files: registry, drafts, versions, jobs, requests, results, run, plan, report, settings, clients, journal
+segments of 2 KiB) torn in half, garbage, removed beside its backup, saved by a newer version, or beside a stray `*.tmp-*` file
+(108 variants): the app answers 200 or 409 (never 500), runs nothing, keeps every record or names it unavailable (a file read
+from its backup may lack only what its save did not know, and a job read from it says `RESTORED_FROM_BACKUP`), keeps the
+damaged bytes, never rewrites a newer file, keeps Kanban (`/api/board`) working, and the journal continues without a repeated
+or reordered `seq`. "revocation …": a REST client and an inbound A2A caller revoked while their jobs run (stream ended at
+once, 401 on every call, the jobs run on as the owner's to cancel or finish), a Base agent deleted while its job waits
+(`BASE_REVOKED`, no attempt), a Base agent switched off while its job runs (runs on, owner cancels, a late result does not undo
+it). "a board backup restored …": nothing starts, no Network file changes. `network-faults-worker` (real worker, fake CLIs, no
+Gemini CLI): a Base agent changed between submit and claim runs with the accepted model (argv) and instructions (prompt);
+output lines no adapter knows, a non-JSON line and a failed tool (new fake markers `[[odd]]`, `[[toolfail]]`) neither end the
+job nor put a path into an event or `stream.jsonl`; a missing CLI (`NOT_INSTALLED`) and a signed-out one (`AUTH_REQUIRED`) fail
+once and are never retried; output over the limit ends the CLI; an app stop with hung CLIs takes under 10 s, ends their
+process groups, and the restart saves them `interrupted` and relaunches nothing. A cancelled pipeline is covered by
+`network-pipeline` "cancelling a run cancels …" and `network-pipeline-e2e` run 2. Duplicates by idempotency key: owner REST
+(`network-jobs` "idempotency: the same key …"), machine REST (`network-machine` "idempotency and replay …"), MCP (`network-mcp`,
+and `network-e2e` "outside client" counts the jobs), inbound A2A (`network-a2a` "acceptance: a permissioned A2A client …", same
+`messageId`), sub-jobs (`network-delegation` "one child per key …", `network-review3` P3-6), schedule slots
+(`network-schedules` "a restart never fires a slot twice …").
+
+**Failure and recovery matrix (acceptance.md §6) → tests.** ★ rows are rerun by Task 14; "new" marks this part's tests.
+
+| # | Fault | Proven by | Notes |
+|---|---|---|---|
+| 1 ★ | Lost submit answer, retry with the same key | `network-jobs` "idempotency: the same key …", "job routes over HTTP …"; `network-machine` "idempotency and replay …"; `network-mcp` (same `jobId`); new `network-e2e` "outside client" (MCP retry, job count) | covered |
+| 2 ★ | Stop after `queued` | `network-jobs` "a restart after every transition …", "shutdown stops claiming …"; new `network-faults` crash test (queued copies run once) | covered |
+| 3 ★ | Stop after claim, before `launchingAt` | `network-jobs` "a restart after every transition …" (`not_started`, retry needs `confirm`); new crash test (with a worker present: interrupted, not started) | covered |
+| 4 ★ | Stop after `launchingAt`, before `spawnedAt` | `network-jobs` same test (`uncertain`, `confirmUncertain`); new crash test | covered |
+| 5 ★ | Crash while running | `network-jobs` same test (pid shown "may still be running"); `network-worker` "the app runs jobs with the local worker …"; new crash test (the pid is a live process, never signalled, alive after every restart) | covered |
+| 6 ★ | Write error on a transition | `network-jobs` "storage failures at submit, claim, launch, spawn and finish …"; `network-worker` "a CLI whose start cannot be put on the record …" | covered; the error is injected (a folder where the `.bak` goes), not a real full disk |
+| 7 | `job.json` damaged, `.bak` good | `network-jobs` "a job.json read from its backup …"; `network-review2` P2-8 (`job.recovered`); new `network-faults` power-loss test (torn, garbage, missing) | covered |
+| 8 | `job.json` and `.bak` damaged | `network-jobs` same test; new power-loss test ("torn without backup": unavailable, never run, bytes kept) | covered |
+| 9 ★ | Newer `version` | `network-registry` "damaged and newer files fail closed …", `network-jobs`; new power-loss test ("newer version" of every mutable file: 409, never rewritten, `/api/board` 200) | covered |
+| 10 ★ | Journal partial / corrupt line | `network-events` "journal recovery …"; new power-loss test (segments torn, garbage, removed) | covered; see the limit below |
+| 11 ★ | Stream reconnect after a restart | `network-events` "the stream replays from a cursor …"; new `network-e2e` local scenario (each event once across two restarts) | covered |
+| 12 ★ | Base disabled/untrusted/deleted while queued | `network-worker` "Base is pinned at acceptance …" (disabled, untrusted); new `network-faults` revocation test (deleted) | covered |
+| 13 | Base revoked while running | `network-worker` same test ("revoked after start"); new revocation test (runs on, owner cancels) | covered |
+| 14 | Registration disabled while queued | `network-jobs` "claim-time checks fail a job without a process …" | covered |
+| 15 ★ | Cancel at the moment of completion | `network-jobs` "cancel races …" | covered |
+| 16 | Two claims | `network-jobs` "concurrent submits and claims …" | covered |
+| 17 | CLI missing / signed out | `network-worker` "refusals: …", "completion needs the structured final answer …"; new `network-faults-worker` (one attempt, no retry) | covered |
+| 18 | Sign-in change while jobs run | `network-jobs` "sign-in waits for Network jobs …" | covered |
+| 19 ★ | Exit 0 without a result | `network-worker` "completion needs the structured final answer …" | covered |
+| 20 | Output over the limit / timeout | `network-worker` same test (timeout: group gone); new `network-faults-worker` (output limit: the CLI is gone) | covered |
+| 21 ★ | Shutdown with running jobs | `network-jobs` "shutdown stops claiming …"; `network-worker`; new `network-faults-worker` (under 10 s, groups gone, no relaunch) | covered |
+| 22 ★ | Step job `unknown`/`interrupted` | `network-pipeline` "restart: an interrupted step job blocks …", "retries are bounded …"; new crash test (16 blocked restarts) | covered |
+| 23 ★ | Restart with an approval pending | `network-pipeline` "an approval waits for the owner across a restart …"; `network-pipeline-e2e`; new `network-e2e` (API and Chrome); new crash test | covered |
+| 24 ★ | Pipeline edited/republished during a run | `network-pipeline` "a running run keeps its exact pinned versions …"; new `network-e2e` local scenario (Base, both networks and the pipeline) | covered |
+| 25 ★ | Runner restarts mid-run | `network-pipeline` restart test (a submit cut short is found by its key); new crash test | covered |
+| 26 | Result for a stale attempt | `network-pipeline` "receipts that do not hold are never used …"; `network-jobs` "concurrent submits and claims …" | ignored: covered. "Logged": the step records `RECEIPT_INVALID` with its reason; a stale worker report the engine refuses answers `applied: false` and is not journaled, so there is no log line to test |
+| 27 ★ | Machine client revoked during a stream / request | `network-machine` "the event stream shows only the client's own jobs, ends at once …"; new revocation test (stream ends at once, 401 afterwards, nothing more delivered) | covered for streams; a plain request is answered from memory in milliseconds, so a revocation inside one cannot be held open offline without a test seam in the listener |
+| 28 | Paired device revoked during a stream | `network-events` "streams: four per client and 32 in all …" | covered |
+| 29 ★ | Rebinding Host / foreign Origin | `network-http` "Network routes keep the token, Host, Origin and fetch-site checks …"; `network-machine` "Host, Origin and rebinding …" | covered; the answers carry the gate's own codes (`MACHINE_HOST`, `MACHINE_ORIGIN`), given before any route |
+| 30 ★ | Owner token / `pb_remote` cookie on the machine listener | `network-machine` "permissions and denials …", "paired-device remote access stays separate …"; new `network-e2e` "outside client" | covered |
+| 31 | Import with an unresolved Base ID | `network-registry` "export and import …" | covered |
+| 32 ★ | Board backup restored | `schedules` "a backup carries each schedule's settings …" (Kanban); new `network-faults` "a board backup restored …" | covered |
+| 33 ★ | Schedule slots missed while closed | `network-schedules` "slots missed while the app was closed give one job …" | covered |
+| 34 ★ | Delegation retried / too deep | `network-delegation` "depth and fan-out ceilings …", "one child per key …" | covered |
+| 35 ★ | A2A peer times out / stream drops | `network-a2a` "a remote step that runs past its time limit ends unknown …" (step blocked), "outbound states …" (a lost stream → `unknown`) | covered: an `unknown` step job blocks its descendants by the same runner path as row 22 |
+| 36 ★ | A2A redirect to a private address / DNS change | `network-a2a-ssrf` "DNS: every answer is checked …", "redirects: only within the same origin …"; new `network-e2e` federation (redirect to an unapproved origin) | covered |
+| 37 ★ | Duplicate inbound A2A or webhook request | `network-a2a` "acceptance: a permissioned A2A client …" (same `messageId` → one job) | A2A covered; Network has no webhook receiver, so there is nothing to test |
+
+**Defect found and fixed.** `ddd5a64` + `1dc9be2`: a network or pipeline draft read from its backup (its file torn or
+missing) is the save before the last one; when that last save was a publish, the draft no longer listed the new version: its
+immutable file stayed on disk but read as `NOT_FOUND`, pipelines pinned to it stopped compiling, and the next publish wrote a
+second, different `v<n>` under the same number. `withVersionsOnDisk` (storage.mjs, used by registry.mjs and pipeline-model.mjs)
+now gives such a draft every `v<n>-<sha256>.json` in its folder that hashes to its name, belongs to it and continues its list.
+Test: `network-faults` "a network or pipeline draft read from its backup …" (failed before the fix).
+
+**Findings not fixed (for the owner, the security review or later parts).**
+- A registry file read from its backup (`agents.json`, `clients.json`, as architecture §4.2 rule 2 says) silently lacks the
+  last save; the damaged copy is kept as `*.corrupt-*`, but nothing tells the owner. For `clients.json` this could bring a
+  client revoked in that last save back as active. It needs damage after the revoke's fsynced write, so it is rare; noted for
+  the security review.
+- Journal lines are appended without fsync (architecture §4.3: events are observability). After a real power loss the newest
+  lines may be gone although live readers saw them; a reader whose cursor is past the kept tail gets `reset` and reloads, but
+  if new events pass its cursor before it reconnects it misses them. App crashes (not power loss) keep every written line.
+- Architecture §11.2 mentions "Revoke and cancel its jobs" for machine clients; it does not exist: revoking leaves the client's
+  running jobs running and the owner cancels them one by one (tested).
+- A sub-pipeline's output appears in the parent report as its own Markdown (`# <name>`) under the parent's `## <step>` heading.
+- Test fixture only: the fake CLI reads stdin for every call, so the app's sign-in check (`claude auth status`) waits about 10 s
+  in browser tests that put the fake `claude` on PATH; the performance browser test therefore uses a PATH with only `node`.
+
+**Performance.** Measured numbers, hardware and load in `docs/network/performance.md`. In short (Apple M2, 8 cores, 16 GB,
+load 5–9): every owner-API operation at 5,000 registrations, 5,000 jobs and a 120 MiB journal under 90 ms (the start scan of
+5,000 jobs 223 ms); in Chrome a collapsed 100-node Org graph 339–597 ms, a team expanded or collapsed in 130–583 ms, a 1,000-node
+graph 317–386 ms inside the page and 2.9–4.1 s on a cold reload (the first software-GL paint), heap 15.8 MB with it drawn; the
+job ceiling held (2 of 2) with 40 jobs on the fake worker and with 12 real fake-CLI processes.
+
+**Tests and results** (logs in `$TMPDIR/network-logs/task-14a-*.log`). `npm run check`: all files pass (`task-14a-check.log`).
+New non-browser tests twice (`network-e2e`, `network-faults`, `network-faults-worker`, `network-perf`): 14/14 and 14/14, about
+57 s each (`task-14a-new-run{1,2}.log`). New Chrome tests: `network-e2e-browser` passed three times (`task-14a-new-browser-run1.log`,
+`task-14a-browser.log`, `task-14a-new-browser-run2.log`); `network-perf-browser` in its final form (5714d44) passed twice
+(`task-14a-perf-browser-7.log`, `task-14a-perf-browser.log`) and its earlier forms passed in `task-14a-browser.log` and
+`task-14a-new-browser-run2.log`. One failure on the way: in `task-14a-new-browser-run1.log`, at a load average of 31–42 from
+other agents' suites, a collapse took 17.9 s against the then 15 s bound; the bound became 60 s a step (gross regressions only)
+and the test expands five teams instead of ten. Regression: every non-browser `tests/network-*.test.mjs` (36 files, the new ones
+and the `network-*-ui` harness tests included) + `remote-access` + `schedules` + the other UI-harness tests (`ui`, `ui-2`,
+`ui-3`, `project-explorer-ui`, `sandbox-ui`): 389/389 in 240 s (`task-14a-regression.log`); every `tests/network-*browser*.test.mjs`
+(12 files): 16/16 in 170 s (`task-14a-browser.log`). The full `npm test` was not run (the coordinator runs it after the merge).
+Performance runs: `task-14a-perf-{server,full,browser,graph-stress,pipeline200}.{log,json}`.
+
+**Expected merge overlaps** with the wave-B integration (`feat/network`): `tests/fixtures/fake-headless-cli.mjs` (two new
+markers and their header lines, additive), `src/network/storage.mjs` (one new export), `src/network/registry.mjs` and
+`src/network/pipeline-model.mjs` (one line each in `#loadDrafts`, and their storage imports), this file (a new section at the
+end). Everything else is new files: `tests/network-e2e.test.mjs`, `tests/network-e2e-browser.test.mjs`,
+`tests/network-faults.test.mjs`, `tests/network-faults-worker.test.mjs`, `tests/network-perf.test.mjs`,
+`tests/network-perf-browser.test.mjs`, `tests/helpers/network-e2e.mjs`, `tests/fixtures/network-perf.mjs`,
+`scripts/network-perf.mjs`, `docs/network/performance.md`. If the integration adds MCP tools, `network-e2e` "outside client"
+does not list tools, so it is unaffected. The suite grows by about 1 minute of non-browser tests (two at a time) and about
+1 minute of Chrome tests at a low load average (several minutes on a loaded machine).
+
+**Commits.** fb3616a, ee4f5ea (scenarios), 3caf9d6, ddd5a64 and 1dc9be2 (the fix), 5327ead, 816d5f8, 470fa1a, 0cec15f (faults),
+fd26c50, 3b477b2, 02ff834 and 5714d44 (performance tests), 538c410 (performance.md), 478c496 (scenario follow-up), and this
+entry's commit.
+
+### Task 14 completion and interrupted-session continuation (2026-10-30)
+
+**Review summary.** Add Promptboard Network: Base-linked reusable agents, scoped memory, nested relationship graphs,
+durable read-only jobs and pinned execution pipelines, Activity, controlled handoffs and schedules, private REST/MCP,
+and separately enabled A2A federation. Existing Base, Origin, Compose and Kanban ownership stays intact. Uncertain
+execution is never replayed automatically. Provider observation limits and the future remote-worker scope are explicit.
+
+**Preserved work.** The continuation starts at `feat/network` 970eaea, which contains the wave-B integration. It combines
+the saved wave-C work through 69f1c8f (A2A, all review fixes, end-to-end/fault/performance tests) and the saved docs and
+accessibility work through 140b67e. Overlaps retain both pipeline schedules and the Run-now double-click protection,
+both server option sets, step-job handoff labels, the shared run facts and their privacy explanation. The implementation
+remains plain ES modules and DOM JavaScript with the already-selected exact dependency versions. No new commit or push;
+main remains e8e158879fbe118a718a41028c3e22d25412eede. Original worktrees and source changes are preserved.
+
+**Task 14 part 2.** README, docs index, user guide, private MCP/REST/A2A setup, troubleshooting and SECURITY.md are
+integrated. Dialog focus stays within the modal, errors are announced, confirmations explain what leaves the computer,
+and `network-a11y-browser` covers keyboard paths across the Network sections in Chrome. The docs now list all eleven
+MCP tools, explain waiting jobs and pipeline schedule confirmations, and remove the old wave-B verification placeholders.
+CHANGELOG has the Network release notes under Unreleased; no version bump or release was performed.
+
+**Last security finding closed.** `readSettings` saves a safe state before returning a settings backup, including a
+missing primary: registrations off, all clients revoked and listener off, handoffs off with approval required,
+schedules off/unconfirmed, federation off with no publications and disabled peers without credential references.
+Recovered memory is proposed again. Recovered graphs retain their contents and immutable published versions while
+delegation is suspended until **Confirm recovered relations**; renaming cannot confirm permissions. Revisions advance,
+damaged bytes and backups remain, the UI shows recovery notices and Activity records `settings.recovered`. A write
+failure returns no authority. Intact data keeps its behavior and no recovery repeats just because the app restarts.
+
+**Regression evidence.** `network-settings-recovery` adds five tests using disposable folders, fake workers and a local
+SDK peer: torn/missing settings across repeated restarts, revoked REST/A2A clients, no automatic work, actual failed
+atomic replacement, newer/both-damaged documents, withdrawn memory approval, and recovered delegation checked over REST
+and confirmed through the UI. Existing registry/memory recovery assertions now require the disabled state and fresh
+revisions. Seven mutations on an isolated copy, each skipping one domain's recovery reset, all fail with the expected
+assertion. No mutation touched the source worktree.
+
+An integration review also covered recovered graphs at the export/copy boundaries: exports omit the local recovery
+markers (otherwise strict imports reject them), imported registrations remain disabled, and a duplicate retains its
+confirmation requirement. The expanded recovery, registry and HTTP regressions pass 22/22 on Node 22
+(`export-recovery-regression.log`); the corrected stream fixture also passes 2/2 on Node 22 (`node22-stream-fixed.log`).
+
+**Validation record.** Logs are retained in the ignored `.pb-shots/network-validation/` folder in this worktree. The
+first continuation run's temporary logs and process did not survive the interruption, so the full suite was restarted
+without treating that partial run as a pass. Syntax check passes. On official Node 22.22.0 (download checksum verified),
+26 recovery/MCP/A2A/UI integration tests and 25 registry/memory tests pass; seven of seven recovery mutations are caught.
+The runtime dependency audit reports zero vulnerabilities. Full Node 26.8.2 regression, including headless Chrome, is
+complete with exit 0: non-browser 1,759 tests, 1,758 passed, zero failed/cancelled and one skipped (the win32-only IDE
+discovery test); Chrome 163/163 passed, with no failures, cancellations or skips. Total: 1,922 tests, 1,921 passed and
+one platform skip. The final recovery/export/copy/HTTP cases were rechecked after the full run on Node 26: 22/22 passed
+(`export-recovery-node26.log`), matching the Node 22 run. The final syntax check and both staged/unstaged whitespace
+checks pass. All 89 checked local documentation links resolve. This project has no separate build, lint or
+TypeScript-check script: `npm run check` checks JavaScript syntax and `npm test` runs both regression phases.
+
+The first retained full run completed its non-browser phase: 1,759 tests, 1,757 passed, one failed and one skipped.
+The failure was the pre-existing Tasks stream-limit fixture: it retained abort controllers but discarded the HTTP
+responses meant to occupy four stream slots. Forced garbage collection on the exported 970eaea baseline reproduces the
+timeout; an instrumented copy shows all four slots disappear and the page correctly becomes live. The fixture now retains
+the responses, explicitly cancels their bodies at teardown and asserts the occupied count. Its two tests pass normally,
+and the stream case passes with forced GC. Evidence: `stream-baseline-gc.log`, `stream-probe-gc.log`,
+`integration-ui-fixed.log`, `stream-fixed-gc.log`. No production behavior or deadline was changed. The first browser phase
+was stopped cleanly (runner exit 130), its log retained as `suite-initial.log`, and the entire suite restarted with the fix.
+
+**Limits.** This continuation runs no paid provider or live external A2A service; earlier bounded live checks remain
+recorded above. Gemini live support was not established by the earlier provider run. Mobile layouts and keyboard paths
+are automated in Chrome; physical mobile Safari and a human screen-reader session are not claimed. The three partial
+failure-matrix rows and event-journal power-loss caveat from part 1 remain documented. Remote process control, webhooks,
+enforced cost budgets and multi-host workers remain outside this MVP.
+
+### Preview and PR publication (2026-11-02)
+
+The completed app was opened beside the conversation at `http://127.0.0.1:4955` with separate data under the ignored
+`.pb-shots/network-preview/` folder. Its local worker runs simulated headless CLIs; it uses no provider credits or
+normal Promptboard data. The visible responsive UI was used to register Scout, Analyst and Editor, publish the graph,
+create and publish the parallel-research template, run it, approve its human gate and open the saved report. The durable
+record confirms three completed jobs, one attempt each, and run history `running → waiting_for_approval → running →
+completed`. Demo run: `run_5506d36fb5bc631d2a05`.
+
+Fetched `origin/main` is 67aff01 and is already an ancestor of the feature branch; no main-branch reconciliation is
+needed. The staged diff and the complete feature diff were reviewed, with no board/state-schema changes and no preview
+data included. Syntax and runtime dependency audit pass (zero vulnerabilities).
+
+A fresh affected-suite run exposed the same discarded-Response fixture issue in `network-review2-ui`, which now also
+retains and explicitly cancels its four stream responses. Its security/status assertions and all deadlines remain
+unchanged. The first run also recorded a 459 ms event-loop stall and two tests delayed about 500 seconds under heavy
+machine load. All 25 tests in the affected files pass serially on Node 22; the loop test reports 21 ms stall on that run.
+The entire Network/remote-access suite was rechecked on Node 22 with idle sleep inhibited: 270/270 non-browser tests
+(42 files) and 18/18 Chrome scenarios (14 files), zero failures, cancellations or skips, exit 0. No timing threshold was
+relaxed. The preview/report data and local runtime helpers remain ignored and are excluded from the commit.
+Logs: `.pb-shots/network-validation/pr-*`. The branch is ready to publish for the full GitHub CI matrix and review.

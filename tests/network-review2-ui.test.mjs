@@ -242,14 +242,15 @@ test('Task 10 seams: “Open job” opens the Activity job record and back; a ru
     const controller = new AbortController();
     const response = await fetch(`${ctx.app.url}/api/network/events/stream`, { headers: { 'X-STE-Token': win.__pbTest.token }, signal: controller.signal });
     assert.equal(response.status, 200);
-    return controller;
+    return { controller, response }; // Keep the Response alive: collecting it would release the slot this fixture needs.
   }));
-  t.after(() => { for (const controller of holders) controller.abort(); });
+  t.after(async () => { await Promise.allSettled(holders.map(async ({ controller, response }) => { controller.abort(); await response.body.cancel().catch(() => {}); })); });
+  assert.equal(streams(), holders.length, 'all retained responses occupy their stream slots');
   const second = (await call(ctx, `/api/network/pipelines/${pipeline.id}/runs`, 'POST', { version: 1, confirm: true })).json.runId;
   await until(async () => (await call(ctx, runPath(second))).json.run.status === 'waiting_for_approval', 'second run waits', 15000);
   win.location.hash = `#/network/runs/${second}`;
   await until(() => text(ctx, '#network-run-status') === 'Waiting for your approval', 'second run view');
-  await until(() => live() === 'limited', 'the page’s stream is refused (429)');
+  await until(() => live() === 'limited', 'the page’s stream is refused (429)', 20000); // Its first page load can be slow in a loaded suite.
   const start = reads(log, second);
   await until(() => reads(log, second) >= start + 2, 'polled while the stream cannot be live', 4000);
   assert.equal((await call(ctx, `${runPath(second)}/nodes/${approval}/approve`, 'POST', { decision: 'approve' })).status, 200);

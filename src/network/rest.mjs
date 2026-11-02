@@ -33,6 +33,7 @@ import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { serial } from '../durable.mjs';
 import { JOB_STATUSES } from './jobs.mjs';
+import { A2AInbound } from './a2a-server.mjs';
 import { MachineClients } from './machine-auth.mjs';
 import { fail, NetworkError, object, only, page } from './storage.mjs';
 
@@ -85,9 +86,11 @@ export class MachineListener {
    * `registry`, `jobs`, `events`: the Network services. `reservedPorts()` lists the ports it may not take (the app's and
    * remote access's). `limits` lets tests lower the ceilings.
    */
-  constructor({ dataDir, registry, jobs, events, reservedPorts = () => [], now = Date.now, limits = {} }) {
+  constructor({ dataDir, registry, jobs, events, reservedPorts = () => [], now = Date.now, limits = {}, a2a = {} }) {
     Object.assign(this, { registry, jobs, events, reservedPorts, now, limits: { ...MACHINE_REST_LIMITS, ...limits } });
-    this.clients = new MachineClients({ dataDir, registry, now });
+    this.clients = new MachineClients({ dataDir, registry, events, now });
+    // Inbound A2A (a2a-server.mjs, architecture §10.4): its card and endpoint exist only while inbound federation serves.
+    this.a2a = new A2AInbound({ registry, jobs, ...a2a });
     this.clients.onRevoke(id => this.#drop(id));
   }
   #server = null;
@@ -186,6 +189,7 @@ export class MachineListener {
     // The owner's credentials never act here, and are never forwarded anywhere from here.
     if (req.headers['x-ste-token'] !== undefined || /(?:^|;)\s*pb_remote=/.test(req.headers.cookie || '')) return reply(res, 403, { error: 'Use a client token from Network → Settings. The app’s own session is not accepted here.', code: 'MACHINE_CREDENTIAL_REQUIRED' });
     let url; try { url = new URL(req.url, 'http://machine'); } catch { return reply(res, 400, { error: 'This request address is not valid.', code: 'INVALID_URL' }); }
+    if (A2A_PATHS.has(url.pathname)) return this.#a2a(req, res, url, port);
     if (!url.pathname.startsWith('/machine/v1/')) return reply(res, 404, { error: 'This route does not exist.', code: 'NOT_FOUND' });
     const client = await this.clients.authenticate(req.headers.authorization);
     if (res.destroyed) return; // The caller left while its token was checked: its 'close' has passed, so nothing may be kept for it.
@@ -198,6 +202,29 @@ export class MachineListener {
     if (route.permission && !has(client, route.permission)) denied(`This client does not have the ${route.permission} permission.`, 'PERMISSION_DENIED');
     const answer = await route.run.call(this, { client, req, res, params: url.searchParams }, ...route.pattern.exec(url.pathname).slice(1));
     if (answer) reply(res, answer.status ?? 200, answer.body);
+  }
+
+  /**
+   * GET /.well-known/agent-card.json (public, like any A2A card) and POST /a2a/v1 (an A2A caller's token): both 404 unless
+   * inbound federation is on with a usable published agent. The caller's requests count toward the same per-client limits
+   * and end at once when its token is revoked or rotated.
+   */
+  async #a2a(req, res, url, port) {
+    const missing = () => reply(res, 404, { error: 'This route does not exist.', code: 'NOT_FOUND' });
+    if (url.pathname === '/.well-known/agent-card.json') {
+      if (req.method !== 'GET') return missing();
+      const card = await this.a2a.card(port);
+      return card ? reply(res, 200, card) : missing();
+    }
+    if (req.method !== 'POST' || !(await this.a2a.published()).length) return missing();
+    const client = await this.clients.authenticate(req.headers.authorization, 'a2a');
+    if (!client) return reply(res, 401, { error: 'Send a valid A2A caller token: Authorization: Bearer pbm_…', code: 'MACHINE_UNAUTHORIZED' }, { 'WWW-Authenticate': 'Bearer' });
+    if (!this.#allow(client.id, 'requests', this.limits.requestsPerMinute)) return reply(res, 429, { error: 'Too many requests. Wait a minute.', code: 'RATE_LIMITED' }, { 'Retry-After': '60' });
+    const open = this.#open.get(client.id) ?? new Set(); this.#open.set(client.id, open);
+    open.add(res); res.once('close', () => open.delete(res));
+    const body = await readBody(req), stop = new AbortController();
+    res.once('close', () => stop.abort());
+    reply(res, 200, await this.a2a.handle(body, { client, signal: stop.signal, allowSubmit: () => this.#allow(client.id, 'submits', this.limits.submitsPerMinute) }));
   }
 
   async agents({ client }) {
@@ -302,6 +329,8 @@ export class MachineListener {
   }
 }
 
+/** The A2A paths (Task 13): outside /machine/v1, answered by the inbound A2A endpoint only. */
+const A2A_PATHS = new Set(['/.well-known/agent-card.json', '/a2a/v1']);
 const route = (method, path, permission, run) => Object.freeze({ method, pattern: new RegExp(`^/machine/v1${path}$`), permission, run });
 /** Every machine route; the permission is checked before the handler runs. Jobs are always the client's own. */
 export const MACHINE_ROUTES = Object.freeze([

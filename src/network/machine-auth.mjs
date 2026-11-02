@@ -12,10 +12,12 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { serial } from '../durable.mjs';
-import { cleanText, conflict, fail, LINE_BREAK, newId, object, only, readDocument, requireRevision, sha256, writeDocument } from './storage.mjs';
+import { cleanText, conflict, fail, LINE_BREAK, newId, object, only, readSettings, requireRevision, sha256, writeDocument } from './storage.mjs';
 
 const SCHEMA = 'promptboard.network-clients';
 export const MACHINE_PERMISSIONS = Object.freeze(['read_agents', 'submit_jobs', 'read_job_result', 'cancel_own_jobs', 'read_scoped_memory']);
+/** `api` clients use /machine/v1 (REST and MCP); `a2a` callers (Task 13) use only the A2A endpoint, for agents published for A2A. */
+export const CLIENT_KINDS = Object.freeze(['api', 'a2a']);
 /** Resource ceilings, not product limits. */
 export const MACHINE_LIMITS = Object.freeze({ activeClients: 100, name: 60, scope: 200, expiryDays: 365, lastUsedMs: 10 * 60_000 });
 export const LISTENER_DEFAULTS = Object.freeze({ enabled: false, port: 4330 });
@@ -26,7 +28,7 @@ const time = value => Number.isSafeInteger(value) && value >= 0;
 const nullable = check => value => value === null || check(value);
 const ids = (list, pattern) => Array.isArray(list) && list.length <= MACHINE_LIMITS.scope && list.every(id => typeof id === 'string' && pattern.test(id));
 
-const storedClient = row => object(row) && CLIENT_ID.test(row.id) && row.kind === 'api' && typeof row.name === 'string' && SHA.test(row.tokenSha256) && typeof row.tokenHint === 'string'
+const storedClient = row => object(row) && CLIENT_ID.test(row.id) && CLIENT_KINDS.includes(row.kind) && typeof row.name === 'string' && SHA.test(row.tokenSha256) && typeof row.tokenHint === 'string'
   && time(row.createdAt) && [row.lastUsedAt, row.expiresAt, row.revokedAt, row.rotatedAt].every(nullable(time)) && Number.isSafeInteger(row.revision) && object(row.scopes)
   && ids(row.scopes.agents, AGENT_ID) && ids(row.scopes.networks, NETWORK_ID) && ids(row.scopes.projects, PROJECT_ID) && Array.isArray(row.scopes.permissions) && row.scopes.permissions.every(item => MACHINE_PERMISSIONS.includes(item));
 const stored = data => Number.isSafeInteger(data.revision) && object(data.listener) && typeof data.listener.enabled === 'boolean' && Number.isSafeInteger(data.listener.port)
@@ -41,8 +43,8 @@ function idList(value, pattern, what) {
 
 export class MachineClients {
   /** `registry` is the NetworkRegistry: agents, networks and the board's projects are checked through it when a client is made. */
-  constructor({ dataDir, registry, now = Date.now }) {
-    Object.assign(this, { path: join(dataDir, 'network', 'clients.json'), registry, now });
+  constructor({ dataDir, registry, events = null, now = Date.now }) {
+    Object.assign(this, { path: join(dataDir, 'network', 'clients.json'), registry, events, now });
   }
   #serial = serial();
   #loading = null;
@@ -52,7 +54,8 @@ export class MachineClients {
 
   #ready() { return this.#loading ??= this.#load().catch(error => { this.#loading = null; throw error; }); }
   async #load() {
-    this.#doc = await readDocument(this.path, { schema: SCHEMA, label: 'The Network clients file', valid: stored })
+    this.#doc = await readSettings(this.path, { schema: SCHEMA, label: 'The Network clients file', valid: stored, now: this.now, events: this.events,
+      reset: (data, at) => ({ ...data, listener: { ...data.listener, enabled: false }, clients: data.clients.map(row => ({ ...row, revokedAt: row.revokedAt || at || 1, revision: row.revision + 2 })) }) })
       ?? { schema: SCHEMA, version: 1, revision: 0, listener: { ...LISTENER_DEFAULTS }, clients: [] };
   }
   async #write(next) { await writeDocument(this.path, next); this.#doc = next; return next; }
@@ -86,23 +89,33 @@ export class MachineClients {
 
   async list() {
     await this.#ready();
-    return { revision: this.#doc.revision, clients: this.#doc.clients.map(row => this.#view(row)).sort((a, b) => b.createdAt - a.createdAt), permissions: MACHINE_PERMISSIONS };
+    return { revision: this.#doc.revision, ...(this.#doc.recovery ? { recovery: this.#doc.recovery } : {}), clients: this.#doc.clients.map(row => this.#view(row)).sort((a, b) => b.createdAt - a.createdAt), permissions: MACHINE_PERMISSIONS };
   }
-  /** A new client and its token, shown this once (local-only route). */
+  /**
+   * A new client and its token, shown this once (local-only route). `kind: 'a2a'` makes an A2A caller: its agents must be
+   * published for A2A now, and it names no network or project (inbound tasks carry none).
+   */
   async create(input) {
-    only(input, ['name', 'scopes', 'expiresInDays'], 'a client');
+    only(input, ['name', 'scopes', 'expiresInDays', 'kind'], 'a client');
+    const kind = input.kind ?? 'api';
+    if (!CLIENT_KINDS.includes(kind)) fail('A client is of kind api or a2a.');
     if (typeof input.name !== 'string' || LINE_BREAK.test(input.name)) fail('Name the client in one line.');
     const name = cleanText(input.name).slice(0, MACHINE_LIMITS.name);
     if (!name) fail('Name the client.');
     const days = input.expiresInDays ?? null;
     if (days !== null && (!Number.isSafeInteger(days) || days < 1 || days > MACHINE_LIMITS.expiryDays)) fail(`Choose an expiry of 1 to ${MACHINE_LIMITS.expiryDays} days, or none.`);
     const scopes = await this.#scopes(input.scopes);
+    if (kind === 'a2a') {
+      const published = new Set((await this.registry.federation.inbound()).agents.map(entry => entry.agentId));
+      if (scopes.networks.length || scopes.projects.length) fail('An A2A caller names no networks or projects: its tasks carry none.');
+      if (scopes.agents.some(id => !published.has(id))) fail('An A2A caller may only use agents published for A2A. Publish them in Federation first.', 'AGENT_NOT_PUBLISHED', 409);
+    }
     await this.#ready();
     return this.#serial(async () => {
       const now = this.now();
       if (this.#doc.clients.filter(row => !row.revokedAt && (row.expiresAt === null || row.expiresAt > now)).length >= MACHINE_LIMITS.activeClients) fail(`At most ${MACHINE_LIMITS.activeClients} clients can be active. Revoke one first.`, 'NETWORK_LIMIT', 409);
       const id = newId('cli'), { token, ...secret } = this.#token(id);
-      const row = { id, kind: 'api', name, ...secret, createdAt: now, lastUsedAt: null, expiresAt: days === null ? null : now + days * DAY, revokedAt: null, rotatedAt: null, revision: 1, scopes };
+      const row = { id, kind, name, ...secret, createdAt: now, lastUsedAt: null, expiresAt: days === null ? null : now + days * DAY, revokedAt: null, rotatedAt: null, revision: 1, scopes };
       await this.#write({ ...this.#doc, revision: this.#doc.revision + 1, clients: [...this.#doc.clients, row] });
       return { client: this.#view(row), token };
     });
@@ -143,12 +156,13 @@ export class MachineClients {
    * The active client whose current token is in `header` (`Bearer pbm_…`), or null: unknown, revoked, expired or a
    * wrong token all look the same to the caller.
    */
-  async authenticate(header) {
+  async authenticate(header, kind = 'api') {
     const token = /^Bearer\s+(\S{1,200})$/i.exec(String(header || ''))?.[1], match = token && MACHINE_TOKEN.exec(token);
     if (!match) return null;
     await this.#ready();
     const row = this.#doc.clients.find(client => client.id === match[1]), now = this.now();
-    if (!row || row.revokedAt || (row.expiresAt !== null && row.expiresAt <= now)) return null;
+    // A client works only on its own kind of endpoint: an A2A caller's token is refused on /machine/v1, and the reverse.
+    if (!row || row.kind !== kind || row.revokedAt || (row.expiresAt !== null && row.expiresAt <= now)) return null;
     if (!timingSafeEqual(Buffer.from(sha256(token), 'hex'), Buffer.from(row.tokenSha256, 'hex'))) return null;
     this.#used.set(row.id, now);
     if (now - (row.lastUsedAt ?? 0) > MACHINE_LIMITS.lastUsedMs) void this.#serial(async () => { // Last used, without a write per request.

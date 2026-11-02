@@ -3,7 +3,7 @@
 // Network page (#/network): the agent directory and agent profiles, over the owner routes /api/network/*; the Graph and
 // Library sections live in network-graph.js, the Pipelines section (designer and run view) in network-pipeline.js,
 // Activity (and a profile's Activity tab) in network-activity.js, Settings (external clients) in network-clients.js,
-// all shown from here.
+// Federation (trusted A2A peers, inbound A2A) in network-federation.js, all shown from here.
 // Base stays the only editor of agent definitions: this page reads Base, registers a Base agent by its ID, edits only the
 // Network identity (display name, tags, capabilities, projects, on/off) and opens the real resource in Base. A profile
 // also holds the agent's memory (proposed, then approved by the owner, with history and a preview of exactly what a job
@@ -11,7 +11,7 @@
 // on this computer. All text is set as text (PromptboardDom); reports and job results are Markdown drawn by
 // PromptboardMarkdown, which shows HTML as text and loads nothing.
 window.PromptboardNetwork = (() => {
-  const { el, button, plural, ago, clip } = window.PromptboardDom;
+  const { el, button, plural, ago, clip, errorLine, holdFocus } = window.PromptboardDom;
   // Agents works now; each other section says what it will do and offers no working-looking controls until then.
   const SECTIONS = [
     ['agents', 'Agents', ''],
@@ -19,7 +19,7 @@ window.PromptboardNetwork = (() => {
     ['pipelines', 'Pipelines', ''],
     ['activity', 'Activity', ''],
     ['library', 'Library', ''],
-    ['federation', 'Federation', 'Work with trusted remote agents over A2A. It stays off until you turn it on.'],
+    ['federation', 'Federation', ''],
     ['settings', 'Settings', ''],
   ];
   const PROFILE_TABS = [
@@ -133,7 +133,7 @@ window.PromptboardNetwork = (() => {
     titles.append(heading, note('Register Base agents once, then find them here. Their definitions stay in Base.', 'intro-description'));
     headActions.append(register); head.append(titles, headActions);
     const privacy = note('Network keeps references to Base agents in this computer’s data folder. Opening or editing them never runs an agent.', 'note network-privacy');
-    const panelOf = id => ({ agents: 'network-panel-agents', graph: 'network-panel-graph', library: 'network-panel-library', activity: 'network-panel-activity', settings: 'network-panel-settings', pipelines: 'network-panel-pipelines' })[id] || 'network-panel-soon';
+    const panelOf = id => ({ agents: 'network-panel-agents', graph: 'network-panel-graph', library: 'network-panel-library', activity: 'network-panel-activity', settings: 'network-panel-settings', pipelines: 'network-panel-pipelines', federation: 'network-panel-federation' })[id] || 'network-panel-soon';
     const sections = tablist('Network sections', SECTIONS.map(([id, label, soon]) => [id, label, Boolean(soon)]), 'network-tab', panelOf, id => go(hashFor(id)), 'network-tabs');
     const status = note('', 'note network-status'); status.id = 'network-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
     const alert = el('div', 'inline-error network-alert'); alert.id = 'network-error'; alert.setAttribute('role', 'alert'); alert.hidden = true;
@@ -167,6 +167,7 @@ window.PromptboardNetwork = (() => {
     const agentsPanel = el('section', 'network-panel'); agentsPanel.id = 'network-panel-agents'; agentsPanel.setAttribute('role', 'tabpanel'); agentsPanel.setAttribute('aria-labelledby', 'network-tab-agents');
     agentsPanel.append(toolbar, layout);
     const soonPanel = el('section', 'network-panel network-unavailable'); soonPanel.id = 'network-panel-soon'; soonPanel.setAttribute('role', 'tabpanel'); soonPanel.hidden = true;
+    soonPanel.setAttribute('aria-labelledby', 'network-heading'); // Every section works since Task 13; a section that shows this panel names itself.
     // Graph and Library (network-graph.js): the networks, their versions and the editor, beside the same status line.
     const graphs = window.PromptboardNetworkGraph?.create({ request, say, go, showError, openDialog, closeDialog: () => closeDialog(),
       memoryPanel: networkId => memoryView(null, networkId), openAgent: id => go(hashFor('agents', id)) }) || null;
@@ -175,12 +176,14 @@ window.PromptboardNetwork = (() => {
       openAgent: id => { profileTab = 'activity'; focusDetail = 'always'; go(hashFor('agents', id)); }, onEvent: event => { tasksEvent(event); runEvent(event); }, onLive: (state, was) => tasksLive(state, was) }) || null;
     // Settings (network-clients.js): the machine listener and external clients.
     const clients = window.PromptboardNetworkClients?.create({ request, say, showError, projects: context.projects, ensureBoard: context.ensureBoard }) || null;
+    // Federation (network-federation.js): trusted A2A peers, the two switches, agents published for A2A and A2A callers.
+    const federation = window.PromptboardNetworkFederation?.create({ request, say, showError }) || null;
     // Pipelines (network-pipeline.js): the designer and the run view. `openJob` opens the Activity drill-down (from app.js)
     // and `followRun` follows a run on Activity's one event stream (architecture §21); without them it shows JSON and polls.
     const pipes = window.PromptboardNetworkPipeline?.create({ request, say, go, showError, openDialog, closeDialog: () => closeDialog(), openAgent: id => go(hashFor('agents', id)),
       openJob: context.openJob, followRun }) || null;
     const STREAM_TABS = ['activity', 'tasks']; // The profile tabs that follow the event stream (Tasks reads its list again on job events).
-    view.append(head, privacy, sections, status, alert, agentsPanel, soonPanel, ...(graphs ? [graphs.library, graphs.graph] : []), ...(pipes ? [pipes.panel] : []), ...(activity ? [activity.panel] : []), ...(clients ? [clients.panel] : []));
+    view.append(head, privacy, sections, status, alert, agentsPanel, soonPanel, ...(graphs ? [graphs.library, graphs.graph] : []), ...(pipes ? [pipes.panel] : []), ...(activity ? [activity.panel] : []), ...(clients ? [clients.panel] : []), ...(federation ? [federation.panel] : []));
 
     // The sidebar lists the same sections as links, so the phone drawer and the keyboard both reach them.
     const sideNav = el('nav', 'base-categories network-sections'); sideNav.id = 'network-sections'; sideNav.setAttribute('aria-label', 'Network sections');
@@ -199,15 +202,16 @@ window.PromptboardNetwork = (() => {
       sections.select(section);
       for (const link of sideNav.children) { if (link.dataset.section === section) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current'); }
       const own = (Boolean(graphs) && ['graph', 'library'].includes(section)) || (Boolean(pipes) && section === 'pipelines'), watching = Boolean(activity) && section === 'activity';
-      const settings = Boolean(clients) && section === 'settings';
-      agentsPanel.hidden = section !== 'agents'; soonPanel.hidden = section === 'agents' || own || watching || settings;
+      const settings = Boolean(clients) && section === 'settings', federated = Boolean(federation) && section === 'federation';
+      agentsPanel.hidden = section !== 'agents'; soonPanel.hidden = section === 'agents' || own || watching || settings || federated;
       register.hidden = section !== 'agents';
       graphs?.show(['graph', 'library'].includes(section) ? where : null);
       pipes?.show(section === 'pipelines' ? where : null);
       activity?.show(watching ? where : null);
       activity?.live(watching || (section === 'agents' && Boolean(where.agentId) && STREAM_TABS.includes(profileTab)) || (section === 'pipelines' && Boolean(where.runId)));
       clients?.show(settings);
-      if (own || watching || settings) return;
+      federation?.show(federated);
+      if (own || watching || settings || federated) return;
       if (section !== 'agents') {
         const [, label, text] = SECTIONS.find(([id]) => id === section);
         soonPanel.setAttribute('aria-labelledby', `network-tab-${section}`);
@@ -217,6 +221,7 @@ window.PromptboardNetwork = (() => {
       renderList(); renderDetail();
     }
     function renderList() {
+      window.PromptboardDom.recoveryNotice(agentsPanel, state.recovery);
       // Before the first answer nothing is "empty" yet: it is still loading.
       const waiting = !state.loaded && !state.error, current = route().agentId;
       agentsPanel.dataset.view = current ? 'detail' : 'list'; // First: a phone hides the list (and so its focus) in the profile view.
@@ -260,7 +265,7 @@ window.PromptboardNetwork = (() => {
       if (!id) { detail.replaceChildren(el('p', 'base-placeholder', state.agents.length ? 'Choose an agent to see its profile.' : 'A registered agent’s profile appears here.')); return; }
       const agent = find(id);
       if (!agent) {
-        if (detailError?.id === id) { detail.replaceChildren(el('p', 'inline-error', detailError.message), button('Back to agents', () => go('#/network'), 'secondary-button')); return; }
+        if (detailError?.id === id) { detail.replaceChildren(errorLine(detailError.message), button('Back to agents', () => go('#/network'), 'secondary-button')); return; }
         detail.replaceChildren(note('Loading agent…'));
         if (state.loaded && fetching !== id) void fetchAgent(id);
         return;
@@ -435,6 +440,7 @@ window.PromptboardNetwork = (() => {
     const refreshMemory = async () => { await loadMemory(); if (memory.agent) await loadPreview(); };
     function renderMemory() {
       const data = memory.data, waiting = !data && !memory.error, active = document.activeElement, keep = memoryList.contains(active) ? active.id : '';
+      window.PromptboardDom.recoveryNotice(memoryRoot, data?.recovery);
       memoryList.setAttribute('aria-busy', String(memory.loading || waiting));
       memoryCounts.hidden = !data;
       if (data) memoryCounts.textContent = `${data.counts.approved} approved · ${data.counts.proposed} proposed · ${data.counts.rejected} rejected`;
@@ -687,6 +693,7 @@ window.PromptboardNetwork = (() => {
       const summary = facts([
         ['Agent', nameOf(agent)],
         ['CLI', [PROVIDER_NAMES[agent.base.provider] || agent.base.provider, agent.base.model || 'CLI default model', agent.base.effort].filter(Boolean).join(' · ')],
+        ['Leaves this computer', `${PROVIDER_NAMES[agent.base.provider] || 'The CLI'} sends your text, the agent’s Base definition and the memory and lessons below to its provider, under your CLI account.`],
         ['Tools', jobTools.value === 'web' ? 'Web search and reading web pages (read only)' : 'None'],
         ['Files', 'Read only: an empty folder of its own. No project, repository or other files.'],
         ['Memory', { none: 'None', agent: 'This agent’s approved memory', 'agent+network': `This agent’s and the network “${network}”’s approved memory` }[ask.memory]],
@@ -822,7 +829,7 @@ window.PromptboardNetwork = (() => {
       if (job.result) {
         const result = tasks.results.get(job.id), body = el('div', 'md-view network-job-result'); body.id = `network-job-${job.id}-result`;
         if (!result) body.append(note('Loading the result…'));
-        else if (result.error) body.append(el('p', 'inline-error', `Could not read the result. ${result.error}`));
+        else if (result.error) body.append(errorLine(`Could not read the result. ${result.error}`));
         else { body.append(window.PromptboardMarkdown.render(result.text)); if (result.json) body.append(el('p', 'note network-sources-label', 'Structured data (json)'), Object.assign(el('pre', 'network-preview-text'), { textContent: JSON.stringify(result.json, null, 2) })); }
         nodes.push(body);
       }
@@ -975,7 +982,7 @@ window.PromptboardNetwork = (() => {
         // Project names come from the board; it is read once if the page has not loaded it yet.
         const [data] = await Promise.all([request(`/api/network/agents?${params}`), context.projects().length ? null : context.ensureBoard?.()?.catch?.(() => {})]);
         if (version !== listVersion) return;
-        Object.assign(state, { revision: data.revision, agents: append ? [...state.agents, ...data.agents] : data.agents, total: data.total, next: data.next, capabilities: data.facets?.capabilities || [], loaded: true });
+        Object.assign(state, { revision: data.revision, recovery: data.recovery, agents: append ? [...state.agents, ...data.agents] : data.agents, total: data.total, next: data.next, capabilities: data.facets?.capabilities || [], loaded: true });
         fetched.clear(); names.clear(); detailError = null;
       } catch (failure) { if (version === listVersion) state.error = failure.message; }
       finally { if (version === listVersion) { state.loading = false; if (visible && route().section === 'agents') { renderList(); renderDetail(); } } }
@@ -996,7 +1003,7 @@ window.PromptboardNetwork = (() => {
 
     // ---- Register / edit dialog. Escape and Close return focus to the control that opened it.
     const dialog = el('dialog', 'kanban-dialog network-dialog'); dialog.id = 'network-dialog'; dialog.setAttribute('aria-labelledby', 'network-dialog-heading');
-    document.body.append(dialog);
+    document.body.append(dialog); holdFocus(dialog);
     let opener = null, ticket = 0;
     function closeDialog() {
       ticket++;
@@ -1005,7 +1012,8 @@ window.PromptboardNetwork = (() => {
       (back?.isConnected ? back : back?.id && document.getElementById(back.id))?.focus?.();
     }
     dialog.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); closeDialog(); } });
-    dialog.addEventListener('close', () => { if (opener) closeDialog(); });
+    // A close event can arrive after the dialog was opened again (it is queued): only a dialog that is really closed is cleared.
+    dialog.addEventListener('close', () => { if (!dialog.open && opener) closeDialog(); });
     function openDialog(title, nodes) {
       opener = dialog.open ? opener : document.activeElement;
       const close = button('×', closeDialog, 'dialog-close icon-button'); close.setAttribute('aria-label', 'Close');
@@ -1019,7 +1027,7 @@ window.PromptboardNetwork = (() => {
       if (!agent) {
         openDialog('Register agent', [note('Loading Base agents…')]);
         try { choices = (await request('/api/base')).resources.filter(item => KINDS[item.kind]).sort((a, b) => a.name.localeCompare(b.name)); }
-        catch (failure) { if (mine === ticket) openDialog('Register agent', [el('p', 'inline-error', failure.message), closeActions()]); return; }
+        catch (failure) { if (mine === ticket) openDialog('Register agent', [errorLine(failure.message), closeActions()]); return; }
         if (mine !== ticket) return;
         if (!choices.length) {
           openDialog('Register agent', [note('Base has no agents yet. Create an Agent or an Agent profile in Base, then register it here.'), closeActions(button('Open Base', () => { opener = null; closeDialog(); location.hash = '#/base'; }, 'secondary-button'))]);
@@ -1107,7 +1115,7 @@ window.PromptboardNetwork = (() => {
     }
     function leave() {
       if ((graphs && !graphs.guard(null)) || (pipes && !pipes.guard(null))) return; // Unsaved changes: "keep editing" brings the editor's address back.
-      visible = false; graphs?.show(null); pipes?.show(null); stopPolling(); activity?.show(null); activity?.live(false); clients?.show(false);
+      visible = false; graphs?.show(null); pipes?.show(null); stopPolling(); activity?.show(null); activity?.live(false); clients?.show(false); federation?.show(false);
       if (dialog.open) { opener = null; closeDialog(); } // A dialog never stays over another page.
     }
     return { show, leave, refresh: load };

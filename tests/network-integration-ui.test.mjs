@@ -109,13 +109,14 @@ test('Tasks follows the event stream: job events read the list again and the 2-s
     const controller = new AbortController();
     const response = await fetch(`${ctx.app.url}/api/network/events/stream`, { headers: { 'X-STE-Token': win.__pbTest.token }, signal: controller.signal });
     assert.equal(response.status, 200);
-    return controller;
+    return { controller, response }; // Retain the body too: Node may collect a discarded Response and close its stream.
   }));
-  t.after(() => { for (const controller of holders) controller.abort(); });
+  t.after(async () => { await Promise.allSettled(holders.map(async ({ controller, response }) => { controller.abort(); await response.body.cancel().catch(() => {}); })); });
   const second = worker.next();
   const secondId = (await call(ctx, '/api/network/jobs', 'POST', { agentId: lead.id, input: { text: 'Another one.' } })).json.jobId;
   const next = await second;
   await next.own.launching(); next.process = 'running'; await next.own.spawned({ pid: 9 });
+  assert.equal(ctx.app.networkEvents.streams().local, holders.length, 'the retained responses still occupy the stream slots');
   await openTasks(secondId);
   await until(() => $('#network-activity-live')?.dataset.state === 'limited', 'the page’s stream is refused (429)');
   next.own.activity({ kind: 'tool', label: 'Polled activity.' });

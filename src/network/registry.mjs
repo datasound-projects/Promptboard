@@ -18,9 +18,10 @@ import { redactLocal } from '../compose-local.mjs';
 import { noPaths } from '../coordinator.mjs';
 import { serial, syncDir } from '../durable.mjs';
 import { escapeId } from '../origin.mjs';
+import { Federation, PEER_ID } from './a2a-registry.mjs';
 import { NetworkMemory } from './memory.mjs';
 import { NetworkPosts } from './posts.mjs';
-import { conflict, fail, LINE_BREAK, newId, NetworkError, object, only, page, PAGE_LIMIT, readDocument, readImmutable, requireRevision as revision, sha256, writeDocument, writeImmutable } from './storage.mjs';
+import { conflict, fail, LINE_BREAK, newId, NetworkError, object, only, page, PAGE_LIMIT, readSettings, readImmutable, requireRevision as revision, sha256, withVersionsOnDisk, writeDocument, writeImmutable } from './storage.mjs';
 
 const SCHEMA = { agents: 'promptboard.network-agents', draft: 'promptboard.network-draft', version: 'promptboard.network-version' };
 export const NETWORK_LIMITS = Object.freeze({ agents: 5000, nodes: 5000, edges: 20000, draftBytes: 8 * 1024 * 1024, name: 80, description: 2000, labels: 20, label: 40, projects: 200, page: PAGE_LIMIT, coordinate: 1e7 });
@@ -54,7 +55,7 @@ function labels(value, label) {
 function time(value) { if (!Number.isSafeInteger(value) || value < 0) invalidFile(); return value; }
 const accepts = check => { try { check(); return true; } catch { return false; } };
 const tooLarge = draft => Buffer.byteLength(JSON.stringify(draft)) > LIMITS.draftBytes;
-const reference = node => (node.type === 'agent' ? node.agentId : `${node.networkId}@${node.version}`);
+const reference = node => (node.type === 'agent' ? node.agentId : node.type === 'federated' ? node.peerId : `${node.networkId}@${node.version}`);
 /** A stored row or draft is used only when it is exactly what this module writes; anything else counts as damaged. */
 const storedRow = row => object(row) && AGENT_ID.test(row.id) && typeof row.baseResourceId === 'string' && EXTERNAL_ID.test(row.baseResourceId) && Number.isSafeInteger(row.revision)
   && ['tags', 'capabilities', 'projectAllowlist'].every(key => Array.isArray(row[key])) && typeof row.enabled === 'boolean';
@@ -83,17 +84,18 @@ function nodesOf(value) {
   if (!Array.isArray(value) || value.length > LIMITS.nodes) fail(`A network holds at most ${LIMITS.nodes} nodes.`);
   const ids = new Set(), members = new Set();
   return value.map(node => {
-    if (!object(node) || !['agent', 'subnetwork'].includes(node.type)) fail('A node is an agent or a sub-network.');
-    const agent = node.type === 'agent', member = agent ? node.agentId : node.networkId;
-    only(node, ['id', 'type', ...(agent ? ['agentId'] : ['networkId', 'version']), 'position', 'collapsed'], `${agent ? 'an agent' : 'a sub-network'} node`);
+    if (!object(node) || !['agent', 'subnetwork', 'federated'].includes(node.type)) fail('A node is an agent, a sub-network or a remote peer.');
+    // A remote A2A peer (Task 13) is a node of its own type: a reference to a peer the owner trusts in Federation.
+    const agent = node.type === 'agent', peer = node.type === 'federated', member = agent ? node.agentId : peer ? node.peerId : node.networkId;
+    only(node, ['id', 'type', ...(agent ? ['agentId'] : peer ? ['peerId'] : ['networkId', 'version']), 'position', 'collapsed'], `${agent ? 'an agent' : peer ? 'a remote peer' : 'a sub-network'} node`);
     if (typeof node.id !== 'string' || !NODE_ID.test(node.id) || ids.has(node.id)) fail('Each node needs its own ID: n_ and 12 hexadecimal characters.');
     ids.add(node.id);
-    if (typeof member !== 'string' || !(agent ? AGENT_ID : NETWORK_ID).test(member)) fail(agent ? 'An agent node names a registered agent.' : 'A sub-network node names a network.');
-    if (members.has(member)) fail(agent ? 'Each agent appears once in a network.' : 'Each network appears once as a sub-network.');
+    if (typeof member !== 'string' || !(agent ? AGENT_ID : peer ? PEER_ID : NETWORK_ID).test(member)) fail(agent ? 'An agent node names a registered agent.' : peer ? 'A remote peer node names a peer trusted in Federation.' : 'A sub-network node names a network.');
+    if (members.has(member)) fail(agent ? 'Each agent appears once in a network.' : peer ? 'Each remote peer appears once in a network.' : 'Each network appears once as a sub-network.');
     members.add(member);
-    if (!agent && (!Number.isSafeInteger(node.version) || node.version < 1)) fail('A sub-network node pins one published version number.');
+    if (node.type === 'subnetwork' && (!Number.isSafeInteger(node.version) || node.version < 1)) fail('A sub-network node pins one published version number.');
     if (node.collapsed !== undefined && typeof node.collapsed !== 'boolean') fail('Collapsed must be true or false.');
-    return { id: node.id, type: node.type, ...(agent ? { agentId: member } : { networkId: member, version: node.version }), position: position(node.position), ...(node.collapsed ? { collapsed: true } : {}) };
+    return { id: node.id, type: node.type, ...(agent ? { agentId: member } : peer ? { peerId: member } : { networkId: member, version: node.version }), position: position(node.position), ...(node.collapsed ? { collapsed: true } : {}) };
   });
 }
 function edgesOf(value, nodes) {
@@ -186,6 +188,13 @@ function issuesOf(nodes, refs) {
       if (ref.missing) issues.push({ code: 'AGENT_MISSING', ...who, message: 'An agent node names a registration that no longer exists. Remove the node.' });
       else if (ref.stale) issues.push({ code: 'AGENT_STALE', ...who, message: `“${ref.name}” cannot take work: ${STALE_TEXT[ref.staleReason] || 'its Base agent cannot be used'}. Fix it in Base, or remove it from this network.` });
       else if (!ref.enabled) issues.push({ code: 'AGENT_DISABLED', ...who, message: `“${ref.name}” is switched off in Network. Switch it on in its profile, or remove it from this network.` });
+      continue;
+    }
+    if (node.type === 'federated') {
+      const ref = refs.peers?.[node.peerId] || { missing: true }, who = { ...at, peerId: node.peerId };
+      if (ref.missing) issues.push({ code: 'PEER_MISSING', ...who, message: 'A remote peer node names a peer that is no longer trusted. Add the peer again in Federation, or remove the node.' });
+      else if (!ref.enabled) issues.push({ code: 'PEER_DISABLED', ...who, message: `“${ref.name}” is switched off in Federation, so it cannot take work.` });
+      else if (!ref.outbound) issues.push({ code: 'FEDERATION_OFF', ...who, message: 'Outbound federation is off, so remote peers are not called. Turn it on in Federation.' });
       continue;
     }
     const ref = refs.networks[node.networkId], which = { ...at, networkId: node.networkId, version: node.version };
@@ -304,9 +313,11 @@ export class NetworkRegistry {
    * `base` is Board's Base, only ever read through list(); `projects()` returns the board's project IDs. `memory` and
    * `posts` keep each agent's (and network's) notes and reports in their own files (memory.mjs, posts.mjs).
    */
-  constructor({ dataDir, base, projects = async () => [], now = Date.now }) {
-    this.dir = join(dataDir, 'network'); this.base = base; this.projects = projects; this.now = now;
+  constructor({ dataDir, base, projects = async () => [], now = Date.now, events = null, federation = {} }) {
+    this.dir = join(dataDir, 'network'); this.base = base; this.projects = projects; this.now = now; this.events = events;
     this.memory = new NetworkMemory({ dataDir, registry: this, now }); this.posts = new NetworkPosts({ dataDir, registry: this, now });
+    // Trusted A2A peers and the inbound switches (a2a-registry.mjs); `federation` passes test seams (resolver, limits, env).
+    this.federation = new Federation({ dataDir, registry: this, now, events, ...federation });
   }
   // ponytail: one queue for the whole registry, reads included; per-file queues if owner edits ever contend.
   #serial = serial();
@@ -317,7 +328,8 @@ export class NetworkRegistry {
   #draftPath(id) { return join(this.dir, 'networks', `${escapeId(id)}.json`); }
   #versionPath(id, number, hash) { return join(this.dir, 'networks', escapeId(id), `v${number}-${hash}.json`); }
   async #loadAgents() {
-    return this.#agents ??= await readDocument(join(this.dir, 'agents.json'), { schema: SCHEMA.agents, label: 'The Network agent registry',
+    return this.#agents ??= await readSettings(join(this.dir, 'agents.json'), { schema: SCHEMA.agents, label: 'The Network agent registry', now: this.now, events: this.events,
+      reset: data => ({ ...data, rows: data.rows.map(row => ({ ...row, enabled: false, revision: row.revision + 2 })) }),
       valid: data => Number.isSafeInteger(data.revision) && Array.isArray(data.rows) && data.rows.every(storedRow) })
       ?? { schema: SCHEMA.agents, version: 1, revision: 0, rows: [] };
   }
@@ -331,8 +343,10 @@ export class NetworkRegistry {
     const drafts = new Map();
     for (const id of ids) {
       try {
-        const draft = await readDocument(this.#draftPath(id), { schema: SCHEMA.draft, label: 'A saved network', valid: data => data.id === id && storedDraft(data) });
-        if (draft) drafts.set(id, draft);
+        const draft = await readSettings(this.#draftPath(id), { schema: SCHEMA.draft, label: 'A saved network', valid: data => data.id === id && storedDraft(data), now: this.now, events: this.events,
+          recoveryMessage: 'This graph was read from a backup. Delegation is suspended until you review and confirm its recovered relations.',
+          reset: async data => ({ ...await withVersionsOnDisk(this.#draftPath(id), data, join(this.dir, 'networks', escapeId(id)), body => body.schema === SCHEMA.version && body.networkId === id, (body, hash) => ({ version: body.number, sha256: hash, publishedAt: body.publishedAt })), delegationReviewRequired: true }) });
+        if (draft) drafts.set(id, await withVersionsOnDisk(this.#draftPath(id), draft, join(this.dir, 'networks', escapeId(id)), body => body.schema === SCHEMA.version && body.networkId === id, (body, hash) => ({ version: body.number, sha256: hash, publishedAt: body.publishedAt })));
       } catch (error) { if (!(error instanceof NetworkError)) throw error; drafts.set(id, { id, unavailable: error.code, message: error.message }); }
     }
     return this.#drafts = drafts;
@@ -391,6 +405,8 @@ export class NetworkRegistry {
     const registered = new Set((await this.#loadAgents()).rows.map(row => row.id));
     const agentIds = nodes.filter(node => node.type === 'agent' && !registered.has(node.agentId)).map(node => node.agentId);
     if (agentIds.length) fail('An agent node names an agent that is not registered in Network.', 'NETWORK_REFERENCE_INVALID', 400, { agentIds });
+    const peerIds = nodes.filter(node => node.type === 'federated').map(node => node.peerId), known = peerIds.length ? await this.federation.refs(peerIds) : {};
+    if (peerIds.some(peer => known[peer].missing)) fail('A remote peer node names a peer that is not trusted in Federation.', 'NETWORK_REFERENCE_INVALID', 400, { peerIds: peerIds.filter(peer => known[peer].missing) });
     const pinned = (networkId, number) => this.#version(networkId, number).catch(error => {
       if (error.code === 'NOT_FOUND') fail('A sub-network node pins a version that is not published.', 'NETWORK_REFERENCE_INVALID', 400, { networkId, version: number });
       throw error;
@@ -412,8 +428,11 @@ export class NetworkRegistry {
    */
   async #refs(nodes) {
     const rows = new Map((await this.#loadAgents()).rows.map(row => [row.id, row])), drafts = await this.#loadDrafts();
-    const resources = nodes.some(node => node.type === 'agent') ? await this.#resources() : new Map(), refs = { agents: {}, networks: {} };
+    const resources = nodes.some(node => node.type === 'agent') ? await this.#resources() : new Map(), refs = { agents: {}, networks: {}, peers: {} };
+    const peers = nodes.filter(node => node.type === 'federated').map(node => node.peerId);
+    if (peers.length) refs.peers = await this.federation.refs(peers);
     for (const node of nodes) {
+      if (node.type === 'federated') continue;
       if (node.type === 'agent') {
         const row = rows.get(node.agentId), base = row && baseSummary(resources, row.baseResourceId);
         refs.agents[node.agentId] = row ? { name: row.displayName || base.name || row.baseResourceId, kind: base.kind, provider: base.provider, enabled: row.enabled, stale: base.stale, staleReason: base.staleReason } : { missing: true };
@@ -464,7 +483,7 @@ export class NetworkRegistry {
         && (!kind || view.base.kind === kind) && (!provider || view.base.provider === provider)
         && (!baseResourceId || view.baseResourceId === baseResourceId) && (!projectId || view.projectAllowlist.includes(projectId)) && (!networkId || view.networks.includes(networkId)));
       const capabilities = [...new Set(views.flatMap(view => view.capabilities))].sort((a, b) => a.localeCompare(b));
-      return { revision: agents.revision, ...page(items, offset, limit, 'agents'), facets: { capabilities } };
+      return { revision: agents.revision, ...(agents.recovery ? { recovery: agents.recovery } : {}), ...page(items, offset, limit, 'agents'), facets: { capabilities } };
     });
   }
   async agent(id) {
@@ -537,6 +556,7 @@ export class NetworkRegistry {
       const source = await this.#draft(id), drafts = await this.#loadDrafts(), at = this.now();
       const name = input.name === undefined ? freeName(`${source.name.slice(0, LIMITS.name - 7)} (copy)`, new Set([...drafts.values()].filter(draft => !draft.unavailable).map(draft => draft.name.toLocaleLowerCase()))) : text(input.name, LIMITS.name, 'Network name', { required: true });
       const copy = { schema: SCHEMA.draft, version: 1, id: newId('net'), name, description: source.description, revision: 1, createdAt: at, updatedAt: at, nodes: structuredClone(source.nodes), edges: structuredClone(source.edges), publishedVersions: [] };
+      if (source.delegationReviewRequired) Object.assign(copy, { delegationReviewRequired: true, recovery: source.recovery }); // A copy does not confirm recovered permissions.
       this.#uniqueName(drafts, name, copy.id);
       await this.#checkReferences(copy.id, copy); // Every pin must still be published and readable.
       return this.#detail(await this.#saveDraft(copy));
@@ -573,9 +593,10 @@ export class NetworkRegistry {
   }
   /** Save the draft. Published versions are separate files and never change. */
   async updateNetwork(id, input) {
-    only(input, ['expectedRevision', 'name', 'description', 'nodes', 'edges', 'archived'], 'a network');
+    only(input, ['expectedRevision', 'name', 'description', 'nodes', 'edges', 'archived', 'confirmRecovery'], 'a network');
     revision(input);
     if (input.archived !== undefined && typeof input.archived !== 'boolean') fail('Archived must be true or false.');
+    if (input.confirmRecovery !== undefined && input.confirmRecovery !== true) fail('Confirm the recovered relations with confirmRecovery: true after reviewing them.');
     return this.#serial(async () => {
       const draft = await this.#draft(id);
       if (input.expectedRevision !== draft.revision) conflict('This network');
@@ -585,7 +606,8 @@ export class NetworkRegistry {
       // damaged version deep inside one must not block a rename or an archive (publish still checks everything).
       const known = new Set(draft.nodes.map(reference));
       await this.#checkReferences(id, { name: content.name, nodes: content.nodes.filter(node => !known.has(reference(node))) });
-      const { archived, ...rest } = draft, shelved = input.archived ?? Boolean(archived); // Archived only hides it from lists: pins of it keep working.
+      const { archived, ...rest } = draft, shelved = input.archived ?? Boolean(archived); // Archived only hides it from lists.
+      if (input.confirmRecovery === true) delete rest.delegationReviewRequired; // Renaming or archiving is not confirmation of restored permissions.
       return this.#detail(await this.#saveDraft({ ...rest, ...content, revision: draft.revision + 1, updatedAt: this.now(), ...(shelved ? { archived: true } : {}) }));
     });
   }
@@ -612,7 +634,7 @@ export class NetworkRegistry {
     return this.#serial(async () => {
       const agents = await this.#loadAgents(), drafts = [...(await this.#loadDrafts()).values()], unavailable = drafts.filter(draft => draft.unavailable).map(draft => draft.id);
       if (unavailable.length) fail('Some saved networks cannot be read, so an export would be incomplete. Nothing was exported.', 'NETWORK_DATA_DAMAGED', 409, { networkIds: unavailable });
-      const networks = drafts.sort(byCreated).map(({ schema, version, ...draft }) => draft), versions = [];
+      const networks = drafts.sort(byCreated).map(({ schema, version, recovery, delegationReviewRequired, ...draft }) => draft), versions = []; // Definitions only; local recovery authority never travels in an export.
       for (const draft of networks) for (const entry of draft.publishedVersions) { const { schema, version, ...body } = await this.#version(draft.id, entry.version); versions.push(body); }
       return { application: 'Promptboard', kind: 'promptboard-network', version: 1, exportedAt: new Date(this.now()).toISOString(), agents: agents.rows, networks, versions };
     });
@@ -639,7 +661,8 @@ export class NetworkRegistry {
       try { files = await readdir(join(this.dir, 'networks')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
       const named = new Set(files.map(name => /^net__([0-9a-f]{20})\.json/.exec(name)?.[1]).filter(Boolean).map(hex => `net_${hex}`)), networkIds = new Map();
       for (const draft of bundle.networks) networkIds.set(draft.id, drafts.has(draft.id) || named.has(draft.id) || await this.memory.exists('network', draft.id) ? newId('net') : draft.id);
-      const remap = nodes => nodes.map(node => node.type === 'agent' ? { ...node, agentId: agentIds.get(node.agentId) } : { ...node, networkId: networkIds.get(node.networkId) });
+      // Peers are never in an export (trust is not imported): a remote peer node keeps its ID and shows as missing until the owner adds the peer.
+      const remap = nodes => nodes.map(node => node.type === 'agent' ? { ...node, agentId: agentIds.get(node.agentId) } : node.type === 'federated' ? node : { ...node, networkId: networkIds.get(node.networkId) });
       const projects = new Set(await this.projects()), warnings = [], at = this.now();
       const rows = bundle.agents.map(row => {
         const allowed = row.projectAllowlist.filter(id => projects.has(id));

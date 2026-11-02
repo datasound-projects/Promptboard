@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path';
 import { serial, syncDir } from '../durable.mjs';
 import { escapeId } from '../origin.mjs';
 import { compilePipeline, order, RULE_PATH } from './pipeline-compiler.mjs';
-import { cleanText, conflict, fail, LINE_BREAK, newId, NetworkError, object, only, page, readDocument, readImmutable, requireRevision, sha256, writeDocument, writeImmutable } from './storage.mjs';
+import { cleanText, conflict, fail, LINE_BREAK, newId, NetworkError, object, only, page, readDocument, readImmutable, requireRevision, sha256, withVersionsOnDisk, writeDocument, writeImmutable } from './storage.mjs';
 
 const SCHEMA = { draft: 'promptboard.pipeline-draft', version: 'promptboard.pipeline-version' };
 const KIB = 1024, MINUTE = 60_000, HOUR = 60 * MINUTE;
@@ -23,12 +23,12 @@ const KIB = 1024, MINUTE = 60_000, HOUR = 60 * MINUTE;
 export const PIPELINE_LIMITS = Object.freeze({ nodes: 500, edges: 2000, draftBytes: 4096 * KIB, name: 80, description: 2000, label: 80, instructionsBytes: 32 * KIB, prompt: 2000,
   rules: 20, include: 50, inValues: 50, value: 1000, maxParallel: 4, minDeadlineMs: MINUTE, maxDeadlineMs: 24 * HOUR, retries: 2, minTimeoutMs: 1000, maxTimeoutMs: 120 * MINUTE, coordinate: 1e7 });
 export const PIPELINE_SETTINGS = Object.freeze({ maxParallel: 2, deadlineMs: 2 * HOUR, failurePolicy: 'stop' });
-export const STEP_TYPES = Object.freeze(['agent', 'subnetwork', 'condition', 'parallel', 'join', 'approval', 'output']);
+export const STEP_TYPES = Object.freeze(['agent', 'subnetwork', 'condition', 'parallel', 'join', 'approval', 'output', 'federated']);
 /** The ports each step type sends on; every edge arrives on `input`. An output step sends nothing: it ends its pipeline. */
-export const PORTS = Object.freeze({ agent: ['text', 'json'], subnetwork: ['text'], condition: ['true', 'false'], parallel: ['done'], join: ['done'], approval: ['done'], output: [] });
+export const PORTS = Object.freeze({ agent: ['text', 'json'], federated: ['text', 'json'], subnetwork: ['text'], condition: ['true', 'false'], parallel: ['done'], join: ['done'], approval: ['done'], output: [] });
 export const OPERATORS = Object.freeze(['eq', 'ne', 'lt', 'lte', 'gt', 'gte', 'in', 'exists', 'contains']);
 const LIMITS = PIPELINE_LIMITS;
-const PIPELINE_ID = /^pip_[0-9a-f]{20}$/, NETWORK_ID = /^net_[0-9a-f]{20}$/, AGENT_ID = /^agt_[0-9a-f]{20}$/, NODE_ID = /^n_[0-9a-f]{12}$/, EDGE_ID = /^e_[0-9a-f]{12}$/;
+const PIPELINE_ID = /^pip_[0-9a-f]{20}$/, NETWORK_ID = /^net_[0-9a-f]{20}$/, AGENT_ID = /^agt_[0-9a-f]{20}$/, PEER_ID = /^peer_[0-9a-f]{20}$/, NODE_ID = /^n_[0-9a-f]{12}$/, EDGE_ID = /^e_[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/, STEM = /^[A-Za-z0-9][A-Za-z0-9_-]{0,59}$/;
 
 const whole = (value, min, max) => Number.isSafeInteger(value) && value >= min && value <= max;
@@ -82,6 +82,14 @@ function configOf(type, input) {
     if (timeoutMs !== null && !whole(timeoutMs, LIMITS.minTimeoutMs, LIMITS.maxTimeoutMs)) fail('A step time limit (timeoutMs) is from 1 second to 120 minutes, or null for the job default.');
     if (!whole(retries, 0, LIMITS.retries)) fail(`retries is 0 to ${LIMITS.retries}: how many times a failed step is tried again.`);
     return { agentId, instructions: long(input.instructions, 'The step instructions', LIMITS.instructionsBytes, true), tools, timeoutMs, retries };
+  }
+  if (type === 'federated') {
+    // A remote A2A peer (Task 13): its job is external work, so it is never retried on its own.
+    only(input, ['peerId', 'instructions', 'timeoutMs'], 'a remote peer step');
+    const { peerId, timeoutMs = null } = input;
+    if (typeof peerId !== 'string' || !PEER_ID.test(peerId)) fail('A remote peer step names a peer trusted in Federation.');
+    if (timeoutMs !== null && !whole(timeoutMs, LIMITS.minTimeoutMs, LIMITS.maxTimeoutMs)) fail('A step time limit (timeoutMs) is from 1 second to 120 minutes, or null for the job default.');
+    return { peerId, instructions: long(input.instructions, 'The step instructions', LIMITS.instructionsBytes, true), timeoutMs };
   }
   if (type === 'subnetwork') {
     only(input, ['pipelineId', 'version'], 'a sub-pipeline step');
@@ -165,7 +173,7 @@ const storedDraft = data => PIPELINE_ID.test(data.id) && NETWORK_ID.test(data.ne
 /** The exact bytes of a published version, in a fixed key order: the same content always has the same hash. */
 const versionText = ({ pipelineId, number, publishedAt, networkId, networkVersion, name, description, settings, nodes, edges }) =>
   JSON.stringify({ schema: SCHEMA.version, version: 1, pipelineId, number, publishedAt, networkId, networkVersion, name, description, settings, nodes, edges });
-const summary = plan => ({ steps: plan.nodes.length, agentSteps: plan.nodes.filter(step => step.type === 'agent').length, groups: plan.groups.length, order: plan.nodes.map(step => step.id), pins: plan.pins });
+const summary = plan => ({ steps: plan.nodes.length, agentSteps: plan.nodes.filter(step => step.type === 'agent').length, remoteSteps: plan.nodes.filter(step => step.type === 'federated').length, groups: plan.groups.length, order: plan.nodes.map(step => step.id), pins: plan.pins });
 
 export class NetworkPipelines {
   /** `registry` is the NetworkRegistry: networks, their published versions and agent registrations are read through it. */
@@ -186,7 +194,8 @@ export class NetworkPipelines {
     for (const id of ids) {
       try {
         const draft = await readDocument(this.#draftPath(id), { schema: SCHEMA.draft, label: 'A saved pipeline', valid: data => data.id === id && storedDraft(data) });
-        if (draft) drafts.set(id, draft);
+        if (draft) drafts.set(id, await withVersionsOnDisk(this.#draftPath(id), draft, join(this.dir, escapeId(id)), body => body.schema === SCHEMA.version && body.pipelineId === id,
+          (body, hash) => ({ version: body.number, sha256: hash, publishedAt: body.publishedAt, networkVersion: body.networkVersion })));
       } catch (error) { if (!(error instanceof NetworkError)) throw error; drafts.set(id, { id, unavailable: error.code, message: error.message }); }
     }
     return this.#drafts = drafts;
@@ -233,6 +242,7 @@ export class NetworkPipelines {
       pipeline: (id, number) => this.#version(id, number).catch(error => { if (error.code === 'NOT_FOUND') fail('A sub-pipeline step names a pipeline version that is not published.', 'PIPELINE_REFERENCE_INVALID', 400, { pipelineId: id, version: number }); throw error; }),
       network: async (id, number) => (await this.registry.version(id, number).catch(error => { if (error.code === 'NOT_FOUND') fail('A pipeline pins a network version that is not published.', 'PIPELINE_NETWORK_INVALID', 409, { networkId: id, networkVersion: number }); throw error; })).version,
       agent: async id => (await this.registry.agent(id)).agent,
+      peer: async id => (await this.registry.federation.refs([id]))[id],
     });
   }
   #root(source, version = null) {

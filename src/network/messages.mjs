@@ -7,7 +7,7 @@
  *
  * Storage (storage.mjs discipline), created on the first message: <dataDir>/network/jobs/<jobId>/messages.json
  * (promptboard.network-messages v1, with .bak) = { jobId, revision, messages: [Message] }. Bounded: 500 messages per job
- * (at most 200 of them posted by the owner or a client), text and json 16 KiB each. Removed with its job. A read receipt
+ * (at most 200 of them notes from the owner or a client), text and json 16 KiB each. Removed with its job. A read receipt
  * (`readAt`) says the owner or the client it is addressed to marked it read; it is never set for an agent and never says
  * anything about execution (a job's status and attempts are the execution receipts).
  */
@@ -84,7 +84,7 @@ export class JobMessages {
 
   /**
    * Append one message. `kind`, `from`, `to` and the bounds are checked here for every caller; text and json are cleaned as
-   * owner text is (secrets masked, local folders cut). The owner and clients may hold at most 200 posted messages per job.
+   * owner text is (secrets masked, local folders cut). The owner and clients may hold at most 200 notes per job.
    * `agentId` (the job's agent) and a pipeline step job's `pipelineRunId`/`nodeId` only label the event.
    */
   async post(jobId, input, { agentId, pipelineRunId, nodeId } = {}) {
@@ -105,10 +105,12 @@ export class JobMessages {
     }
     for (const [key, pattern] of [['nodeId', NODE_ID], ['jobId', JOB_ID], ['attemptId', ATTEMPT_ID]]) if (input[key] !== undefined && (typeof input[key] !== 'string' || !pattern.test(input[key]))) fail(`${key} is not valid.`);
     if (input.task !== undefined && !(Number.isSafeInteger(input.task) && input.task >= 0)) fail('task is a sub-task number.');
+    // Only notes count against the 200: an answer to the job's question (a `result`, at most one per handoff) always fits.
+    const note = message => (message.from.owner || message.from.clientId) && POSTED_KINDS.includes(message.kind);
     return this.#serial(async () => {
-      const doc = await this.#read(jobId), posted = doc.messages.filter(message => message.from.owner || message.from.clientId).length;
+      const doc = await this.#read(jobId), posted = doc.messages.filter(note).length;
       if (doc.messages.length >= MESSAGE_LIMITS.perJob) fail(`A job keeps at most ${MESSAGE_LIMITS.perJob} messages. Nothing was added.`, 'NETWORK_LIMIT', 409);
-      if ((from.owner || from.clientId) && posted >= MESSAGE_LIMITS.posted) fail(`A job keeps at most ${MESSAGE_LIMITS.posted} notes from you and clients. Nothing was added.`, 'NETWORK_LIMIT', 409);
+      if (note(input) && posted >= MESSAGE_LIMITS.posted) fail(`A job keeps at most ${MESSAGE_LIMITS.posted} notes from you and clients. Nothing was added.`, 'NETWORK_LIMIT', 409);
       const message = { id: newId('msg'), kind, from, to, text, ...(cleanJson !== undefined ? { json: cleanJson } : {}), ...Object.fromEntries(['nodeId', 'jobId', 'attemptId', 'task'].filter(key => input[key] !== undefined).map(key => [key, input[key]])),
         createdAt: this.now(), readAt: null };
       await writeDocument(this.#file(jobId), { ...doc, revision: doc.revision + 1, messages: [...doc.messages, message] });

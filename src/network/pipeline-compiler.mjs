@@ -115,6 +115,15 @@ export async function compilePipeline(root, load) {
         if (!view.providerCapabilities.jobTools?.includes(tools)) fail(`“${name}”’s provider cannot run this step with ${tools} tools.`, view.providerCapabilities.jobTools?.length ? 'TOOLS_UNSUPPORTED' : 'PROVIDER_UNSUPPORTED', 409, who);
         label ||= name;
       }
+      if (node.type === 'federated') {
+        // A remote A2A peer: a member of the step's network version, trusted and switched on, with outbound federation on.
+        const { peerId } = node.config, ref = await load.peer(peerId), who = { ...where, peerId };
+        if (!net.nodes.some(item => item.type === 'federated' && item.peerId === peerId)) fail('This remote peer is not a node of the network version this pipeline step belongs to. Add it in Graph and publish, or choose a member.', 'PIPELINE_PEER_NOT_IN_NETWORK', 400, who);
+        if (!ref || ref.missing) fail('A remote peer step names a peer that is no longer trusted in Federation.', 'PEER_NOT_FOUND', 409, who);
+        if (!ref.enabled) fail(`“${ref.name}” is switched off in Federation.`, 'PEER_DISABLED', 409, who);
+        if (!ref.outbound) fail('Outbound federation is off, so remote peer steps cannot run. Turn it on in Federation.', 'FEDERATION_OFF', 409, who);
+        label ||= 'Remote step'; // Never the peer's card name: remote text is no prompt label (review 4, P4-7). The step ID follows it.
+      }
       steps.set(id, { id, type: node.type, label, group, networkId: def.networkId, config: node.config, deps: [] });
       if (steps.size > LIMITS.steps) fail(`A pipeline expands to at most ${LIMITS.steps} steps with its sub-pipelines.`, 'PIPELINE_TOO_LARGE', 400, { steps: LIMITS.steps });
       ends.set(node.id, { entries: [id], exit: id });
@@ -148,7 +157,7 @@ export async function compilePipeline(root, load) {
     const step = steps.get(id), seen = new Set(), inputs = [];
     for (const dep of step.deps) {
       const from = steps.get(dep.from);
-      for (const ref of from.type === 'agent' ? [{ node: dep.from, port: dep.port }] : from.type === 'output' ? [{ node: dep.from, port: 'text' }] : from.inputs) {
+      for (const ref of ['agent', 'federated'].includes(from.type) ? [{ node: dep.from, port: dep.port }] : from.type === 'output' ? [{ node: dep.from, port: 'text' }] : from.inputs) {
         const key = `${ref.node}>${ref.port}`;
         if (!seen.has(key)) { seen.add(key); inputs.push(ref); }
       }

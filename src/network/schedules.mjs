@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { serial } from '../durable.mjs';
 import { dueSlot, nextFire, normalizeCadence, since } from '../schedules.mjs';
 import { jobSubmission } from './jobs.mjs';
-import { cleanText, conflict, fail, LINE_BREAK, NetworkError, newId, object, only, readDocument, requireRevision, writeDocument } from './storage.mjs';
+import { cleanText, conflict, fail, LINE_BREAK, NetworkError, newId, object, only, readSettings, requireRevision, writeDocument } from './storage.mjs';
 
 const SCHEMA = 'promptboard.network-schedules', KIB = 1024;
 /** Resource ceilings (architecture §4.2 rule 8), not product limits. */
@@ -82,7 +82,8 @@ export class NetworkSchedules {
   #again = false;
 
   async #load() {
-    return this.#doc ??= await readDocument(this.path, { schema: SCHEMA, label: 'The Network schedules', valid: stored }) ?? { schema: SCHEMA, version: 1, revision: 0, schedules: [] };
+    return this.#doc ??= await readSettings(this.path, { schema: SCHEMA, label: 'The Network schedules', valid: stored, now: this.now, events: this.events,
+      reset: data => ({ ...data, schedules: data.schedules.map(row => ({ ...row, enabled: false, confirmedAt: null, revision: row.revision + 2 })) }) }) ?? { schema: SCHEMA, version: 1, revision: 0, schedules: [] };
   }
   async #write(next) { await writeDocument(this.path, next); this.#doc = next; return next; }
   /** A row's own change (firing, skipping) keeps the revisions, so an edit the owner has open never conflicts with a firing. */
@@ -113,7 +114,7 @@ export class NetworkSchedules {
   /** GET /api/network/schedules: each with its next time (null when off, on demand or in another zone) and the computer's zone. */
   async list() {
     const doc = await this.#serial(() => this.#load()), now = this.now();
-    return { revision: doc.revision, timeZone: this.zone(), schedules: doc.schedules.map(row => this.#view(row, now)), limits: SCHEDULE_LIMITS };
+    return { revision: doc.revision, ...(doc.recovery ? { recovery: doc.recovery } : {}), timeZone: this.zone(), schedules: doc.schedules.map(row => this.#view(row, now)), limits: SCHEDULE_LIMITS };
   }
   /** A new schedule, always switched off: nothing runs until the owner confirms it at the computer. */
   async create(input) {
@@ -223,7 +224,8 @@ export class NetworkSchedules {
    * run still open → the slot is skipped and used up. Otherwise a job is submitted under the key `slot:<slot>` (so a restart
    * between the submit and this save finds the same job), or a pipeline's slot is saved first and then its run starts (runs
    * have no idempotency key: a crash in between loses that one run rather than starting it twice). A refusal (agent switched
-   * off, pipeline gone…) uses the slot up and says why; a storage failure leaves the slot for the next check.
+   * off, pipeline gone…) uses the slot up and says why; a storage failure, a shutdown or a Base change during the submit leaves
+   * a job's slot for the next check.
    */
   async #fire(id, slot) {
     return this.#serial(async () => {
@@ -232,6 +234,8 @@ export class NetworkSchedules {
       // Still on and in the same zone (the owner may have changed it since the check). dueSlot already counts from lastSlot,
       // and a lastSlot written while the clock ran ahead is ignored as Kanban does (src/schedules.mjs `recorded`).
       if (!row || !due(row) || row.timeZone !== this.zone()) return null;
+      // `slot` came from the row the tick read first; switched off and on again since, it counts from the new confirmation.
+      if (dueSlot(counting(row), at) !== slot) return null;
       const open = await this.#openWork(row);
       if (open) {
         const saved = await this.#keep({ ...row, lastSlot: slot, lastSkip: { at, slot, code: 'PREVIOUS_OPEN', reason: `The previous ${open.kind} ${open.id} is still open, so this time was skipped.` } });
@@ -245,7 +249,9 @@ export class NetworkSchedules {
         this.#event(saved, 'started', { ...started, message: `started ${started.runId ? `run ${started.runId}` : `job ${started.jobId}`}${at - slot > 120_000 ? ' late (Promptboard was not running at its time; missed times run once)' : ''}.` });
         return started;
       } catch (error) {
-        if (!(error instanceof NetworkError) || (error.code === 'NETWORK_WRITE_FAILED' && !row.target.pipelineId)) throw error;
+        // "Try again" (shutting down, a storage failure, the Base changing during the submit) leaves a job's time for the next
+        // check, also after a restart: its key slot:<time> finds the job if the submit did happen. A pipeline's time is saved above.
+        if (!(error instanceof NetworkError) || ((error.status >= 500 || error.code === 'BASE_CHANGED') && !row.target.pipelineId)) throw error;
         const saved = await this.#keep({ ...row, lastSlot: slot, lastSkip: { at, slot, code: error.code, reason: error.message.slice(0, 300) } });
         this.#event(saved, 'failed', { errorCode: error.code, message: `could not start: ${error.message}` });
         return null;

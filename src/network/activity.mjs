@@ -43,7 +43,7 @@ function reported(usage) {
 /** A job as the Activity view lists it: status and where it waits, never its input, prompt or result text. */
 function jobRow(job) {
   const attempt = job.attempts.find(item => item.id === job.currentAttemptId) || job.attempts.at(-1) || null;
-  return { id: job.id, status: job.status, agentId: job.agentId, projectId: job.projectId, networkId: job.networkId, pipelineRunId: job.pipelineRunId ?? null, nodeId: job.nodeId ?? null,
+  return { id: job.id, status: job.status, agentId: job.agentId, ...(job.peerId ? { peerId: job.peerId } : {}), projectId: job.projectId, networkId: job.networkId, pipelineRunId: job.pipelineRunId ?? null, nodeId: job.nodeId ?? null,
     createdAt: job.createdAt, updatedAt: job.updatedAt, waiting: job.waiting, outcome: job.outcome, errorCode: job.errorCode, reason: job.reason,
     // Task 12: where it came from (a schedule, a delegating job, a client) and what it waits for; never the question or the sub-tasks.
     requester: job.requester, parentJobId: job.parentJobId ?? null, schedule: job.schedule ?? null, delegation: job.delegation ? { by: job.delegation.by, depth: job.delegation.depth } : null, awaiting: job.awaiting ? { kind: job.awaiting.kind } : null,

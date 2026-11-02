@@ -6,7 +6,7 @@
 // variable, never by value. The token lives only in this module's own dialog and is removed from the page when the
 // dialog closes. Turning the listener on, creating and rotating are refused from a paired phone by the server.
 window.PromptboardNetworkClients = (() => {
-  const { el, button, plural, ago } = window.PromptboardDom;
+  const { el, button, plural, ago, holdFocus } = window.PromptboardDom;
   const PERMISSIONS = [
     ['read_agents', 'See its agents', 'The name, provider and tool modes of the agents you choose; never their instructions or Base content.'],
     ['submit_jobs', 'Submit jobs', 'Queue read-only jobs for those agents. A job never writes files.'],
@@ -134,7 +134,7 @@ window.PromptboardNetworkClients = (() => {
       code.textContent = text; snippetNote.textContent = help;
     }
 
-    const intro = note('Let apps and MCP hosts on this computer use your Network agents through jobs, each with its own token. They never get owner access: no Base, Kanban, approvals or settings.');
+    const intro = note('Let apps and MCP hosts on this computer use your Network agents through jobs, each with its own token. They never get owner access: no Base, Kanban, approvals or settings. What a client receives (agent names, job results) is in its hands: an MCP host may pass it to its own model provider, so it can leave this computer.');
     const heading = el('h2', '', 'External clients'); heading.id = 'network-clients-title';
     const columns = el('div', 'network-clients-columns'), side = el('div', 'network-clients-side');
     side.append(listenerCard, setupCard); columns.append(clientsCard, side);
@@ -144,7 +144,7 @@ window.PromptboardNetworkClients = (() => {
 
     // ---- The dialog: its own, so a token never stays in the page after it closes.
     const dialog = el('dialog', 'kanban-dialog network-dialog network-clients-dialog'); dialog.id = 'network-clients-dialog'; dialog.setAttribute('aria-labelledby', 'network-clients-dialog-heading');
-    document.body.append(dialog);
+    document.body.append(dialog); holdFocus(dialog);
     let opener = null;
     function closeDialog() {
       if (dialog.open) dialog.close();
@@ -153,7 +153,8 @@ window.PromptboardNetworkClients = (() => {
       (back?.isConnected ? back : back?.id && document.getElementById(back.id))?.focus?.();
     }
     dialog.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); closeDialog(); } });
-    dialog.addEventListener('close', () => { if (dialog.childElementCount) closeDialog(); });
+    // A close event can arrive after the dialog was opened again (it is queued): only a dialog that is really closed is cleared.
+    dialog.addEventListener('close', () => { if (!dialog.open && dialog.childElementCount) closeDialog(); });
     function openDialog(title, nodes, focus) {
       opener = dialog.open ? opener : document.activeElement;
       const close = button('×', closeDialog, 'dialog-close icon-button'); close.setAttribute('aria-label', 'Close');
@@ -244,12 +245,12 @@ window.PromptboardNetworkClients = (() => {
         const [clients, status, agents, networks] = await Promise.all([host.request('/api/network/clients'), host.request('/api/network/listener'), all('/api/network/agents', 'agents'),
           all('/api/network/networks', 'networks'), host.projects().length ? null : host.ensureBoard?.()?.catch?.(() => {})]);
         if (mine !== version) return;
-        Object.assign(state, { clients: clients.clients, status, error: '', loaded: true, agents: new Map(agents.map(agent => [agent.id, { id: agent.id, name: agent.displayName || agent.base.name || agent.baseResourceId, available: agent.enabled && !agent.base.stale }])),
+        Object.assign(state, { clients: clients.clients, recovery: clients.recovery, status, error: '', loaded: true, agents: new Map(agents.map(agent => [agent.id, { id: agent.id, name: agent.displayName || agent.base.name || agent.baseResourceId, available: agent.enabled && !agent.base.stale }])),
           networks: new Map(networks.map(network => [network.id, network.name])) });
       } catch (failure) { if (mine !== version) return; state.error = failure.message; state.loaded = true; host.showError(failure); }
       if (visible) render();
     }
-    function render() { renderListener(); renderClients(); renderSetup(); }
+    function render() { window.PromptboardDom.recoveryNotice(panel, state.recovery); renderListener(); renderClients(); renderSetup(); }
     function show(on) {
       const entering = on && !visible; visible = on; panel.hidden = !on; handoffs?.show(on);
       if (!on) { if (dialog.open) { opener = null; closeDialog(); } return; } // A dialog never stays over another section.

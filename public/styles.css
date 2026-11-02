@@ -3258,3 +3258,23 @@ button.origin-context-badge { cursor: pointer; }
 .network-handoff-policy { margin-top: 4px; max-width: 920px; }
 .network-handoff-policy .network-clients-controls .field-label { flex: 1 1 180px; }
 @media (max-width: 730px) { .network-handoff-tree .network-handoff-tree { padding-left: 8px; } .network-handoff-policy .network-clients-controls { display: grid; } }
+
+/* Network → Federation (network-federation.js), in Settings' visual language; remote peers in Graph and Pipelines. */
+.network-federation .network-facts code, .network-federation-card-url code, .network-peer-review code { overflow-wrap: anywhere; word-break: break-all; }
+.network-federation-card-url { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; font-size: 12.5px; min-width: 0; }
+.network-federation-card-url:empty { display: none; }
+.network-federation-card-url code { padding: 1px 5px; border-radius: 5px; background: var(--surface-2); font: 12px var(--mono); }
+.network-federation-publish { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.network-federation-publish-row { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); min-width: 0; }
+.network-federation-publish-row input[type="text"] { width: 100%; min-height: 32px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--ink); }
+.network-federation-publish-row .note { margin: 0; font-size: 12px; }
+.network-federation .network-clients-card > h4 { margin: 4px 0 0; color: var(--ink); font-size: 13px; }
+.network-federation .network-clients-card > .secondary-button { justify-self: start; }
+.network-peer-review { display: grid; gap: 8px; min-width: 0; }
+.network-peer-review h4 { margin: 6px 0 0; font-size: 13px; color: var(--ink); }
+.network-federation-description { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font-size: 13px; }
+.network-federation-skills, .network-federation-warnings { display: grid; gap: 6px; margin: 0; padding-left: 18px; font-size: 13px; overflow-wrap: anywhere; }
+.network-federation-skills li { display: grid; gap: 2px; }
+.network-federation-warnings li { color: var(--og-warn); }
+.network-node-mark.mark-federated { color: var(--og-decide); }
+.network-peer[data-status="off"] { opacity: .78; border-style: dashed; }

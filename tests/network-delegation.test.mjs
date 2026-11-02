@@ -321,7 +321,8 @@ test('questions: off by default, then the job waits for the owner’s answer, wh
   assert.ok(!note.message.text.includes('sk-abcdefghijklmnopqrstuvwxyz0123456789'), 'secrets are masked in notes');
   assert.deepEqual(await jobs.readMessages(jobId, {}, { reader: OWNER }), { marked: 0, unread: 0 }, 'a read mark is only for what is addressed to the reader');
   assert.equal((await jobs.messagesOf(jobId, { reader: OWNER })).messages.find(message => message.id === note.message.id).readAt, null);
-  for (let index = 1; index < 199; index++) await jobs.postMessage(jobId, { kind: 'request', text: `note ${index}` }, { from: OWNER });
+  // The owner's answer above is not a note (P3-5): 200 notes fit beside it.
+  for (let index = 1; index < 200; index++) await jobs.postMessage(jobId, { kind: 'request', text: `note ${index}` }, { from: OWNER });
   await assert.rejects(jobs.postMessage(jobId, { kind: 'review', text: 'one too many' }, { from: OWNER }), error => error.code === 'NETWORK_LIMIT' && /200 notes/.test(error.message));
   const file = ctx.file('jobs', `job__${jobId.slice(4)}`, 'messages.json'), full = (await jobs.messagesOf(jobId, { reader: OWNER })).messages;
   const filler = Array.from({ length: 500 - full.length }, (_, index) => ({ ...full[0], id: `msg_${hex(`filler${index}`).slice(0, 20)}`, from: { agentId: lead.id } }));

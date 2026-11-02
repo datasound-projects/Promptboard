@@ -71,7 +71,7 @@ test('Network is the fifth page: nav, title, skip link and sidebar; back and for
   assert.deepEqual([win.document.activeElement.id, win.location.hash], ['network-view', '#/network']);
   assert.equal($('#network-view').getAttribute('aria-labelledby'), 'network-heading'); assert.equal($('#network-heading').textContent, 'Network');
   assert.deepEqual([...$('#network-view [role="tablist"]').querySelectorAll('[role="tab"]')].map(tab => [tab.dataset.tab, tab.getAttribute('aria-selected'), tab.dataset.available || 'true']),
-    [['agents', 'true', 'true'], ['graph', 'false', 'true'], ['pipelines', 'false', 'true'], ['activity', 'false', 'true'], ['library', 'false', 'true'], ['federation', 'false', 'false'], ['settings', 'false', 'true']]);
+    [['agents', 'true', 'true'], ['graph', 'false', 'true'], ['pipelines', 'false', 'true'], ['activity', 'false', 'true'], ['library', 'false', 'true'], ['federation', 'false', 'true'], ['settings', 'false', 'true']]); // Federation works since Task 13.
   // Every page still opens, and history moves through all five pages and Network's own sub-routes.
   const open = page => () => Object.entries(VIEWS).every(([hash, id]) => $(id).hidden === (hash !== page));
   for (const hash of ['#/origin', '#/', '#/kanban', '#/base']) await visit(ctx, hash, open(hash));
@@ -268,10 +268,10 @@ test('keyboard and labels: tablists follow arrow keys, every control is named, E
   key(ctx, tab('settings'), 'ArrowRight'); await until(selected('agents', '#/network'), 'wraps to Agents');
   key(ctx, tab('agents'), 'ArrowLeft'); await until(selected('settings', '#/network/settings'), 'wraps back');
   key(ctx, tab('settings'), 'ArrowLeft'); await until(selected('federation', '#/network/federation'), 'Federation');
-  // An unavailable section says so and offers nothing that looks like it works.
-  const soon = $('#network-panel-soon');
-  assert.deepEqual([soon.hidden, soon.getAttribute('aria-labelledby'), soon.querySelector('h2').textContent, soon.querySelectorAll('button, input, select, a, textarea').length], [false, 'network-tab-federation', 'Federation', 0]);
-  assert.match(soon.textContent, /Not available yet\./);
+  // Every section works since Task 13: Federation shows its own panel (both switches off), and no "not available" panel.
+  await until(() => $('#network-federation-outbound-status')?.textContent.startsWith('Off'), 'Federation loads');
+  assert.deepEqual([$('#network-panel-soon').hidden, $('#network-panel-federation').hidden, $('#network-panel-federation').getAttribute('aria-labelledby'), $('#network-federation-outbound').checked, $('#network-federation-inbound').checked],
+    [true, false, 'network-tab-federation', false, false]);
   assert.equal($('#network-register').hidden, true, 'no Register agent outside Agents');
   key(ctx, tab('federation'), 'Home'); await until(() => selected('agents', '#/network')() && !$('#network-panel-agents').hidden, 'Home');
   await visit(ctx, `#/network/agents/${lead.id}`, () => $('#network-detail-heading'));

@@ -10,11 +10,12 @@
 // becomes. The canvas is Cytoscape on wide screens (the same CSP-safe setup as Graph); the step and arrow lists beside it
 // do everything with the keyboard, and a phone gets only the ordered lists and one step's details.
 window.PromptboardNetworkPipeline = (() => {
-  const { el, button, plural, ago, clip, download } = window.PromptboardDom;
+  const { el, button, plural, ago, clip, download, errorLine } = window.PromptboardDom;
   const { note, labelled, select, chip, randomHex, isPhone, clone, debounce, css, keepFocus } = window.PromptboardNetworkGraph.kit;
-  const TYPES = [['agent', 'Agent'], ['subnetwork', 'Sub-network'], ['parallel', 'Parallel'], ['join', 'Join'], ['condition', 'Condition'], ['approval', 'Approval'], ['output', 'Output']];
+  const TYPES = [['agent', 'Agent'], ['subnetwork', 'Sub-network'], ['parallel', 'Parallel'], ['join', 'Join'], ['condition', 'Condition'], ['approval', 'Approval'], ['output', 'Output'], ['federated', 'Remote peer']];
   const TYPE_NAMES = Object.fromEntries(TYPES);
-  const MARKS = { agent: '◉', subnetwork: '⧉', parallel: '⫘', join: '⋈', condition: '◇', approval: '✋', output: '▤' };
+  const MARKS = { agent: '◉', subnetwork: '⧉', parallel: '⫘', join: '⋈', condition: '◇', approval: '✋', output: '▤', federated: '⇄' };
+  const JOB_STEPS = new Set(['agent', 'federated']); // Steps that run as Network jobs and send a text and a json result.
   const HELP = {
     agent: 'Runs one registered agent of the pinned network version as a Network job. It receives only what its incoming arrows carry.',
     subnetwork: 'Runs a published pipeline of a network this network contains, pinned at one version. It passes on that pipeline’s report text.',
@@ -23,9 +24,10 @@ window.PromptboardNetworkPipeline = (() => {
     condition: 'Checks the json results of steps before it with fixed rules, then goes on along “true” or “false”.',
     approval: 'Waits for your Approve or Reject. Nothing after it runs until you decide.',
     output: 'Saves a report of the steps you tick, in order. It ends the pipeline: no arrow leaves it.',
+    federated: 'Sends what its incoming arrows carry to a remote A2A peer trusted in Federation, as a Network job. Only protocol states are known; it is never retried on its own.',
   };
   // The ports each step type sends on (every arrow arrives on `input`), as src/network/pipeline-model.mjs enforces them.
-  const PORTS = { agent: ['text', 'json'], subnetwork: ['text'], condition: ['true', 'false'], parallel: ['done'], join: ['done'], approval: ['done'], output: [] };
+  const PORTS = { agent: ['text', 'json'], federated: ['text', 'json'], subnetwork: ['text'], condition: ['true', 'false'], parallel: ['done'], join: ['done'], approval: ['done'], output: [] };
   const PORT_NAMES = { text: 'text result', json: 'json result', true: 'when true', false: 'when false', done: 'when done' };
   const OPERATORS = [['eq', 'equals'], ['ne', 'does not equal'], ['lt', 'is less than'], ['lte', 'is at most'], ['gt', 'is more than'], ['gte', 'is at least'], ['in', 'is one of'], ['exists', 'exists'], ['contains', 'contains']];
   const VALUE_TYPES = [['text', 'Text'], ['number', 'Number'], ['boolean', 'True or false'], ['null', 'Null']];
@@ -70,7 +72,7 @@ window.PromptboardNetworkPipeline = (() => {
       const seen = new Set(), list = [];
       for (const edge of into.get(id)) {
         const from = byId.get(edge.from); if (!from) continue;
-        for (const ref of from.type === 'agent' ? [{ node: edge.from, port: edge.fromPort }] : ['subnetwork', 'output'].includes(from.type) ? [{ node: edge.from, port: 'text' }] : reach.get(edge.from) || []) {
+        for (const ref of JOB_STEPS.has(from.type) ? [{ node: edge.from, port: edge.fromPort }] : ['subnetwork', 'output'].includes(from.type) ? [{ node: edge.from, port: 'text' }] : reach.get(edge.from) || []) {
           const key = `${ref.node}>${ref.port}`; if (!seen.has(key)) { seen.add(key); list.push(ref); }
         }
       }
@@ -149,6 +151,7 @@ window.PromptboardNetworkPipeline = (() => {
         ['At once', `At most ${Math.min(version.settings.maxParallel, ceiling)} agent ${Math.min(version.settings.maxParallel, ceiling) === 1 ? 'step' : 'steps'} at a time (this pipeline allows ${version.settings.maxParallel}; the app runs at most ${plural(ceiling, 'Network job')} at once).`],
         ['Permissions', 'Each agent step is its own Network job with its agent’s CLI sign-in: read-only, in an empty folder, no project files or lessons, only the agent’s approved memory.'],
         ['Tools', tools],
+        ['Leaves this computer', 'Each agent step sends its instructions, the run input and what its arrows carry to its CLI’s provider; a remote peer step sends them to that peer.'],
         // A step whose agent waits for your answer or for its sub-jobs is still running (architecture §20 item 11).
         ['Time', `Stops after ${Math.round(version.settings.deadlineMs / 60000)} minutes of running (time an approval step or a blocked step waits for you does not count; a step whose agent waits for your answer or for its sub-jobs does). If a step fails: ${version.settings.failurePolicy === 'stop' ? 'the run stops' : 'independent steps finish, then the run ends failed'}.`],
         ['Cost', COST],
@@ -299,7 +302,8 @@ window.PromptboardNetworkPipeline = (() => {
     async function membersOf(networkId, number) {
       const data = await networkVersion(networkId, number);
       return { version: data.version, refs: data.refs, agents: data.version.nodes.filter(node => node.type === 'agent').map(node => ({ id: node.agentId, name: data.refs.agents?.[node.agentId]?.name || node.agentId, ref: data.refs.agents?.[node.agentId] || null })),
-        subs: data.version.nodes.filter(node => node.type === 'subnetwork').map(node => ({ networkId: node.networkId, version: node.version, name: data.refs.networks?.[node.networkId]?.name || node.networkId })) };
+        subs: data.version.nodes.filter(node => node.type === 'subnetwork').map(node => ({ networkId: node.networkId, version: node.version, name: data.refs.networks?.[node.networkId]?.name || node.networkId })),
+        peers: data.version.nodes.filter(node => node.type === 'federated').map(node => ({ id: node.peerId, name: data.refs.peers?.[node.peerId]?.name || node.peerId, ref: data.refs.peers?.[node.peerId] || { missing: true } })) };
     }
     /** New pipeline (empty) or from the MVP template, for a published network version. */
     async function newDialog(template) {
@@ -394,7 +398,7 @@ window.PromptboardNetworkPipeline = (() => {
     // Palette (add a step), then connect and remove, then the canvas view.
     const dPalette = el('div', 'network-graph-tools network-pipeline-palette'); dPalette.setAttribute('role', 'group'); dPalette.setAttribute('aria-label', 'Add a step');
     dPalette.append(el('span', 'network-pipeline-palette-label', 'Add'));
-    for (const [type, label] of TYPES) { const add = button(`${MARKS[type]} ${label}${['agent', 'subnetwork'].includes(type) ? '…' : ''}`, () => void addStep(type), `secondary-button network-step-button step-${type}`); add.id = `network-pipeline-add-${type}`; add.setAttribute('aria-label', `Add ${label.toLowerCase()} step`); add.title = HELP[type]; dPalette.append(add); }
+    for (const [type, label] of TYPES) { const add = button(`${MARKS[type]} ${label}${['agent', 'subnetwork', 'federated'].includes(type) ? '…' : ''}`, () => void addStep(type), `secondary-button network-step-button step-${type}`); add.id = `network-pipeline-add-${type}`; add.setAttribute('aria-label', `Add ${label.toLowerCase()} step`); add.title = HELP[type]; dPalette.append(add); }
     const dConnect = button('Connect', () => toggleConnect(), 'secondary-button'); dConnect.id = 'network-pipeline-connect'; dConnect.setAttribute('aria-pressed', 'false');
     const dPort = el('select'); dPort.id = 'network-pipeline-port';
     const dPortLabel = labelled('From port', dPort, 'field-label network-inline-label');
@@ -481,10 +485,12 @@ window.PromptboardNetworkPipeline = (() => {
       return request(`/api/network/pipelines/${id}`).then(data => { ed?.pipes.set(id, data.pipeline); }, () => { ed?.pipes.set(id, { missing: true }); });
     }
     const agentName = id => { const view = ed.agents.get(id); return view ? view.displayName || view.base.name || id : ed.members?.refs?.agents?.[id]?.name || id || 'No agent chosen'; };
+    const peerName = id => ed.members?.refs?.peers?.[id]?.name || id || 'No peer chosen';
     function stepName(node) {
       if (!node) return 'a step that is gone';
       if (node.label) return node.label;
       if (node.type === 'agent') return agentName(node.config.agentId);
+      if (node.type === 'federated') return peerName(node.config.peerId);
       if (node.type === 'subnetwork') { const pipe = ed.pipes.get(node.config.pipelineId); return pipe?.name || 'Sub-pipeline'; }
       if (node.type === 'output') return `Output “${node.config.name || 'report'}”`;
       return TYPE_NAMES[node.type];
@@ -492,6 +498,7 @@ window.PromptboardNetworkPipeline = (() => {
     function subtitle(node) {
       if (node.type === 'agent') { const view = ed.agents.get(node.config.agentId); return [`Agent · ${agentName(node.config.agentId)}`, view?.base.provider && { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI', agy: 'Antigravity' }[view.base.provider], node.config.tools === 'web' ? 'web search' : ''].filter(Boolean).join(' · '); }
       if (node.type === 'subnetwork') return node.config.pipelineId ? `Sub-network pipeline · version ${node.config.version}` : 'Sub-network pipeline · not chosen';
+      if (node.type === 'federated') return `Remote peer · ${peerName(node.config.peerId)} · external work`;
       if (node.type === 'condition') { const rules = node.config.all || node.config.any || []; return `Condition · ${plural(rules.length, 'rule')} · ${node.config.any ? 'any' : 'all'}`; }
       if (node.type === 'join') return `Join · waits for ${node.config.require === 'any' ? 'the first' : 'all'}`;
       if (node.type === 'output') return `Output · ${node.config.name || 'report'}.md · ${plural((node.config.include || []).length, 'step')}`;
@@ -514,6 +521,14 @@ window.PromptboardNetworkPipeline = (() => {
           else if (view && !view.enabled) add(node.id, `“${agentName(config.agentId)}” is switched off in Network. Switch it on in its profile, or choose another agent.`);
           if (config.agentId && ed.members && !ed.members.error && !memberIds.has(config.agentId)) add(node.id, `“${agentName(config.agentId)}” is not in version ${ed.networkVersion} of “${ed.network?.name}”. Choose a member, or add it in Graph and pin the new version.`);
           if (config.tools === 'web' && view?.providerCapabilities?.jobTools && !view.providerCapabilities.jobTools.includes('web')) add(node.id, 'Its provider cannot use web search in a Network job. Choose No tools.');
+        }
+        if (node.type === 'federated') {
+          const member = (ed.members?.peers || []).find(peer => peer.id === config.peerId);
+          if (!config.peerId) add(node.id, 'Choose a remote peer of the pinned network version.', true);
+          else if (ed.members && !ed.members.error && !member) add(node.id, `This peer is not in version ${ed.networkVersion} of “${ed.network?.name}”. Add it in Graph and pin the new version.`);
+          else if (member?.ref.missing) add(node.id, 'This peer is no longer trusted in Federation. Add it again there, or choose another one.');
+          else if (member?.ref.enabled === false) add(node.id, `“${member.name}” is switched off in Federation.`);
+          else if (member?.ref.outbound === false) add(node.id, 'Outbound federation is off, so remote peer steps cannot run. Turn it on in Federation.');
         }
         if (node.type === 'subnetwork') {
           if (!config.pipelineId) add(node.id, 'Choose a published pipeline of a contained network.', true);
@@ -573,6 +588,7 @@ window.PromptboardNetworkPipeline = (() => {
       if (!ed || ed.loading) return;
       if (type === 'agent' && !config) { agentDialog(); return; }
       if (type === 'subnetwork' && !config) { await subnetworkDialog(); return; }
+      if (type === 'federated' && !config) { peerDialog(); return; }
       const id = newId('n', taken()), node = { id, type, label: '', position: placeNew(), config: config || DEFAULTS[type]() };
       if (type === 'output') node.config.name = ['report', ...Array.from({ length: 50 }, (_, n) => `report-${n + 2}`)].find(name => !ed.nodes.some(item => item.type === 'output' && item.config.name === name));
       change(() => { ed.nodes.push(node); }, `Added ${TYPE_NAMES[type].toLowerCase()} step “${stepName(node)}”. ${type === 'condition' ? 'Add its rules in the details.' : type === 'output' ? 'Connect steps to it and tick what the report holds.' : 'Connect it with arrows.'} Save the draft to keep it.`);
@@ -592,6 +608,21 @@ window.PromptboardNetworkPipeline = (() => {
       host.openDialog('Add agent step', [note(`Members of version ${ed.networkVersion} of “${ed.network?.name}”. One agent may run in several steps; each step is its own job.`), list, closeActions()]);
       list.querySelector('button')?.focus();
     }
+    /** The remote peers of the pinned network version (Graph's federated nodes). */
+    function peerDialog() {
+      const peers = ed.members?.peers || [];
+      if (!peers.length) { host.openDialog('Add remote peer step', [note(`Version ${ed.networkVersion} of “${ed.network?.name}” has no remote peers. Trust a peer in Federation, add it to the network in Graph, publish it, and pin the new version in Pipeline settings.`), closeActions()]); return; }
+      const list = el('ul', 'network-pick-list'); list.id = 'network-pipeline-pick-peers'; list.setAttribute('aria-label', 'Remote peers of the pinned network version');
+      for (const peer of peers) {
+        const state = peer.ref.missing ? 'No longer trusted' : peer.ref.enabled === false ? 'Switched off' : peer.ref.outbound === false ? 'Federation off' : '';
+        const pick = button('', () => { host.closeDialog(); void addStep('federated', { peerId: peer.id, instructions: '', timeoutMs: null }); }, 'network-agent network-pick'); pick.dataset.peerId = peer.id;
+        const text = el('span', 'network-row-text'); text.append(el('strong', '', peer.name), el('span', 'network-row-sub', `Remote A2A peer${peer.ref.origin ? ` · ${peer.ref.origin}` : ''}`));
+        if (state) text.append(chip(state, 'warn'));
+        pick.append(text); const item = el('li'); item.append(pick); list.append(item);
+      }
+      host.openDialog('Add remote peer step', [note('The step sends only what its incoming arrows carry, plus its instructions. A remote task that runs past its time limit, or whose answer is lost, ends unknown and blocks the steps after it.'), list, closeActions()]);
+      list.querySelector('button')?.focus();
+    }
     const subtitleOfAgent = view => (view ? [{ profile: 'Agent', agentProfile: 'Agent profile' }[view.base.kind] || 'Agent', { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI', agy: 'Antigravity' }[view.base.provider]].filter(Boolean).join(' · ') : 'Registration not loaded');
     /** Published pipelines of the networks this network version contains, at the version it pins (architecture §14 item 13). */
     async function subOptions() {
@@ -605,7 +636,7 @@ window.PromptboardNetworkPipeline = (() => {
     async function subnetworkDialog(node = null) {
       host.openDialog(node ? 'Choose the sub-pipeline' : 'Add sub-network step', [note('Loading the pipelines of contained networks…')]);
       let options;
-      try { options = await subOptions(); } catch (failure) { host.openDialog('Add sub-network step', [el('p', 'inline-error', failure.message), closeActions()]); return; }
+      try { options = await subOptions(); } catch (failure) { host.openDialog('Add sub-network step', [errorLine(failure.message), closeActions()]); return; }
       if (!ed) return;
       if (!options.length) {
         host.openDialog('Add sub-network step', [note(`A sub-network step runs a published pipeline of a network that version ${ed.networkVersion} of “${ed.network?.name}” contains, pinned at the same network version. ${(ed.members?.subs || []).length ? 'None of its sub-networks has such a pipeline yet: build and publish one there first.' : 'This version contains no sub-network: add one in Graph and publish first.'}`), closeActions()]);
@@ -768,14 +799,14 @@ window.PromptboardNetworkPipeline = (() => {
       }, 'network-run-start');
       let turn = 0;
       const fill = async () => {
-        const mine = ++turn, number = Number(pick.value); submit.disabled = true; failure.hidden = true; facts.replaceChildren(note('Checking this version as a run would…'));
+        const mine = ++turn, number = Number(pick.value); submit.disabled = true; submit.title = 'Promptboard checks this version first.'; failure.hidden = true; facts.replaceChildren(note('Checking this version as a run would…'));
         try {
           const checked = await runFacts({ request, pipelineId: ed.id, number, agentName, readVersion: pipelineVersion });
           if (mine !== turn) return;
           facts.replaceChildren(...checked.nodes);
           if (!checked.valid) { submit.title = 'It cannot start now; see why above.'; return; }
           submit.disabled = false; submit.title = '';
-        } catch (error) { if (mine === turn) facts.replaceChildren(el('p', 'inline-error', `Could not check this version. ${error.message}`)); }
+        } catch (error) { if (mine === turn) { facts.replaceChildren(errorLine(`Could not check this version. ${error.message}`)); submit.title = 'It could not be checked; see why above.'; } }
       };
       pick.addEventListener('change', () => void fill());
       await fill();
@@ -1010,6 +1041,19 @@ window.PromptboardNetworkPipeline = (() => {
         return [labelled('Agent', agent), ...(open ? [open] : []), labelled('Instructions for this step', instructions), labelled('Tools', tools), labelled('Time limit in minutes', timeout), labelled('If it fails', retries), errors,
           note('A retry is a new job, only after a definite failure that could not reach outside. An unknown outcome never retries on its own.')];
       }
+      if (node.type === 'federated') {
+        const peers = ed.members?.peers || [], options = peers.map(peer => [peer.id, peer.name]);
+        if (config.peerId && !peers.some(peer => peer.id === config.peerId)) options.push([config.peerId, `${peerName(config.peerId)} (not in network version ${ed.networkVersion})`]);
+        const peer = select([['', 'Choose a remote peer', true], ...options]); peer.id = 'network-pipeline-peer'; peer.value = config.peerId || '';
+        const instructions = Object.assign(el('textarea'), { rows: 5, maxLength: 32768, value: config.instructions }); instructions.id = 'network-pipeline-instructions';
+        const timeout = Object.assign(el('input'), { type: 'number', min: 1, max: 120, step: 1, placeholder: 'Job default', value: config.timeoutMs ? String(Math.round(config.timeoutMs / 60000)) : '' }); timeout.id = 'network-pipeline-timeout';
+        const errors = el('div');
+        bind(peer, () => peer.value || undefined, value => { config.peerId = value; }, value => `The step calls “${peerName(value)}”.`);
+        bind(instructions, () => (instructions.value === config.instructions ? undefined : instructions.value), value => { config.instructions = value; }, 'Saved the instructions in the working copy. Save the draft to keep them.');
+        bind(timeout, () => { if (!timeout.value) return null; const value = Number(timeout.value); if (!Number.isInteger(value) || value < 1 || value > 120) { errors.replaceChildren(fieldError('A step time limit is 1 to 120 minutes, or empty for the job default.')); return undefined; } errors.replaceChildren(); return value * 60000; }, value => { config.timeoutMs = value; });
+        return [labelled('Remote peer', peer), labelled('Instructions sent with the input', instructions), labelled('Time limit in minutes', timeout), errors,
+          note('The peer receives the instructions and what the incoming arrows carry, nothing else: no memory, project or tools. Its work is external: a failure is never retried on its own, and a time limit or a lost answer ends the step unknown and blocks what follows.')];
+      }
       if (node.type === 'subnetwork') {
         const pipe = ed.pipes.get(config.pipelineId), choose = button(config.pipelineId ? 'Choose another…' : 'Choose the sub-pipeline…', () => void subnetworkDialog(node), 'secondary-button'); choose.id = 'network-pipeline-choose-sub';
         const parts = [note(config.pipelineId ? `Runs “${pipe?.name || config.pipelineId}” version ${config.version}, collapsed here. A run expands it into its own steps.` : 'No sub-pipeline chosen yet.'), choose];
@@ -1055,7 +1099,7 @@ window.PromptboardNetworkPipeline = (() => {
         const list = el('ol', 'network-graph-list'); list.setAttribute('aria-label', `Steps of version ${number}`);
         for (const id of order.slice(0, LIST_PAGE)) { const node = byStep.get(id); list.append(el('li', 'network-row-sub', `${MARKS[node.type]} ${node.label || (node.type === 'agent' ? agentName(node.config.agentId) : TYPE_NAMES[node.type])} · ${TYPE_NAMES[node.type]}`)); }
         box.replaceChildren(note(`“${version.name}” version ${number}: ${plural(version.nodes.length, 'step')}, read only.`), list);
-      }, failure => { if (box.isConnected) box.replaceChildren(el('p', 'inline-error', failure.message)); });
+      }, failure => { if (box.isConnected) box.replaceChildren(errorLine(failure.message)); });
       return box;
     }
     /** The declarative rule editor: Task 09's operators over upstream json results; no code anywhere (architecture §20 item 4). */
@@ -1098,7 +1142,7 @@ window.PromptboardNetworkPipeline = (() => {
     }
     function edgeDetails(edge) {
       const from = byId(edge.from), to = byId(edge.to), reach = reaching(ed.nodes, ed.edges).get(edge.from) || [];
-      const carries = from.type === 'agent' ? `“${stepName(from)}”’s ${edge.fromPort} result` : ['subnetwork', 'output'].includes(from.type) ? `“${stepName(from)}”’s report text`
+      const carries = JOB_STEPS.has(from.type) ? `“${stepName(from)}”’s ${edge.fromPort} result` : ['subnetwork', 'output'].includes(from.type) ? `“${stepName(from)}”’s report text`
         : reach.length ? `what reached “${stepName(from)}”: ${reach.map(ref => `${stepName(byId(ref.node))} (${ref.port})`).join(', ')}` : 'nothing but the order';
       const parts = [note(`From “${stepName(from)}” on port ${edge.fromPort} to “${stepName(to)}” on port input. “${stepName(to)}” runs after it${from.type === 'condition' ? `, ${edge.fromPort === 'true' ? 'only when the rules are true' : 'only when the rules are false'}` : ''}.`),
         Object.assign(note(`Carries ${carries}.`, 'note network-pipeline-carries'), { id: 'network-pipeline-carries' }), note('An execution arrow is not a Graph relation: it is the only way a result moves from one step to another.', 'note network-inert')];
@@ -1110,7 +1154,7 @@ window.PromptboardNetworkPipeline = (() => {
     // ---- Canvas (Cytoscape), one for the designer (`d`) and one for the run view (`r`); never on a phone.
     function styleSheet() {
       const ink = css('--ink', '#16161a'), surface = css('--surface', '#fff'), raised = css('--surface-2', '#f1f1f4'), line = css('--line-strong', '#85858f'), muted = css('--muted', '#4f4f58');
-      const ok = css('--og-ok', '#047857'), warn = css('--og-warn', '#b45309'), error = css('--error', '#c2410c'), accent = css('--sash', '#7c3aed'), blue = css('--og-design', '#2563eb');
+      const ok = css('--og-ok', '#047857'), warn = css('--og-warn', '#b45309'), error = css('--error', '#c2410c'), accent = css('--sash', '#7c3aed'), blue = css('--og-design', '#2563eb'), remote = css('--og-decide', '#be185d');
       return [
         { selector: 'node', style: { shape: 'rectangle', width: 172, height: 58, 'background-color': surface, 'border-width': 2, 'border-color': line, label: 'data(label)', color: ink, 'font-size': 14,
           'font-family': css('--sans', 'sans-serif'), 'text-valign': 'center', 'text-halign': 'center', 'text-wrap': 'wrap', 'text-max-width': 156, 'line-height': 1.25, 'min-zoomed-font-size': 6 } },
@@ -1120,6 +1164,8 @@ window.PromptboardNetworkPipeline = (() => {
         { selector: 'node[type = "condition"]', style: { shape: 'diamond', width: 176, height: 100, 'text-max-width': 110 } },
         { selector: 'node[type = "approval"]', style: { shape: 'octagon', width: 168, height: 68 } },
         { selector: 'node[type = "output"]', style: { shape: 'cut-rectangle', width: 172, height: 58, 'border-width': 3 } },
+        // A remote A2A peer: a tag shape with a dashed border in the remote colour; arrows to or from it are dashed too.
+        { selector: 'node[type = "federated"]', style: { shape: 'round-tag', width: 208, height: 62, 'text-max-width': 150, 'text-margin-x': -16, 'border-style': 'dashed', 'border-width': 3, 'border-color': remote } },
         { selector: 'node.group', style: { shape: 'round-rectangle', 'text-valign': 'top', 'text-margin-y': 24, padding: 30, 'background-opacity': 0.35, 'border-style': 'dashed', 'border-width': 2,
           'text-wrap': 'ellipsis', 'text-max-width': 320, 'text-background-color': raised, 'text-background-opacity': 1, 'text-background-padding': 3, 'text-background-shape': 'roundrectangle' } },
         { selector: 'node.warn', style: { 'border-color': warn, 'border-width': 3 } },
@@ -1139,6 +1185,7 @@ window.PromptboardNetworkPipeline = (() => {
         { selector: 'edge[port = "json"]', style: { 'line-color': blue, 'target-arrow-color': blue } },
         { selector: 'edge[port = "true"]', style: { 'line-color': ok, 'target-arrow-color': ok } },
         { selector: 'edge[port = "false"]', style: { 'line-color': warn, 'target-arrow-color': warn } },
+        { selector: 'edge[?remote]', style: { 'line-style': 'dashed', 'line-dash-pattern': [8, 4] } },
         { selector: 'edge.problem', style: { 'line-color': error, 'target-arrow-color': error, width: 4.5 } },
         { selector: 'edge:selected', style: { width: 4, 'overlay-opacity': 0 } },
       ];
@@ -1175,7 +1222,7 @@ window.PromptboardNetworkPipeline = (() => {
     }
     function canvasSub(node) {
       const config = node.config;
-      return { agent: () => (node.label ? agentName(config.agentId) : 'Agent'), subnetwork: () => (config.pipelineId ? `Sub-pipeline · v${config.version}` : 'Sub-pipeline · not chosen'),
+      return { agent: () => (node.label ? agentName(config.agentId) : 'Agent'), federated: () => 'Remote peer · A2A', subnetwork: () => (config.pipelineId ? `Sub-pipeline · v${config.version}` : 'Sub-pipeline · not chosen'),
         condition: () => `Condition · ${plural((config.all || config.any || []).length, 'rule')}`, join: () => `Join · ${config.require === 'any' ? 'first' : 'all'}`, parallel: () => 'Parallel',
         approval: () => 'Approval', output: () => `Output · ${config.name}.md` }[node.type]();
     }
@@ -1199,7 +1246,8 @@ window.PromptboardNetworkPipeline = (() => {
         }
         dCy.add(added); added.length = 0;
         for (const edge of ed.edges) {
-          const item = dCy.getElementById(edge.id), data = { id: edge.id, source: edge.from, target: edge.to, port: edge.fromPort, label: edge.fromPort }, bad = ed.badEdges.has(edge.id) ? 'problem' : '';
+          const remote = [nodes.get(edge.from), nodes.get(edge.to)].some(node => node?.type === 'federated');
+          const item = dCy.getElementById(edge.id), data = { id: edge.id, source: edge.from, target: edge.to, port: edge.fromPort, remote, label: remote ? `${edge.fromPort} · remote` : edge.fromPort }, bad = ed.badEdges.has(edge.id) ? 'problem' : '';
           if (item.empty()) added.push({ group: 'edges', data, classes: bad }); else if (item.classes().join(' ') !== bad) item.classes(bad);
         }
         dCy.add(added);
@@ -1364,6 +1412,7 @@ window.PromptboardNetworkPipeline = (() => {
           if (!hidden) rows.push(stepRow(node, chain(node.id).length));
         }
         rStepsTitle.textContent = `Steps in execution order (${rv.plan.nodes.length})`;
+        rCanvas.setAttribute('aria-label', `Run canvas: ${plural(rv.plan.nodes.length, 'step')} with their live states. The list beside it holds the same steps.`);
         rSteps.replaceChildren(...rows);
       });
     }
@@ -1384,7 +1433,7 @@ window.PromptboardNetworkPipeline = (() => {
       const pick = button('', () => selectRun(node.id, { focus: true }), 'network-graph-item'); pick.dataset.stepId = node.id;
       if (rv.selected === node.id) pick.setAttribute('aria-current', 'true');
       const text = el('span', 'network-row-text');
-      text.append(el('strong', '', runStepName(node.id)), el('span', 'network-row-sub', `${TYPE_NAMES[node.type]}${node.type === 'agent' ? ` · ${agentLabel(node.config.agentId)}` : ''}${state.attempt > 1 ? ` · try ${state.attempt}` : ''}`), tone(STEP_STATES[stepStatus(node.id)] || [state.status, 'off']));
+      text.append(el('strong', '', runStepName(node.id)), el('span', 'network-row-sub', `${TYPE_NAMES[node.type]}${node.type === 'agent' ? ` · ${agentLabel(node.config.agentId)}` : node.type === 'federated' ? ' · external work' : ''}${state.attempt > 1 ? ` · try ${state.attempt}` : ''}`), tone(STEP_STATES[stepStatus(node.id)] || [state.status, 'off']));
       const mark = el('span', `network-node-mark mark-${node.type}`, MARKS[node.type]); mark.setAttribute('aria-hidden', 'true');
       pick.append(mark, text); item.append(pick);
       return item;
@@ -1429,6 +1478,13 @@ window.PromptboardNetworkPipeline = (() => {
         rows.push(['Agent', agentLabel(node.config.agentId)], ['Provider', view ? ({ claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI', agy: 'Antigravity' }[view.base.provider] || view.base.provider || 'Not set') + (view.base.model ? ` · ${view.base.model}` : '') : 'Unknown'],
           ['Tools', node.config.tools === 'web' ? 'Read-only web search' : 'None'], ['Try', `${state.attempt || 0} of ${node.config.retries + 1}${state.jobIds.length > 1 ? ` · jobs ${state.jobIds.join(', ')}` : ''}`]);
         if (job) rows.push(['Job', `${job.status}${job.waiting?.message ? ` · ${job.waiting.message}` : ''}`], ['Worker', job.live ? `This app’s worker (process ${job.live.process})` : job.status === 'queued' ? (rv.worker ? 'Not started yet' : 'No worker in this app') : 'Not running']);
+        else if (state.status === 'running') rows.push(['Job', 'Being submitted']);
+      }
+      if (node.type === 'federated') {
+        // Only what the A2A protocol reported: the job's state and the remote task's ID, never the peer's tools or processes.
+        const job = state.jobId ? rv.jobs.get(state.jobId) : null, attempt = job?.attempts?.at(-1);
+        rows.push(['Remote peer', node.config.peerId], ['What is known', 'Only the states and results the peer reports over A2A']);
+        if (job) rows.push(['Job', `${job.status}${job.waiting?.message ? ` · ${job.waiting.message}` : ''}`], ['Remote task', attempt?.remoteTaskId || (job.status === 'queued' ? 'Not sent yet' : 'Not named by the peer')]);
         else if (state.status === 'running') rows.push(['Job', 'Being submitted']);
       }
       if (node.type === 'condition' && state.decision) {
@@ -1476,7 +1532,7 @@ window.PromptboardNetworkPipeline = (() => {
       const show = button(rv.report?.nodeId === node.id ? 'Hide the report' : 'Show the report', () => void toggleReport(node.id), 'secondary-button'); show.id = 'network-run-show-report';
       const parts = [show];
       if (rv.report?.nodeId === node.id) {
-        if (rv.report.error) parts.push(el('p', 'inline-error', rv.report.error));
+        if (rv.report.error) parts.push(errorLine(rv.report.error));
         else {
           const body = el('div', 'md-view network-post-body network-run-report'); body.id = 'network-run-report'; body.append(window.PromptboardMarkdown.render(rv.report.text));
           const save = button('Download', () => download(rv.report.file.split('/').pop(), rv.report.text, 'text/markdown'), 'text-button'); save.id = 'network-run-download-report';
@@ -1520,7 +1576,7 @@ window.PromptboardNetworkPipeline = (() => {
         const data = await request(`/api/network/jobs/${jobId}`);
         const pre = el('pre', 'network-preview-text network-job-json', JSON.stringify(data, null, 2)); pre.id = 'network-job-json'; pre.tabIndex = 0; pre.setAttribute('aria-label', 'The job record as JSON');
         host.openDialog(`Job ${jobId}`, [note('The job record as the job engine keeps it, with its accepted request. Results are referenced by file and SHA-256.'), pre, closeActions()]);
-      } catch (failure) { host.openDialog(`Job ${jobId}`, [el('p', 'inline-error', failure.message), closeActions()]); }
+      } catch (failure) { host.openDialog(`Job ${jobId}`, [errorLine(failure.message), closeActions()]); }
     }
     // Run canvas: top-level steps at their published positions; an expanded sub-pipeline holds its steps in columns.
     function drawRunCanvas() {
@@ -1577,7 +1633,7 @@ window.PromptboardNetworkPipeline = (() => {
         for (const id of visibleGroups) elements.push({ group: 'nodes', data: { id, type: 'subnetwork', label: label(id), ...(group(id).parent ? { parent: group(id).parent } : {}) }, position: { ...at.get(id) }, classes: `${rv.expanded.has(id) ? 'group' : ''} s-${status(id)}` });
         for (const node of rv.plan.nodes) if (shown(node.id) === node.id) elements.push({ group: 'nodes', data: { id: node.id, type: node.type, label: label(node.id), ...(node.group ? { parent: node.group } : {}) }, position: { ...at.get(node.id) }, classes: `s-${status(node.id)}` });
         const edges = new Map();
-        for (const node of rv.plan.nodes) for (const dep of node.deps) { const a = shown(dep.from), b = shown(node.id); if (a !== b && !edges.has(`${a}>${dep.port}>${b}`)) edges.set(`${a}>${dep.port}>${b}`, { group: 'edges', data: { id: `r:${a}>${dep.port}>${b}`, source: a, target: b, port: dep.port, label: dep.port } }); }
+        for (const node of rv.plan.nodes) for (const dep of node.deps) { const a = shown(dep.from), b = shown(node.id); if (a !== b && !edges.has(`${a}>${dep.port}>${b}`)) { const remote = [dep.from, node.id].some(id => step(id)?.type === 'federated'); edges.set(`${a}>${dep.port}>${b}`, { group: 'edges', data: { id: `r:${a}>${dep.port}>${b}`, source: a, target: b, port: dep.port, remote, label: remote ? `${dep.port} · remote` : dep.port } }); } }
         cy.batch(() => { cy.elements().remove(); cy.add(elements); cy.add([...edges.values()]); if (rv.selected) cy.getElementById(shown(rv.selected)).select(); });
         return;
       }

@@ -117,7 +117,10 @@ test('restart keeps records; damaged files fall back to the backup or fail close
   // A damaged file with a good backup: the backup loads and the damaged copy is set aside.
   const path = file('memory', `agent-${a.id.replace('_', '__')}.json`), good = await readFile(`${path}.bak`, 'utf8');
   await writeFile(path, '{ damaged');
-  assert.equal((await open().memory.list('agent', a.id)).revision, JSON.parse(good).revision);
+  const recovered = await open().memory.list('agent', a.id);
+  assert.equal(recovered.revision, JSON.parse(good).revision + 2);
+  assert.ok(recovered.records.every(item => item.status === 'proposed'), 'backup recovery requires approval again');
+  assert.equal(recovered.recovery.code, 'SETTINGS_RECOVERED');
   assert.equal((await readdir(file('memory'))).filter(name => name.includes('.corrupt-')).length, 1);
   // No usable copy: refused (the preview too: a job never gets an empty block in place of damaged memory).
   await writeFile(path, '{ damaged'); await writeFile(`${path}.bak`, '{ damaged');

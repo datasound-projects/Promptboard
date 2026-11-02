@@ -7,7 +7,7 @@
 // sequence number it saw, so each event shows once. Kanban runs of registered agents are listed read only and open their
 // card. Costs and token counts appear only when the CLI reported them; nothing shows a percentage. All text is set as text.
 window.PromptboardNetworkActivity = (() => {
-  const { el, button, plural, ago, clip } = window.PromptboardDom;
+  const { el, button, plural, ago, clip, errorLine } = window.PromptboardDom;
   // [label, tone, mark]: the tone colours the chip, the mark tells the states apart without colour.
   const STATES = {
     running: ['Running', 'running', '▶'], preparing: ['Preparing', 'running', '▶'], queued: ['Queued', 'queued', '○'],
@@ -91,12 +91,16 @@ window.PromptboardNetworkActivity = (() => {
     const expected = agentId => { const coverage = data.summary?.agents.find(agent => agent.agentId === agentId)?.coverage; return coverage ? coverage.label.toLowerCase() : 'what its CLI allows'; };
     /**
      * Redraw `root` and keep the keyboard where it was: a control that was replaced gets focus back through its id or its
-     * data-focus-key (a Details or Open button of the same event, job, run or agent), so live updates never drop focus.
+     * data-focus-key (a Details or Open button of the same event, job, run or agent), and one that was kept and put back gets
+     * it again with its caret, so live updates never drop focus.
      */
     function keepFocus(root, draw) {
       const active = root.contains(document.activeElement) ? document.activeElement : null, key = active?.dataset.focusKey, id = active?.id;
+      const { selectionStart: start, selectionEnd: end, selectionDirection: direction } = active || {};
       draw();
-      if (!active || active.isConnected) return;
+      if (!active || document.activeElement === active) return;
+      // A kept node (the answer and note forms) was taken out and put back, which blurs it in Chrome: focus it again, caret kept.
+      if (active.isConnected) { active.focus(); if (typeof start === 'number') active.setSelectionRange(start, end, direction); return; }
       (key ? root.querySelector(`[data-focus-key="${key}"]`) : id ? document.getElementById(id) : null)?.focus();
     }
     const names = () => new Map((data.summary?.agents || []).map(agent => [agent.agentId, agent.name]));
@@ -444,7 +448,7 @@ window.PromptboardNetworkActivity = (() => {
       const eventList = el('ol', 'network-events'); eventList.id = 'network-agent-activity-feed'; eventList.setAttribute('aria-label', 'Events of this agent, newest first');
       eventList.append(...[...agentView.events].reverse().map(event => eventItem(event, { withAgent: false })));
       nodes.push(el('h3', '', 'Open jobs'), ...(jobs.length ? [jobList] : [note('No open Network job.')]), el('h3', '', 'Kanban runs (read only)'), ...(runs.length ? [runList] : [note('No Kanban runs use this agent’s Base definition.')]),
-        el('h3', '', 'Events'), ...(agentView.error ? [el('p', 'inline-error', `Could not load the events. ${agentView.error}`), ...retry] : !agentView.loaded ? [note('Loading events…')] : agentView.events.length ? [eventList] : [el('p', 'network-empty-title', 'No activity yet.'), note('This agent’s Network jobs appear here as they are queued, run and end.')]),
+        el('h3', '', 'Events'), ...(agentView.error ? [errorLine(`Could not load the events. ${agentView.error}`), ...retry] : !agentView.loaded ? [note('Loading events…')] : agentView.events.length ? [eventList] : [el('p', 'network-empty-title', 'No activity yet.'), note('This agent’s Network jobs appear here as they are queued, run and end.')]),
         button('Open the whole timeline', () => host.go('#/network/activity'), 'text-button'));
       keepFocus(agentRoot, () => agentRoot.replaceChildren(...nodes));
     }

@@ -49,7 +49,7 @@ export const JOB_TRANSITIONS = Object.freeze({
 const LIMITS = JOB_LIMITS, NEXT = JOB_TRANSITIONS, TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 const ATTEMPT_STATUSES = ['claimed', 'launching', 'running', 'completed', 'failed', 'cancelled', 'unknown', 'interrupted'], ATTEMPT_ENDED = new Set(ATTEMPT_STATUSES.slice(3));
 const OUTCOMES = ['completed', 'failed', 'cancelled', 'uncertain', 'not_started'];
-const JOB_ID = /^job_[0-9a-f]{20}$/, ATTEMPT_ID = /^att_[0-9a-f]{20}$/, AGENT_ID = /^agt_[0-9a-f]{20}$/, NETWORK_ID = /^net_[0-9a-f]{20}$/;
+const JOB_ID = /^job_[0-9a-f]{20}$/, ATTEMPT_ID = /^att_[0-9a-f]{20}$/, AGENT_ID = /^agt_[0-9a-f]{20}$/, NETWORK_ID = /^net_[0-9a-f]{20}$/, PEER_ID = /^peer_[0-9a-f]{20}$/;
 /** A pipeline run and one step of its compiled plan (a sub-pipeline step is namespaced `<subnode>/<step>`, at most 4 deep). */
 export const RUN_ID = /^run_[0-9a-f]{20}$/, PLAN_NODE_ID = /^n_[0-9a-f]{12}(?:\/n_[0-9a-f]{12}){0,4}$/;
 const EXTERNAL_ID = /^[A-Za-z0-9_-]{1,100}$/, CODE = /^[A-Z][A-Z0-9_]{1,59}$/, KEY = /^[^\u0000-\u001f\u007f]{1,200}$/, SHA = /^[0-9a-f]{64}$/;
@@ -81,7 +81,7 @@ const tags = job => ({ agentId: job.agentId, pipelineRunId: job.pipelineRunId, n
 /** A stored job is used only when it has what this module writes; anything else counts as damaged (set aside, backup used). */
 const storedAttempt = item => object(item) && ATTEMPT_ID.test(item.id) && Number.isSafeInteger(item.number) && ATTEMPT_STATUSES.includes(item.status) && time(item.claimedAt)
   && [item.launchingAt, item.spawnedAt, item.endedAt].every(nullable(time)) && nullable(value => Number.isSafeInteger(value) && value > 0)(item.pid);
-const storedJob = job => JOB_ID.test(job.id) && Number.isSafeInteger(job.revision) && JOB_STATUSES.includes(job.status) && AGENT_ID.test(job.agentId) && SHA.test(job.requestSha256)
+const storedJob = job => JOB_ID.test(job.id) && Number.isSafeInteger(job.revision) && JOB_STATUSES.includes(job.status) && (AGENT_ID.test(job.agentId) || (job.agentId === null && PEER_ID.test(job.peerId))) && SHA.test(job.requestSha256)
   && SHA.test(job.submissionSha256) && object(job.requester) && time(job.createdAt) && nullable(time)(job.queuedAt) && nullable(value => OUTCOMES.includes(value))(job.outcome)
   && Array.isArray(job.attempts) && job.attempts.every(storedAttempt) && (job.currentAttemptId === null || job.attempts.some(item => item.id === job.currentAttemptId))
   && Array.isArray(job.history) && nullable(id => typeof id === 'string' && JOB_ID.test(id))(job.parentJobId) && nullable(key => typeof key === 'string' && KEY.test(key))(job.idempotencyKey)
@@ -95,9 +95,13 @@ const storedSettings = data => Number.isSafeInteger(data.revision) && Object.ent
  * null when not given, so the hash that recognises a repeated submission does not depend on the current settings.
  */
 function submission(input) {
-  only(input, ['agentId', 'input', 'instructions', 'tools', 'permissions', 'limits', 'requireApproval', 'projectId', 'networkId', 'parentJobId', 'idempotencyKey', 'pipeline'], 'a job');
-  const { agentId, instructions = '', tools = 'none', requireApproval = false, projectId = null, networkId = null, parentJobId = null, idempotencyKey = null } = input;
-  if (typeof agentId !== 'string' || !AGENT_ID.test(agentId)) fail('Choose an agent registered in Network.');
+  only(input, ['agentId', 'peerId', 'input', 'instructions', 'tools', 'permissions', 'limits', 'requireApproval', 'projectId', 'networkId', 'parentJobId', 'idempotencyKey', 'pipeline'], 'a job');
+  const { agentId, peerId = null, instructions = '', tools = 'none', requireApproval = false, projectId = null, networkId = null, parentJobId = null, idempotencyKey = null } = input;
+  // A remote A2A peer (Task 13) gets only the input and instructions: no tools, memory, project or lessons leave with it.
+  if (peerId !== null) {
+    if (agentId !== undefined || typeof peerId !== 'string' || !PEER_ID.test(peerId)) fail('A job names either a registered agent or a trusted remote peer (peerId), not both.');
+    if (tools !== 'none' || ![undefined, 'none'].includes(input.permissions?.memory) || input.permissions?.projectLessons || projectId !== null) fail('A remote peer job sends only its input and instructions: no tools, memory, project or lessons.', 'PEER_SCOPE');
+  } else if (typeof agentId !== 'string' || !AGENT_ID.test(agentId)) fail('Choose an agent registered in Network.');
   only(input.input, ['text', 'json'], 'the job input');
   const { text: raw, json: rawJson } = input.input;
   if (typeof raw !== 'string') fail('Write the job input as text.');
@@ -116,7 +120,7 @@ function submission(input) {
   if (!['none', 'web'].includes(tools)) fail('Tools are none or web.');
   const permissions = input.permissions ?? {};
   only(permissions, ['filesystem', 'memory', 'projectLessons'], 'the job permissions');
-  const { filesystem = 'read_only', memory = 'agent', projectLessons = false } = permissions;
+  const { filesystem = 'read_only', memory = peerId ? 'none' : 'agent', projectLessons = false } = permissions;
   if (filesystem !== 'read_only') fail('Network jobs only read in this version: they cannot write files. Use a Kanban card for code changes.', 'EXECUTION_POLICY_UNSUPPORTED');
   if (!MEMORY_MODES.includes(memory)) fail(`Memory is ${MEMORY_MODES.join(', ')}.`);
   if (typeof projectLessons !== 'boolean') fail('projectLessons is true or false.');
@@ -137,7 +141,7 @@ function submission(input) {
     only(pipeline, ['runId', 'nodeId'], 'the pipeline link');
     if (typeof pipeline.runId !== 'string' || !RUN_ID.test(pipeline.runId) || typeof pipeline.nodeId !== 'string' || !PLAN_NODE_ID.test(pipeline.nodeId)) fail('The pipeline link names a run and one of its steps.');
   }
-  return { agentId, input: { text, ...(json !== undefined ? { json } : {}) }, instructions: cleanText(instructions), tools, permissions: { filesystem, memory, projectLessons },
+  return { agentId: peerId ? null : agentId, ...(peerId ? { peerId } : {}), input: { text, ...(json !== undefined ? { json } : {}) }, instructions: cleanText(instructions), tools, permissions: { filesystem, memory, projectLessons },
     timeoutMs, requireApproval, projectId, networkId, parentJobId, idempotencyKey, ...(pipeline ? { pipeline: { runId: pipeline.runId, nodeId: pipeline.nodeId } } : {}) };
 }
 /** The submission check, for definitions that submit later (Task 12 schedules): the same rules, nothing saved. */
@@ -183,10 +187,12 @@ export class NetworkJobs {
    * Attempts are not in the server's shared task list (a Compose cancel waits for that list): close() stops them.
    * `events` (optional, the NetworkEvents journal) hears one job.status event after every saved status change.
    */
-  constructor({ dataDir, registry, worker = null, authBusy = () => false, now = Date.now, prepareTimeoutMs = LIMITS.prepareTimeoutMs, events = null }) {
-    Object.assign(this, { dir: join(dataDir, 'network'), registry, worker, authBusy, now, prepareTimeoutMs, events });
+  constructor({ dataDir, registry, worker = null, peerWorker = null, authBusy = () => false, now = Date.now, prepareTimeoutMs = LIMITS.prepareTimeoutMs, events = null }) {
+    Object.assign(this, { dir: join(dataDir, 'network'), registry, worker, peerWorker, authBusy, now, prepareTimeoutMs, events });
     this.messages = new JobMessages({ dir: this.dir, now, events }); // Task 12: each job's handoff record, in its own folder.
   }
+  /** A remote peer's job runs on the A2A worker (a2a-client.mjs, `peerWorker`), every other job on the local `worker`. */
+  #workerOf(job) { return job.peerId ? this.peerWorker : this.worker; }
   instance = randomUUID(); // This process: each attempt records it as its workerInstance.
   /** Set by the pipeline runner: `holds(job)` is true while an open run needs the job, so its logs stay and it cannot be deleted. */
   holds = null;
@@ -312,8 +318,11 @@ export class NetworkJobs {
     }
   }
   #childrenOf(id) { return [...this.#jobs.values()].filter(other => other.parentJobId === id); }
-  /** The job, its parent, its parent's parent…: at most 16 (delegation depth is at most 4; an owner's links could go further). */
-  #chain(job) { const chain = []; for (let at = job; at && chain.length < 16; at = at.parentJobId ? this.#jobs.get(at.parentJobId) : null) chain.push(at); return chain; }
+  /**
+   * The job, its parent, its parent's parent…: at most 16 (delegation depth is at most 4; an owner's links could go further).
+   * `broken` when it stops short of its root (an ancestor that cannot be read): the delegation checks then refuse.
+   */
+  #chain(job) { const chain = []; for (let at = job; at && chain.length < 16; at = at.parentJobId ? this.#jobs.get(at.parentJobId) : null) chain.push(at); return Object.assign(chain, { broken: Boolean(chain.at(-1).parentJobId) }); }
   /** Who a job's question goes to: the client that submitted it, otherwise the owner (also for pipeline, schedule and sub-jobs). */
   #requesterParty(job) { return job.requester.kind === 'machine' ? { clientId: job.requester.id } : { owner: true }; }
   /** One job.handoff event: IDs, the kind and a short summary, never the question, the sub-tasks or what came back. */
@@ -353,7 +362,7 @@ export class NetworkJobs {
   #view(job, positions = null) {
     const { schema, version, ...fields } = job, live = job.currentAttemptId ? this.#live.get(job.currentAttemptId) : null;
     let status = null;
-    if (live) { try { status = this.worker?.getStatus(live.own) ?? null; } catch {} }
+    if (live) { try { status = live.worker?.getStatus(live.own) ?? null; } catch {} }
     return { ...fields, live: live ? { process: status?.process ?? 'unknown', ...(status?.coverage ? { coverage: status.coverage } : {}) } : null, lastActivity: live?.lastActivity ?? null, waiting: this.#waiting(job, positions) };
   }
   #waiting(job, positions) {
@@ -368,13 +377,18 @@ export class NetworkJobs {
     }
     if (job.status !== 'queued') return null;
     const position = (positions || this.#positions()).get(job.id) ?? null;
-    if (!this.worker) return { for: 'worker', position, message: NO_WORKER };
+    if (!this.#workerOf(job)) return { for: 'worker', position, message: NO_WORKER };
     if (this.authBusy()) return { for: 'sign-in', position, message: 'Waiting for the sign-in change to finish.' };
     return { for: 'slot', position, message: `Waiting for one of ${this.#settings.maxConcurrentJobs} job slots.` };
   }
 
   /** Read the registration and Base now and pin them into the request; a job that could never run is refused here. */
   async #pin(spec) {
+    if (spec.peerId) {
+      if (spec.parentJobId && !this.#jobs.has(spec.parentJobId)) fail('The parent job does not exist. Nothing was submitted.', 'JOB_NOT_FOUND', 409);
+      if (spec.networkId) await this.registry.network(spec.networkId).catch(error => { if (error.code === 'NOT_FOUND') fail('Choose a saved network. Nothing was submitted.', 'NETWORK_NOT_FOUND', 409); throw error; });
+      return { peer: await this.registry.federation.pin(spec.peerId) }; // Outbound on, the peer trusted and switched on; the card hash is pinned.
+    }
     let view;
     try { ({ agent: view } = await this.registry.agent(spec.agentId)); }
     catch (error) { if (error.code === 'NOT_FOUND') fail('This agent is not registered in Network. Nothing was submitted.', 'AGENT_NOT_FOUND', 409); throw error; }
@@ -399,8 +413,8 @@ export class NetworkJobs {
       fail(`This agent needs Base resources a Network job cannot be given: ${names.map(name => `“${name}”`).join(', ')}. Network jobs only read: Base MCP servers, command recipes and supporting agents are not supplied. Make them optional for this agent in Base, or run the work on a Kanban card. Nothing was submitted.`,
         'BASE_REQUIRED_UNAVAILABLE', 409, { errors: manifest.errors.map(({ resourceId = null, code }) => ({ resourceId, code })) });
     }
-    return { registrationId: view.id, registrationRevision: view.revision, baseResourceId: view.baseResourceId, baseKind: resource.kind, baseRevisionRef: resource.revisionRef ?? null,
-      primaryAgent: primary ? { resourceId: primary.id, revisionRef: primary.revisionRef ?? null } : null, provider: view.base.provider, model: view.base.model, effort: view.base.effort, manifest };
+    return { agent: { registrationId: view.id, registrationRevision: view.revision, baseResourceId: view.baseResourceId, baseKind: resource.kind, baseRevisionRef: resource.revisionRef ?? null,
+      primaryAgent: primary ? { resourceId: primary.id, revisionRef: primary.revisionRef ?? null } : null, provider: view.base.provider, model: view.base.model, effort: view.base.effort, manifest } };
   }
 
   /**
@@ -417,7 +431,7 @@ export class NetworkJobs {
   }
   /**
    * The body of a submit, inside the queue. `link` (server code only, Task 12) records what made the job: a delegation or a
-   * schedule. `pinned` is the agent snapshot when the caller already pinned it (a delegation checks every sub-task first).
+   * schedule. `pinned` is #pin's snapshot ({ agent } or { peer }) when the caller already pinned it (a delegation checks every sub-task first).
    */
   async #accept(spec, requester, link = null, pinned = null) {
     const submissionSha256 = fingerprint(spec), key = this.#key(requester, spec.idempotencyKey), existing = key ? this.#jobs.get(this.#keys.get(key)) : null;
@@ -426,13 +440,13 @@ export class NetworkJobs {
       return { jobId: existing.id, status: existing.status, deduplicated: true, job: this.#view(existing) };
     }
     if (this.#closing) fail('The app is shutting down. Nothing was submitted.', 'SHUTTING_DOWN', 503);
-    const agent = pinned ?? await this.#pin(spec), id = newId('job'), at = this.now(), status = spec.requireApproval ? 'waiting_for_approval' : 'queued', linked = linkOf(link);
+    const snapshot = pinned ?? await this.#pin(spec), id = newId('job'), at = this.now(), status = spec.requireApproval ? 'waiting_for_approval' : 'queued', linked = linkOf(link);
     const request = { schema: SCHEMA.request, version: 1, jobId: id, acceptedAt: at, input: spec.input, instructions: spec.instructions, tools: spec.tools, permissions: spec.permissions,
       limits: { timeoutMs: spec.timeoutMs ?? this.#settings.defaultTimeoutMs, maxOutputBytes: LIMITS.resultBytes }, requireApproval: spec.requireApproval,
-      projectId: spec.projectId, networkId: spec.networkId, parentJobId: spec.parentJobId, ...(spec.pipeline ? { pipeline: spec.pipeline } : {}), ...linked, agent };
+      projectId: spec.projectId, networkId: spec.networkId, parentJobId: spec.parentJobId, ...(spec.pipeline ? { pipeline: spec.pipeline } : {}), ...linked, ...snapshot };
     const text = `${JSON.stringify(request)}\n`;
     const job = { schema: SCHEMA.job, version: 1, id, revision: 1, status, source: SOURCE[requester.kind], requester: { kind: requester.kind, id: requester.id ?? null },
-      agentId: spec.agentId, projectId: spec.projectId, networkId: spec.networkId, pipelineRunId: spec.pipeline?.runId ?? null, nodeId: spec.pipeline?.nodeId ?? null, parentJobId: spec.parentJobId,
+      agentId: spec.agentId, ...(spec.peerId ? { peerId: spec.peerId } : {}), projectId: spec.projectId, networkId: spec.networkId, pipelineRunId: spec.pipeline?.runId ?? null, nodeId: spec.pipeline?.nodeId ?? null, parentJobId: spec.parentJobId,
       idempotencyKey: spec.idempotencyKey, submissionSha256, requestSha256: sha256(text), createdAt: at, updatedAt: at, acceptedAt: at, queuedAt: status === 'queued' ? this.#stamp() : null,
       attempts: [], currentAttemptId: null, outcome: null, errorCode: null, reason: '', result: null, history: [{ at, status, by: requester.kind }], outputsRemovedAt: null, ...linked };
     try { await writeImmutable(join(this.#folder(id), 'request.json'), text, 'The job'); await writeDocument(join(this.#folder(id), 'job.json'), job); }
@@ -487,10 +501,13 @@ export class NetworkJobs {
       let request;
       try {
         request = await this.#request(job);
-        let view;
-        try { ({ agent: view } = await this.registry.agent(job.agentId)); } catch (error) { if (error.code === 'NOT_FOUND') fail('The agent registration no longer exists. Nothing ran.', 'REGISTRATION_MISSING', 409); throw error; }
-        if (!view.enabled) fail('The agent was switched off in Network before the job started. Nothing ran.', 'REGISTRATION_DISABLED', 409);
-        if (view.base.stale) fail(`The agent’s Base definition can no longer be used (${view.base.staleReason}). Nothing ran.`, 'BASE_REVOKED', 409);
+        if (job.peerId) await this.registry.federation.check(request.peer); // Federation on, the peer trusted and switched on, the same card.
+        else {
+          let view;
+          try { ({ agent: view } = await this.registry.agent(job.agentId)); } catch (error) { if (error.code === 'NOT_FOUND') fail('The agent registration no longer exists. Nothing ran.', 'REGISTRATION_MISSING', 409); throw error; }
+          if (!view.enabled) fail('The agent was switched off in Network before the job started. Nothing ran.', 'REGISTRATION_DISABLED', 409);
+          if (view.base.stale) fail(`The agent’s Base definition can no longer be used (${view.base.staleReason}). Nothing ran.`, 'BASE_REVOKED', 409);
+        }
         if (job.projectId && !(await this.registry.projects()).includes(job.projectId)) fail('The job’s project is no longer on the board. Nothing ran.', 'PROJECT_NOT_FOUND', 409);
         // A sub-job is checked against the delegation policy again: what the owner revoked since it was queued never starts.
         if (job.delegation) {
@@ -503,12 +520,12 @@ export class NetworkJobs {
         return null;
       }
       const attempt = { id: newId('att'), number: job.attempts.length + 1, status: 'claimed', workerInstance: this.instance, claimedAt: this.now(), launchingAt: null, spawnedAt: null,
-        endedAt: null, pid: null, provider: request.agent.provider, model: request.agent.model, effort: request.agent.effort, nativeSessionId: null, exitCode: null, errorCode: null,
-        coverage: null, sideEffects: request.tools === 'web' ? 'read_only_web' : 'none', usage: { reported: false }, lateResult: null };
+        endedAt: null, pid: null, provider: request.agent?.provider ?? 'a2a', model: request.agent?.model ?? null, effort: request.agent?.effort ?? null, nativeSessionId: null, exitCode: null, errorCode: null,
+        coverage: null, sideEffects: request.peer ? 'external_unknown' : request.tools === 'web' ? 'read_only_web' : 'none', usage: { reported: false }, lateResult: null, ...(request.peer ? { remoteTaskId: null } : {}) };
       await this.#save(this.#move({ ...job, attempts: [...job.attempts, attempt] }, 'preparing', { currentAttemptId: attempt.id, outcome: null, errorCode: null, reason: '' }, 'app'));
       const controller = new AbortController(), own = { jobId, attemptId: attempt.id, lease: randomBytes(32).toString('base64url'), signal: controller.signal };
       Object.assign(own, { launching: () => this.launching(own), spawned: details => this.spawned(own, details), activity: item => this.activity(own, item), finish: outcome => this.finish(own, outcome) });
-      const live = { jobId, lease: own.lease, own, controller, request, timer: null, stopping: null, endedByEngine: false, lastActivity: null };
+      const live = { jobId, lease: own.lease, own, controller, request, worker: this.#workerOf(job), timer: null, stopping: null, endedByEngine: false, lastActivity: null };
       live.timer = later(() => this.#stop(live, 'failed', { errorCode: 'PREPARE_TIMEOUT', reason: `The job did not start within ${Math.round(this.prepareTimeoutMs / 1000)} seconds.` }).catch(() => {}), this.prepareTimeoutMs);
       this.#live.set(attempt.id, live);
       return own;
@@ -528,21 +545,26 @@ export class NetworkJobs {
       const saved = await this.#save(withAttempt(job, attempt.id, { status: 'launching', launchingAt: this.now() }));
       clearTimeout(live.timer);
       const limit = live.request.limits.timeoutMs;
-      live.timer = later(() => this.#stop(live, 'failed', { errorCode: 'TIMEOUT', reason: `The job ran longer than its ${limit >= MINUTE ? `${Math.round(limit / MINUTE)}-minute` : `${Math.round(limit / 1000)}-second`} limit and was stopped.` }).catch(() => {}), limit);
+      const span = limit >= MINUTE ? `${Math.round(limit / MINUTE)}-minute` : `${Math.round(limit / 1000)}-second`;
+      // A remote peer's task may go on after its time limit, so it ends unknown (never failed or completed by assumption).
+      live.timer = later(() => (live.request.peer ? this.#stop(live, 'unknown', { errorCode: 'TIMEOUT', reason: `The remote agent did not finish within the ${span} limit. Promptboard stopped following it; what it did is not known.` })
+        : this.#stop(live, 'failed', { errorCode: 'TIMEOUT', reason: `The job ran longer than its ${span} limit and was stopped.` })).catch(() => {}), limit);
       return { applied: true, job: this.#view(saved) };
     });
   }
   /** The process is running. When this cannot be saved the process is stopped (it would run off the record). */
-  async spawned(own, { pid = null } = {}) {
+  async spawned(own, { pid = null, remoteTaskId = null } = {}) {
     if (pid !== null && (!Number.isSafeInteger(pid) || pid < 1)) fail('A process ID is a positive whole number.');
+    // A remote A2A task's ID (Task 13): opaque, kept exactly as the peer sent it, saved as soon as the peer named it.
+    if (remoteTaskId !== null && (typeof remoteTaskId !== 'string' || !KEY.test(remoteTaskId))) fail('A remote task ID is one line of at most 200 characters.');
     try {
       return await this.#serial(async () => {
         const { job, attempt } = this.#owned(own);
         if (attempt.status !== 'launching') fail('Report launching before the process starts.', 'JOB_STATE', 409);
-        return { applied: true, job: this.#view(await this.#save(this.#move(withAttempt(job, attempt.id, { status: 'running', spawnedAt: this.now(), pid }), 'running', {}, 'worker'))) };
+        return { applied: true, job: this.#view(await this.#save(this.#move(withAttempt(job, attempt.id, { status: 'running', spawnedAt: this.now(), pid, ...(remoteTaskId !== null ? { remoteTaskId } : {}) }), 'running', {}, 'worker'))) };
       });
     } catch (error) {
-      if (error.code === 'NETWORK_WRITE_FAILED') await Promise.resolve().then(() => this.worker?.cancel(own)).catch(() => {});
+      if (error.code === 'NETWORK_WRITE_FAILED') await Promise.resolve().then(() => this.#live.get(own?.attemptId)?.worker?.cancel(own)).catch(() => {});
       throw error;
     }
   }
@@ -557,7 +579,7 @@ export class NetworkJobs {
     if (!ACTIVITY.includes(item.kind) || typeof item.label !== 'string') fail(`Activity is { kind: ${ACTIVITY.join(' | ')}, label }.`);
     const label = oneLine(item.label).slice(0, 160);
     live.lastActivity = { at: this.now(), kind: item.kind, label };
-    let coverage; try { coverage = this.worker?.getStatus(own)?.coverage; } catch {}
+    let coverage; try { coverage = live.worker?.getStatus(own)?.coverage; } catch {}
     // kind names it in the timeline ("Web search", "Tool"); the pipeline link lets a run's filter find its steps' activity.
     const event = { type: 'job.activity', jobId: job.id, attemptId: own.attemptId, agentId: job.agentId, projectId: job.projectId, networkId: job.networkId, pipelineRunId: job.pipelineRunId, nodeId: job.nodeId,
       status: job.status, kind: item.kind, ...(coverage ? { coverage } : {}), message: label };
@@ -591,8 +613,9 @@ export class NetworkJobs {
       const changes = { exitCode: end.exitCode, ...(end.sideEffects ? { sideEffects: end.sideEffects } : {}), ...(end.coverage ? { coverage: end.coverage } : {}), ...(end.usage ? { usage: end.usage } : {}),
         ...(end.nativeSessionId ? { nativeSessionId: end.nativeSessionId } : {}) };
       // Task 12: a structured request at the end of the report is only a request. Accepted, the job waits for its answer or its
-      // sub-jobs; refused, the job completes with its report and the refusal is recorded.
-      const asked = status === 'completed' ? parseHandoff(end.result.json) : null;
+      // sub-jobs; refused, the job completes with its report and the refusal is recorded. A remote peer's json is data only
+      // (review 4, P4-1): it is never read as a request, so it never becomes a question, a reason, a message or an event.
+      const asked = status === 'completed' && !job.peerId ? parseHandoff(end.result.json) : null;
       if (asked) {
         const handed = await this.#handoff(job, attempt, own, end.result.text, asked, changes);
         if (handed.job) { clearTimeout(live.timer); return { applied: true, job: this.#view(handed.job) }; }
@@ -733,14 +756,17 @@ export class NetworkJobs {
     return live.stopping ??= (async () => {
       clearTimeout(live.timer);
       live.controller.abort();
-      let timer;
-      await Promise.race([Promise.resolve().then(() => this.worker?.cancel(live.own)).catch(() => {}), new Promise(resolve => { timer = later(resolve, LIMITS.stopMs); })]);
+      let timer, answer;
+      await Promise.race([Promise.resolve().then(() => live.worker?.cancel(live.own)).then(value => { answer = value; }, () => {}), new Promise(resolve => { timer = later(resolve, LIMITS.stopMs); })]);
       clearTimeout(timer);
       try {
         return await this.#serial(async () => {
           const job = this.#jobs.get(live.jobId), attempt = current(job);
           if (attempt?.id !== live.own.attemptId || ATTEMPT_ENDED.has(attempt.status)) return job;
-          const saved = await this.#save(this.#end(job, status, details, details.by ?? (status === 'cancelled' ? 'owner' : 'app')));
+          // A remote peer's task is only asked to stop: unless the protocol confirmed it, the outcome stays uncertain.
+          const remote = status === 'cancelled' && live.request.peer && attempt.launchingAt ? (answer?.remoteCancel === 'confirmed' ? { reason: `${details.reason} The remote agent confirmed the cancellation.` }
+            : { outcome: 'uncertain', reason: `${details.reason} Promptboard asked the remote agent to cancel its task, but it did not confirm, so it may still finish its work.` }) : {};
+          const saved = await this.#save(this.#end(job, status, { ...details, ...remote }, details.by ?? (status === 'cancelled' ? 'owner' : 'app')));
           live.endedByEngine = true;
           later(() => this.#release(live), LIMITS.stopMs); // A worker that never returns still frees its slot.
           return saved;
@@ -769,18 +795,19 @@ export class NetworkJobs {
     const live = this.#live.get(own.attemptId), job = { ...this.#view(this.#jobs.get(jobId)), request: structuredClone(live.request) };
     let error = null;
     try {
-      job.handoff = await this.#handoffFor(this.#jobs.get(jobId), live.request); // Task 12: null unless a handoff is offered or came back.
-      await this.worker.claim(job, own);
-      if (!own.signal.aborted) await this.worker.start(job, own);
+      // Task 12: null unless a handoff is offered or came back; a remote peer's job (Task 13) never gets one.
+      job.handoff = live.request.peer ? null : await this.#handoffFor(this.#jobs.get(jobId), live.request);
+      await live.worker.claim(job, own);
+      if (!own.signal.aborted) await live.worker.start(job, own);
     } catch (caught) { error = caught; }
     await this.#settle(live, error);
     this.#release(live);
   }
   #pump() {
-    if (!this.worker || !this.#started || this.#closing || this.authBusy()) return;
+    if (!this.#started || this.#closing || this.authBusy()) return;
     for (const job of this.#order()) {
       if (this.activeCount() >= this.#settings.maxConcurrentJobs) break;
-      if (this.#claiming.has(job.id)) continue;
+      if (this.#claiming.has(job.id) || !this.#workerOf(job)) continue; // Without its worker a job stays queued and inert.
       this.#claiming.add(job.id);
       this.#run(job.id).catch(() => {}); // #run settles every failure itself; nothing may go unhandled.
     }
@@ -811,14 +838,20 @@ export class NetworkJobs {
     only(input, [], 'a cancel request');
     const reason = why ?? (by === 'machine' ? 'Cancelled by the external client that submitted it.' : 'Cancelled by you.');
     await this.#ready();
-    const first = await this.#serial(async () => {
+    const step = () => this.#serial(async () => {
       const job = this.#job(id);
       if (TERMINAL.has(job.status)) fail(`This job already ended as ${job.status}. Nothing was cancelled.`, 'JOB_FINISHED', 409);
       if (!NEXT[job.status].includes('cancelled')) fail('This job needs your decision instead: retry it or close it.', 'JOB_STATE', 409);
-      const live = job.currentAttemptId && this.#live.get(job.currentAttemptId);
+      const attempt = current(job), live = attempt && !ATTEMPT_ENDED.has(attempt.status) && this.#live.get(attempt.id);
       return live ? { live } : { job: await this.#save(this.#end(job, 'cancelled', { reason }, by)) };
     });
-    const job = first.job ?? await this.#stop(first.live, 'cancelled', { reason, by });
+    // An attempt can end by itself while it is stopped: a handoff saved first leaves the job open (waiting), so cancel that too.
+    let next = await step(), job = next.job;
+    while (next.live) {
+      job = await this.#stop(next.live, 'cancelled', { reason, by });
+      next = NEXT[job.status].includes('cancelled') ? await step() : {};
+      job = next.job ?? job;
+    }
     return { job: this.#view(job), cancelled: job.status === 'cancelled' };
   }
   /** `decision: 'approve'` queues a job that waits for approval; 'reject' cancels it. Only the owner's routes call this. */
@@ -951,7 +984,10 @@ export class NetworkJobs {
     return this.#serial(async () => {
       const parent = this.#job(parentId), requester = { kind: 'machine', id: clientId }, key = this.#key(requester, idempotencyKey), existing = key ? this.#jobs.get(this.#keys.get(key)) : null;
       if (existing) {
-        if (existing.parentJobId !== parentId || existing.agentId !== task.agentId) fail('This idempotency key was already used for a different job. Nothing was submitted.', 'IDEMPOTENCY_CONFLICT', 409, { jobId: existing.id });
+        // The same key answers the same sub-job only for the same request, as a submit's does: what the client asked is compared
+        // (the policy-made rest may have changed since, and a retry is still the same request).
+        const asked = submission({ agentId: task.agentId, input: { text: task.task, ...(task.json !== undefined ? { json: task.json } : {}) }, tools: task.tools }), before = await this.#request(existing);
+        if (existing.parentJobId !== parentId || existing.agentId !== task.agentId || before.tools !== asked.tools || JSON.stringify(before.input) !== JSON.stringify(asked.input)) fail('This idempotency key was already used for a different job. Nothing was submitted.', 'IDEMPOTENCY_CONFLICT', 409, { jobId: existing.id });
         return { jobId: existing.id, status: existing.status, deduplicated: true, job: this.#view(existing) };
       }
       if (TERMINAL.has(parent.status)) fail('This job already ended, so it cannot get a sub-job. Submit a new job instead.', 'JOB_FINISHED', 409);

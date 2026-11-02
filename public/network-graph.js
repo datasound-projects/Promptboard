@@ -7,13 +7,13 @@
 // permission. The canvas is Cytoscape (index.html loads /vendor/cytoscape.min.js); without it, and on a phone, the node
 // and relation lists beside it edit the same draft with the keyboard. All text is set as text (PromptboardDom).
 window.PromptboardNetworkGraph = (() => {
-  const { el, button, plural, ago, clip, download } = window.PromptboardDom;
+  const { el, button, plural, ago, clip, download, errorLine } = window.PromptboardDom;
   const RELATIONS = [['message', 'Message'], ['delegate', 'Delegate'], ['share_result', 'Share result']];
   const RELATION_NAMES = Object.fromEntries(RELATIONS);
   const RELATION_VERBS = { message: 'may send messages to', delegate: 'may delegate work to', share_result: 'may share results with' };
   const PROVIDERS = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI', agy: 'Antigravity' };
   const KINDS = { profile: 'Agent', agentProfile: 'Agent profile' };
-  const STATE_NAMES = { disabled: 'Switched off', stale: 'Stale', missing: 'Missing', unavailable: 'Unreadable' };
+  const STATE_NAMES = { disabled: 'Switched off', stale: 'Stale', missing: 'Missing', unavailable: 'Unreadable', 'federation-off': 'Federation off' };
   // Resource limits of the view, not of the product: the canvas draws at most this many nodes once sub-networks are
   // expanded; the side lists show a page at a time.
   const VIEW_CAP = 1000, LIST_PAGE = 200, UNDO_DEPTH = 50, NUDGE = 10;
@@ -27,6 +27,8 @@ window.PromptboardNetworkGraph = (() => {
   const isPhone = () => (window.matchMedia ? window.matchMedia('(max-width: 730px)').matches : window.innerWidth <= 730);
   const clone = value => JSON.parse(JSON.stringify(value));
   const agentState = ref => (!ref || ref.missing ? 'missing' : ref.stale ? 'stale' : ref.enabled === false ? 'disabled' : 'ok');
+  // A remote A2A peer (Task 13): a peer trusted in Federation, switched on, with outbound federation on.
+  const peerState = ref => (!ref || ref.missing ? 'missing' : ref.enabled === false ? 'disabled' : ref.outbound === false ? 'federation-off' : 'ok');
   const debounce = (fn, ms) => { let timer = null; return () => { clearTimeout(timer); timer = setTimeout(fn, ms); }; };
   const css = (name, fallback) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
   /** Keep keyboard focus on the same control (by ID or data attribute) when a part of the page is drawn again. */
@@ -159,7 +161,7 @@ window.PromptboardNetworkGraph = (() => {
       libPanel.dataset.view = id ? 'detail' : 'list';
       for (const pick of libList.querySelectorAll('[data-network-id]')) { if (pick.dataset.networkId === id) pick.setAttribute('aria-current', 'true'); else pick.removeAttribute('aria-current'); }
       if (!id) { libDetail.replaceChildren(el('p', 'base-placeholder', 'Choose a network to see its versions and where it is used.')); return; }
-      if (lib.detailError?.id === id) { libDetail.replaceChildren(el('p', 'inline-error', lib.detailError.message), button('Back to networks', () => go('#/network/library'), 'secondary-button')); return; }
+      if (lib.detailError?.id === id) { libDetail.replaceChildren(errorLine(lib.detailError.message), button('Back to networks', () => go('#/network/library'), 'secondary-button')); return; }
       if (lib.detail?.network.id !== id) { libDetail.replaceChildren(note('Loading network…')); if (lib.loadingId !== id) void loadDetail(id); return; }
       const keep = libDetail.contains(document.activeElement) ? document.activeElement.id : '';
       libDetail.replaceChildren(networkDetail(lib.detail));
@@ -326,6 +328,7 @@ window.PromptboardNetworkGraph = (() => {
     // Toolbar: editing, then the canvas view (pan, zoom, fit, layout), then search and the relation filter.
     const gAddAgent = button('Add agent…', () => addAgentDialog(), 'secondary-button'); gAddAgent.id = 'network-graph-add-agent';
     const gAddNetwork = button('Add sub-network…', () => void addSubnetworkDialog(), 'secondary-button'); gAddNetwork.id = 'network-graph-add-subnetwork';
+    const gAddPeer = button('Add remote peer…', () => void addPeerDialog(), 'secondary-button'); gAddPeer.id = 'network-graph-add-peer';
     const gRelation = select(RELATIONS); gRelation.id = 'network-graph-relation';
     const gConnect = button('Connect', () => toggleConnect(), 'secondary-button'); gConnect.id = 'network-graph-connect'; gConnect.setAttribute('aria-pressed', 'false');
     const gRemove = button('Remove', () => removeSelected(), 'secondary-button'); gRemove.id = 'network-graph-remove';
@@ -338,7 +341,7 @@ window.PromptboardNetworkGraph = (() => {
     const gFilter = el('fieldset', 'network-graph-filter'); gFilter.append(el('legend', 'sr-only', 'Show relations'));
     for (const [relation, label] of RELATIONS) { const box = Object.assign(el('input'), { type: 'checkbox', checked: true }); box.dataset.relationFilter = relation; const row = checkRow(box, label); row.classList.add(`relation-${relation}`); gFilter.append(row); }
     const gRelationLabel = labelled('Relation', gRelation, 'field-label network-inline-label');
-    const editTools = el('div', 'network-graph-tools'); editTools.append(gAddAgent, gAddNetwork, gRelationLabel, gConnect, gRemove);
+    const editTools = el('div', 'network-graph-tools'); editTools.append(gAddAgent, gAddNetwork, gAddPeer, gRelationLabel, gConnect, gRemove);
     const viewTools = el('div', 'network-graph-tools network-canvas-tools'); viewTools.append(gFit, gZoomOut, gZoomIn, gGrid, gLayered);
     const findTools = el('div', 'network-graph-tools'); findTools.append(labelled('Find nodes', gSearch, 'field-label network-inline-label'), gFilter);
     const gTools = el('div', 'network-graph-toolbar'); gTools.append(editTools, viewTools, findTools);
@@ -371,16 +374,20 @@ window.PromptboardNetworkGraph = (() => {
       if (!versionCache.has(key)) versionCache.set(key, request(`/api/network/networks/${id}/versions/${number}`).catch(failure => { versionCache.delete(key); throw failure; }));
       return versionCache.get(key);
     }
-    const fresh = (key, extra) => ({ key, id: null, readOnly: false, versionNumber: null, loading: true, loadError: null, draft: null, nodes: [], edges: [], refs: { agents: {}, networks: {} }, issues: [], usedBy: [],
+    const fresh = (key, extra) => ({ key, id: null, readOnly: false, versionNumber: null, loading: true, loadError: null, draft: null, nodes: [], edges: [], refs: { agents: {}, networks: {}, peers: {} }, issues: [], usedBy: [],
       dirty: false, saving: false, undo: [], selected: null, phoneDetail: false, expanded: new Map(), inner: new Map(), error: null, problems: new Set(), notice: '', connect: null,
       q: '', hidden: new Set(), nodeLimit: LIST_PAGE, edgeLimit: LIST_PAGE, inside: null, ...extra });
     const editorHash = () => `#/network/graph/${ed.id}${ed.readOnly ? `/v${ed.versionNumber}` : ''}`;
     const byId = id => ed.nodes.find(node => node.id === id);
     const snapshot = () => ({ nodes: clone(ed.nodes), edges: clone(ed.edges) });
-    function nodeName(node, refs = ed.refs) { return node.type === 'agent' ? refs.agents[node.agentId]?.name || node.agentId : refs.networks[node.networkId]?.name || node.networkId; }
-    function stateOf(node, refs = ed.refs) { return node.type === 'agent' ? agentState(refs.agents[node.agentId]) : refs.networks[node.networkId]?.pinned === null ? 'unavailable' : 'ok'; }
+    function nodeName(node, refs = ed.refs) {
+      if (node.type === 'federated') return refs.peers?.[node.peerId]?.name || node.peerId;
+      return node.type === 'agent' ? refs.agents[node.agentId]?.name || node.agentId : refs.networks[node.networkId]?.name || node.networkId;
+    }
+    function stateOf(node, refs = ed.refs) { return node.type === 'agent' ? agentState(refs.agents[node.agentId]) : node.type === 'federated' ? peerState(refs.peers?.[node.peerId]) : refs.networks[node.networkId]?.pinned === null ? 'unavailable' : 'ok'; }
     function subtitleOf(node, refs = ed.refs) {
       if (node.type === 'agent') { const ref = refs.agents[node.agentId] || {}; return [KINDS[ref.kind] || 'Agent', PROVIDERS[ref.provider]].filter(Boolean).join(' · '); }
+      if (node.type === 'federated') { const ref = refs.peers?.[node.peerId] || {}; return ['Remote A2A peer', ref.origin].filter(Boolean).join(' · '); }
       const ref = refs.networks[node.networkId] || {}, latest = ref.versions?.at(-1);
       return `Sub-network · version ${node.version}${latest ? ` of ${latest}` : ''}${ref.pinned ? ` · ${plural(ref.pinned.nodes, 'node')}` : ''}`;
     }
@@ -455,6 +462,15 @@ window.PromptboardNetworkGraph = (() => {
       }, `Added “${item.name}” version ${version} as a sub-network. Saving checks that no network contains itself.`);
       selectItem(id, { focus: true });
     }
+    function addPeerNode(peer) {
+      if (ed.nodes.some(node => node.peerId === peer.id)) { say('This peer is already in the network.'); return; }
+      const id = freshId('n');
+      change(() => {
+        ed.nodes.push({ id, type: 'federated', peerId: peer.id, position: placeNew() });
+        ed.refs.peers ??= {}; ed.refs.peers[peer.id] = { name: peer.name, origin: peer.origin, enabled: peer.enabled, outbound: peer.outbound };
+      }, `Added the remote peer “${peer.name}”. Save the draft to keep it. A relation to it grants nothing; only a pipeline step sends it work.`);
+      selectItem(id, { focus: true });
+    }
     function removeNode(id) {
       const node = byId(id); if (!node) return;
       const count = ed.edges.filter(edge => edge.from === id || edge.to === id).length;
@@ -511,7 +527,7 @@ window.PromptboardNetworkGraph = (() => {
       ed.saving = true; renderHead();
       try {
         const sent = JSON.stringify(snapshot());
-        const data = await request(`/api/network/networks/${ed.id}`, { method: 'PATCH', body: { expectedRevision: ed.draft.revision, nodes: ed.nodes, edges: ed.edges } });
+        const data = await request(`/api/network/networks/${ed.id}`, { method: 'PATCH', body: { expectedRevision: ed.draft.revision, nodes: ed.nodes, edges: ed.edges, ...(ed.draft.delegationReviewRequired ? { confirmRecovery: true } : {}) } });
         // An edit made while the save was out stays in the working copy, unsaved, with its undo steps; the draft moves on.
         const mine = JSON.stringify(snapshot()) !== sent && { nodes: ed.nodes, edges: ed.edges, refs: ed.refs };
         applyDetail(data);
@@ -600,7 +616,7 @@ window.PromptboardNetworkGraph = (() => {
       // One read holds the first 200 networks; the search asks the server for the others.
       const find = async q => { const params = new URLSearchParams({ limit: '200' }); if (q) params.set('q', q); return request(`/api/network/networks?${params}`); };
       let data;
-      try { data = await find(''); } catch (failure) { host.openDialog('Add sub-network', [el('p', 'inline-error', failure.message), closeActions()]); return; }
+      try { data = await find(''); } catch (failure) { host.openDialog('Add sub-network', [errorLine(failure.message), closeActions()]); return; }
       if (!ed) return;
       const present = new Set(ed.nodes.map(node => node.networkId).filter(Boolean)), mine = ed.id;
       const usable = item => !present.has(item.id) && item.publishedVersions.length > 0;
@@ -635,15 +651,38 @@ window.PromptboardNetworkGraph = (() => {
       host.openDialog('Add sub-network', [form]); pick.focus();
     }
 
+    /** Trusted peers from Federation; a peer that is switched off (or outbound off) can be placed and is marked. */
+    async function addPeerDialog() {
+      host.openDialog('Add remote peer', [note('Loading trusted peers…')]);
+      let data;
+      try { data = await request('/api/network/federation'); } catch (failure) { host.openDialog('Add remote peer', [errorLine(failure.message), closeActions()]); return; }
+      if (!ed) return;
+      const toFederation = button('Open Federation', () => { host.closeDialog(); go('#/network/federation'); }, 'secondary-button');
+      if (!data.peers.length) { host.openDialog('Add remote peer', [note('No remote peer is trusted yet. Add one in Network → Federation: preview its Agent Card, review it and approve it.'), closeActions(toFederation)]); return; }
+      const present = new Set(ed.nodes.map(node => node.peerId).filter(Boolean)), list = el('ul', 'network-pick-list'); list.id = 'network-pick-peers'; list.setAttribute('aria-label', 'Trusted peers');
+      for (const peer of data.peers) {
+        const item = el('li'), pick = button('', () => { host.closeDialog(); addPeerNode({ id: peer.id, name: peer.name, origin: peer.origin, enabled: peer.enabled, outbound: data.outbound.enabled }); }, 'network-agent network-pick'); pick.dataset.peerId = peer.id;
+        const text = el('span', 'network-row-text'); text.append(el('strong', '', peer.name), el('span', 'network-row-sub', `Remote A2A peer · ${peer.origin}`));
+        if (!peer.enabled) text.append(chip('Switched off', 'warn'));
+        if (present.has(peer.id)) { pick.disabled = true; text.append(chip('Already in this network', 'off')); }
+        pick.append(text); item.append(pick); list.append(item);
+      }
+      host.openDialog('Add remote peer', [list, ...(data.outbound.enabled ? [] : [note('Outbound federation is off: the peer can be placed, but no pipeline step can call it until you turn it on.', 'network-stale')]),
+        note('A remote peer is an independent agent reached over A2A. Promptboard sees only what the protocol reports: never its tools, memory or processes.'), closeActions(toFederation)]);
+      list.querySelector('button:not(:disabled)')?.focus();
+    }
+
     // ---- Canvas (Cytoscape). Built per network when the canvas is on screen; the lists work without it.
     function styleSheet() {
       const ink = css('--ink', '#16161a'), surface = css('--surface', '#fff'), raised = css('--surface-2', '#f1f1f4'), line = css('--line-strong', '#85858f'), muted = css('--muted', '#4f4f58');
       const warn = css('--og-warn', '#b45309'), error = css('--error', '#c2410c'), accent = css('--sash', '#7c3aed');
-      const colors = { message: css('--og-design', '#2563eb'), delegate: css('--og-define', '#7c3aed'), share_result: css('--og-operate', '#047857') };
+      const colors = { message: css('--og-design', '#2563eb'), delegate: css('--og-define', '#7c3aed'), share_result: css('--og-operate', '#047857') }, remote = css('--og-decide', '#be185d');
       return [
         { selector: 'node', style: { shape: 'round-rectangle', width: 168, height: 46, 'background-color': surface, 'border-width': 1.5, 'border-color': line, label: 'data(label)', color: ink, 'font-size': 12,
           'font-family': css('--sans', 'sans-serif'), 'text-valign': 'center', 'text-halign': 'center', 'text-wrap': 'wrap', 'text-max-width': 156, 'min-zoomed-font-size': 7 } },
         { selector: 'node[type = "subnetwork"]', style: { height: 56, 'border-width': 4, 'border-style': 'double', 'background-color': raised } },
+        // A remote A2A peer: its own shape and a dashed border in the remote colour; relations to it are dotted (below).
+        { selector: 'node[type = "federated"]', style: { shape: 'round-tag', width: 196, height: 52, 'text-max-width': 140, 'text-margin-x': -14, 'border-width': 2.5, 'border-style': 'dashed', 'border-color': remote } },
         // An expanded sub-network's one-line label sits inside its box, below the border where relations arrive, on its
         // own background; relations inside it are drawn above its nodes, so a short one still shows its name.
         { selector: 'node.expanded', style: { 'text-valign': 'top', 'text-margin-y': 24, padding: 32, 'background-opacity': 0.4, 'border-style': 'dashed', 'border-width': 2,
@@ -660,6 +699,7 @@ window.PromptboardNetworkGraph = (() => {
           label: 'data(label)', 'font-size': 10, color: muted, 'text-rotation': 'autorotate', 'text-background-color': surface, 'text-background-opacity': 1, 'text-background-padding': 2, 'min-zoomed-font-size': 9 } },
         { selector: 'edge[relation = "delegate"]', style: { 'line-color': colors.delegate, 'target-arrow-color': colors.delegate, 'target-arrow-shape': 'triangle-tee' } },
         { selector: 'edge[relation = "share_result"]', style: { 'line-color': colors.share_result, 'target-arrow-color': colors.share_result, 'target-arrow-shape': 'circle' } },
+        { selector: 'edge[?remote]', style: { 'line-style': 'dotted', width: 2.4 } },
         { selector: 'edge:selected', style: { width: 3.5, 'overlay-opacity': 0 } },
         { selector: 'edge.inner', style: { width: 1.2, opacity: 0.85, 'z-compound-depth': 'top' } },
         { selector: '.faded', style: { opacity: 0.16 } },
@@ -667,6 +707,7 @@ window.PromptboardNetworkGraph = (() => {
       ];
     }
     function labelOf(node, cyId, refs = ed.refs) {
+      if (node.type === 'federated') { const state = stateOf(node, refs); return `⇄ ${clip(nodeName(node, refs), 38)}\n${state !== 'ok' ? STATE_NAMES[state] : 'Remote peer'}`; }
       if (node.type === 'agent') { const state = stateOf(node, refs); return `${clip(nodeName(node, refs), 40)}${state !== 'ok' ? `\n${STATE_NAMES[state]}` : ''}`; }
       const ref = refs.networks[node.networkId] || {};
       return `${ed.expanded.has(cyId) ? '▾' : '▸'} ${clip(nodeName(node, refs), 36)}${ed.expanded.has(cyId) ? ' · ' : '\n'}version ${node.version}${ref.pinned ? ` · ${plural(ref.pinned.nodes, 'node')}` : ''}`;
@@ -678,7 +719,8 @@ window.PromptboardNetworkGraph = (() => {
       const hidden = ed.hidden.has(edge.relation), faded = ed.q && ![byId(edge.from), byId(edge.to)].some(node => node && matches(node));
       return [hidden ? 'hidden-relation' : '', faded ? 'faded' : ''].filter(Boolean).join(' ');
     }
-    const edgeElement = edge => ({ group: 'edges', data: { id: edge.id, source: edge.from, target: edge.to, relation: edge.relation, label: RELATION_NAMES[edge.relation] }, classes: edgeClasses(edge) });
+    const remoteEdge = edge => [byId(edge.from), byId(edge.to)].some(node => node?.type === 'federated');
+    const edgeElement = edge => ({ group: 'edges', data: { id: edge.id, source: edge.from, target: edge.to, relation: edge.relation, remote: remoteEdge(edge), label: `${RELATION_NAMES[edge.relation]}${remoteEdge(edge) ? ' · remote' : ''}` }, classes: edgeClasses(edge) });
     /** Make the canvas show the working copy: add, update and remove only what differs (in one batch). */
     function syncCanvas() {
       if (!cy || !ed) return;
@@ -851,7 +893,7 @@ window.PromptboardNetworkGraph = (() => {
       const next = (draft.publishedVersions.at(-1)?.version || 0) + 1;
       // After a revision conflict both would only conflict again: the alert's choices come first.
       const conflict = ed.error?.code === 'REVISION_CONFLICT' ? 'This draft was saved elsewhere: load the saved draft, or save yours as a new network, first.' : '';
-      gSave.disabled = !ed.dirty || ed.saving || Boolean(conflict); gSave.title = conflict || (ed.dirty ? '' : 'No unsaved changes'); gSave.textContent = ed.saving ? 'Saving…' : 'Save draft';
+      gSave.disabled = (!ed.dirty && !draft?.delegationReviewRequired) || ed.saving || Boolean(conflict); gSave.title = conflict || (ed.dirty || draft?.delegationReviewRequired ? '' : 'No unsaved changes'); gSave.textContent = ed.saving ? 'Saving…' : draft?.delegationReviewRequired ? 'Confirm recovered relations' : 'Save draft';
       gPublish.textContent = ed.dirty ? `Save and publish version ${next}` : `Publish version ${next}`; gPublish.disabled = ed.saving || Boolean(conflict); gPublish.title = conflict;
       gUndo.disabled = !ed.undo.length; gUndo.title = ed.undo.length ? '' : 'Nothing to undo';
       gDiscard.disabled = !ed.dirty; gDiscard.title = ed.dirty ? '' : 'No unsaved changes';
@@ -874,6 +916,7 @@ window.PromptboardNetworkGraph = (() => {
     function renderNotice() {
       if (!ed) return;
       const lines = [];
+      if (ed.draft?.delegationReviewRequired) lines.push([ed.draft.recovery.message, 'network-stale']);
       if (ed.notice) lines.push([ed.notice, ed.capped ? 'network-cap-notice' : '']);
       if (!ed.loading && !ed.loadError && !isPhone() && !window.cytoscape) lines.push(['The canvas could not load in this browser. The lists below show and edit the same network.', '']);
       if (!ed.loading && ed.nodes.length > VIEW_CAP) lines.push([`This network has ${plural(ed.nodes.length, 'node')}, more than the ${VIEW_CAP.toLocaleString('en-US')}-node view limit. The canvas draws all of them, so it may be slow, and sub-networks cannot be expanded. Search finds a node.`, 'network-cap-notice']);
@@ -893,7 +936,7 @@ window.PromptboardNetworkGraph = (() => {
           if (ed.problems.has(node.id)) pick.classList.add('is-problem');
           const text = el('span', 'network-row-text'); text.append(el('strong', '', nodeName(node)), el('span', 'network-row-sub', subtitleOf(node)));
           if (state !== 'ok') text.append(chip(STATE_NAMES[state], 'warn'));
-          pick.append(el('span', `network-node-mark mark-${node.type}`, node.type === 'agent' ? '◉' : '⬡'), text);
+          pick.append(el('span', `network-node-mark mark-${node.type}`, node.type === 'agent' ? '◉' : node.type === 'federated' ? '⇄' : '⬡'), text);
           pick.firstChild.setAttribute('aria-hidden', 'true');
           item.append(pick); return item;
         }));
@@ -904,7 +947,7 @@ window.PromptboardNetworkGraph = (() => {
           const item = el('li', `network-graph-row relation-${edge.relation}`), from = byId(edge.from), to = byId(edge.to);
           const pick = button('', () => selectItem(edge.id, { focus: true }), 'network-graph-item'); pick.dataset.edgeId = edge.id;
           if (ed.selected === edge.id) pick.setAttribute('aria-current', 'true');
-          const text = el('span', 'network-row-text'); text.append(el('strong', '', `${nodeName(from)} → ${nodeName(to)}`), el('span', `network-row-sub network-relation relation-${edge.relation}`, RELATION_NAMES[edge.relation]));
+          const text = el('span', 'network-row-text'); text.append(el('strong', '', `${nodeName(from)} → ${nodeName(to)}`), el('span', `network-row-sub network-relation relation-${edge.relation}`, `${RELATION_NAMES[edge.relation]}${remoteEdge(edge) ? ' · to or from a remote peer' : ''}`));
           pick.append(text); item.append(pick);
           if (!ed.readOnly) { const cut = button('Disconnect', () => removeRelation(edge.id), 'text-button'); cut.dataset.disconnect = edge.id; cut.setAttribute('aria-label', `Disconnect ${nodeName(from)} ${RELATION_NAMES[edge.relation].toLowerCase()} ${nodeName(to)}`); item.append(cut); }
           return item;
@@ -959,6 +1002,13 @@ window.PromptboardNetworkGraph = (() => {
           const warning = note(text, 'network-stale'); warning.id = 'network-graph-node-warning'; parts.push(warning);
         }
         if (open && state !== 'missing') parts.push(open);
+      } else if (node.type === 'federated') {
+        parts.push(note(subtitleOf(node)));
+        const text = { missing: 'This peer is no longer trusted in Federation. Remove the node, or add the peer again.', disabled: 'Switched off in Federation: no pipeline step can call it until you switch it on.',
+          'federation-off': 'Outbound federation is off: no pipeline step can call a remote peer until you turn it on.' }[state];
+        if (text) { const warning = note(text, 'network-stale'); warning.id = 'network-graph-node-warning'; parts.push(warning); }
+        parts.push(note('Promptboard sees only what the A2A protocol reports for its tasks: never the peer’s tools, memory or processes. In a pipeline its step is external work that is never retried on its own.'));
+        const open = button('Open Federation', () => go('#/network/federation'), 'secondary-button'); open.id = 'network-graph-open-federation'; parts.push(open);
       } else {
         const ref = ed.refs.networks[node.networkId] || {};
         parts.push(note(subtitleOf(node)));
@@ -975,7 +1025,7 @@ window.PromptboardNetworkGraph = (() => {
         if (ed.inside === node.id) parts.push(insideList(node));
       }
       const facts = el('dl', 'network-facts');
-      for (const [label, value] of [['Node ID', el('code', '', node.id)], [node.type === 'agent' ? 'Agent ID' : 'Network ID', el('code', '', node.agentId || node.networkId)], ['Position', `${Math.round(node.position.x)}, ${Math.round(node.position.y)}`]]) { const dd = el('dd'); dd.append(value); facts.append(el('dt', '', label), dd); }
+      for (const [label, value] of [['Node ID', el('code', '', node.id)], [node.type === 'agent' ? 'Agent ID' : node.type === 'federated' ? 'Peer ID' : 'Network ID', el('code', '', node.agentId || node.peerId || node.networkId)], ['Position', `${Math.round(node.position.x)}, ${Math.round(node.position.y)}`]]) { const dd = el('dd'); dd.append(value); facts.append(el('dt', '', label), dd); }
       parts.push(facts);
       const linked = ed.edges.filter(edge => edge.from === node.id || edge.to === node.id), relations = el('ul', 'network-graph-list network-node-relations'); relations.setAttribute('aria-label', 'Its relations');
       for (const edge of linked) {
@@ -1004,7 +1054,7 @@ window.PromptboardNetworkGraph = (() => {
         for (const child of data.version.nodes.slice(0, LIST_PAGE)) list.append(el('li', 'network-row-sub', `${nodeName(child, data.refs)} · ${subtitleOf(child, data.refs)}`));
         box.replaceChildren(note(`Version ${node.version}: ${plural(data.version.nodes.length, 'node')} and ${plural(data.version.edges.length, 'relation')}, read only.`), list);
         if (data.version.nodes.length > LIST_PAGE) box.append(note(`The first ${LIST_PAGE}. Open its graph to see them all.`));
-      }, failure => { if (box.isConnected) box.replaceChildren(el('p', 'inline-error', failure.message)); });
+      }, failure => { if (box.isConnected) box.replaceChildren(errorLine(failure.message)); });
       return box;
     }
 

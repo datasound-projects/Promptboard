@@ -6,8 +6,8 @@
  * Also the input rules every Network domain shares: strict objects, expected revisions, paging and owner text.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { access, mkdir, readdir, readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { redactLocal } from '../compose-local.mjs';
 import { noPaths } from '../coordinator.mjs';
 import { readWithBackup, setAside, syncDir, writeAtomic } from '../durable.mjs';
@@ -60,17 +60,36 @@ const NEWER = 'This Network data was saved by a newer Promptboard version. Updat
  * holds; undefined when neither exists. A damaged copy is set aside once the other loads; with no usable copy the read
  * fails (`NETWORK_DATA_DAMAGED`) and nothing is moved or written.
  */
-export async function readDocument(path, { schema, supported = 1, valid, label }) {
-  const damaged = [];
+export async function readDocument(path, { schema, supported = 1, valid, label, recover }) {
+  const damaged = []; let source;
   const data = await readWithBackup([path, `${path}.bak`], (bytes, file) => {
     let value; try { value = JSON.parse(bytes.toString('utf8')); } catch {}
     if (value?.schema === schema && Number.isSafeInteger(value.version) && value.version > supported) fail(NEWER, 'NETWORK_VERSION_UNSUPPORTED', 409);
-    if (value?.schema === schema && value.version === supported && valid(value)) return value;
+    if (value?.schema === schema && value.version === supported && valid(value)) { source = file; return value; }
     damaged.push(file);
   });
   if (data === undefined && damaged.length) fail(`${label} is damaged and has no usable backup. Nothing was changed; move the damaged file out of the data folder to start again.`, 'NETWORK_DATA_DAMAGED', 409);
   await setAside(damaged);
-  return data;
+  return data !== undefined && source !== path && recover ? recover(data) : data;
+}
+
+const settingsReads = new Map();
+/**
+ * A settings backup may predate a revoke, a narrower scope or switching automation off. Persist the caller's safe reset
+ * before returning any authority, also when the primary is missing. Keep the backup and damaged bytes for inspection.
+ * The marker survives restarts; recovery is not repeated on an intact primary. Failed writes grant no authority.
+ */
+export function readSettings(path, { reset, now = Date.now, events, recoveryMessage, ...options }) {
+  if (settingsReads.has(path)) return settingsReads.get(path);
+  const pending = readDocument(path, { ...options, recover: async data => {
+    const recovery = { at: now(), code: 'SETTINGS_RECOVERED', message: recoveryMessage || `${options.label} was read from a backup. Access and automation were switched off. Review the recovered settings before enabling them again.` };
+    const next = { ...await reset(data, recovery.at), revision: data.revision + 2, recovery };
+    await writeDocument(path, next);
+    try { await events?.append({ type: 'settings.recovered', status: 'off', errorCode: recovery.code, message: recovery.message }); } catch {} // Observability never grants authority.
+    return next;
+  } }).finally(() => { if (settingsReads.get(path) === pending) settingsReads.delete(path); });
+  settingsReads.set(path, pending);
+  return pending;
 }
 
 /** Folders are private and recorded in their parents, so a power loss cannot lose a folder a saved file names. */
@@ -91,6 +110,31 @@ export async function writeDocument(path, data) {
 export async function writeImmutable(path, text, what = 'The published version') {
   try { await folder(dirname(path)); await writeAtomic(path, text, { backup: false }); }
   catch { fail(`${what} could not be saved. Check free disk space and folder permissions. Nothing was changed.`, 'NETWORK_WRITE_FAILED', 500); }
+}
+
+/**
+ * A draft read from its backup (its own file was damaged and set aside, or is missing) is the save before the last one,
+ * which may have been a publish: its `publishedVersions` then lacks a version whose immutable file is still in `dir`, so
+ * that version would read as missing and the next publish would reuse its number for other content. Answers the draft with
+ * every `v<n>-<sha256>.json` it does not list yet that still hashes to its name, is its version `n` (`mine(body)`) and
+ * continues the list in order, as `entry(body, sha256)`. A draft read from its own file is answered as it is.
+ */
+export async function withVersionsOnDisk(path, draft, dir, mine, entry) {
+  if (await access(path).then(() => true, () => false)) return draft;
+  let names = [];
+  try { names = await readdir(dir); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const listed = new Set(draft.publishedVersions.map(item => item.version)), found = [];
+  for (const name of names) {
+    const [, number, hash] = /^v(\d+)-([0-9a-f]{64})\.json$/.exec(name) ?? [];
+    if (!hash || listed.has(Number(number))) continue;
+    let body = null;
+    try { const text = await readFile(join(dir, name), 'utf8'); if (sha256(text) === hash) body = JSON.parse(text); } catch {}
+    if (body?.version === 1 && body.number === Number(number) && mine(body)) { found.push(entry(body, hash)); listed.add(body.number); }
+  }
+  // Only the versions that continue the list in order: a saved list is always 1, 2, 3, … (a gap would make the draft unreadable).
+  const next = [...draft.publishedVersions];
+  for (const item of found.sort((a, b) => a.version - b.version)) if (item.version === next.length + 1) next.push(item);
+  return next.length > draft.publishedVersions.length ? { ...draft, publishedVersions: next } : draft;
 }
 
 /** An immutable document whose bytes must still hash to `hash` and pass `valid`; anything else is refused, never repaired. */

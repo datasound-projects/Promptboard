@@ -260,7 +260,10 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     // Network external clients (Task 11): a new machine token is shown, or the machine listener opens.
     'POST /api/network/clients', `POST /api/network/clients/cli_${'a'.repeat(20)}/rotate`, 'PATCH /api/network/listener',
     // Task 12: switching handoffs on lets agents and clients ask for work; confirming a schedule switches standing automation on.
-    'PATCH /api/network/delegation', `POST /api/network/schedules/sch_${'a'.repeat(20)}/confirm`];
+    'PATCH /api/network/delegation', `POST /api/network/schedules/sch_${'a'.repeat(20)}/confirm`,
+    // Federation (Task 13): previewing a card makes an outbound request; approving or changing a peer and both switches change trust or exposure.
+    'POST /api/network/federation/peers/preview', 'POST /api/network/federation/peers', `PATCH /api/network/federation/peers/peer_${'a'.repeat(20)}`,
+    'PATCH /api/network/federation/outbound', 'PATCH /api/network/federation/inbound'];
   const each = (prefix, rows) => rows.map(row => { const [method, action = ''] = row.split(' '); return `${method} ${prefix}${action ? `/${action}` : ''}`; });
   const ALLOWED = ['GET /', 'GET /app.js', 'GET /api/session', 'GET /api/providers', 'GET /api/status', 'GET /api/models', 'GET /api/usage', 'GET /api/auth', 'POST /api/notifications/connect', 'POST /api/notifications/ack',
     'POST /api/compose/cancel', 'GET /api/compose/batches', 'POST /api/compose/prepare', 'POST /api/compose/sources/document', 'DELETE /api/compose/sources/document/d1', 'POST /api/compose/mcp/test', 'POST /api/split', 'POST /api/generate',
@@ -283,6 +286,8 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     'GET /api/network/settings', 'PATCH /api/network/settings', 'GET /api/network/jobs', 'POST /api/network/jobs',
     // External clients (Task 11): listing them and the listener shows no secret; revoking only removes access.
     'GET /api/network/clients', `DELETE /api/network/clients/cli_${'a'.repeat(20)}`, 'GET /api/network/listener',
+    // Federation (Task 13): reading it shows no secret (a credential is only an environment variable's name); removing a peer only removes trust.
+    'GET /api/network/federation', `DELETE /api/network/federation/peers/peer_${'a'.repeat(20)}`,
     // Activity (Task 08) only reads: the journal, its stream (a revoked device's stream ends with its session) and the summary.
     'GET /api/network/events', 'GET /api/network/events/stream', 'GET /api/network/activity',
     ...each(`/api/network/jobs/job_${'a'.repeat(20)}`, ['GET', 'DELETE', 'POST cancel', 'POST approve', 'POST retry', 'POST close', 'GET result']),

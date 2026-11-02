@@ -128,6 +128,21 @@ Kanban write. Adding fields would also force `STATE_VERSION` 15, after which an 
 2. Reads use `readWithBackup([file, file.bak], parse)` (`src/durable.mjs:54`). A file that fails to parse or has the
    wrong schema is set aside with `setAside` (`src/durable.mjs:67`) and its backup is used. An unreadable file (EACCES,
    EIO, EMFILE) is an error, never "no data" (`src/durable.mjs:51-53`).
+   **Authority-bearing backups:** `readSettings` persists a safe reset before returning restored registrations, clients,
+   delegation, schedules, federation or memory (including when the primary is missing). Registrations are disabled, all
+   recovered clients revoked, the listener off, questions/delegation off with approval required, schedules off and
+   unconfirmed, inbound/outbound federation off with no publications, and peers disabled with credential references cleared.
+   Recovered memory records become proposals. Collection and row revisions advance past the lost save. A persistent
+   `recovery` notice and a `settings.recovered` event explain the reset; damaged bytes and the backup are retained. Failure
+   to persist the reset grants no authority. Intact primary files keep existing behavior and create no recovery event.
+   Drafts also rediscover hash-verified immutable published versions on disk, so restoring an older draft cannot reuse a
+   published version number (`withVersionsOnDisk`).
+   A recovered network draft preserves its nodes, relations and published versions, with `delegationReviewRequired`.
+   Delegation offers and claims treat its targets as empty until the owner reviews the Graph and chooses **Confirm
+   recovered relations** (`PATCH /networks/:id` with `confirmRecovery: true` and the loaded revision). Renaming or archiving
+   does not confirm permissions. The Graph notice explains the suspension; a recovery event records it.
+   Duplicating a recovered draft retains its review requirement. Definition exports omit local recovery metadata so the
+   existing strict import format remains usable; imported registrations still arrive disabled.
 3. **Newer version fails closed:** `version > supported` throws `NetworkError('…saved by a newer Promptboard version…',
    'NETWORK_VERSION_UNSUPPORTED', 409)` and the file is never rewritten (as `src/lessons.mjs:46`). Only that domain is
    refused; Kanban, Base and the rest of Network keep working.
@@ -866,10 +881,14 @@ anything.
   fail at claim (`REGISTRATION_DISABLED`, `BASE_REVOKED`); a running attempt continues (as Base: "revocation does not
   remove context already supplied", SECURITY.md) and is labelled "revoked after start"; the owner can cancel it.
 - Machine client revoked: every later request is `401`; its open streams are destroyed at once (open responses kept per
-  client, as `src/remote-access.mjs:112,210`); its running jobs continue unless the owner chooses "Revoke and cancel its
-  jobs".
+  client, as `src/remote-access.mjs:112,210`); its running jobs continue. The owner cancels them individually in Activity;
+  there is no combined "Revoke and cancel" action.
 - Paired device revoked: existing mechanism ends its streams.
-- Peer disabled: no new calls; in-flight remote tasks become `unknown` when their stream or poll ends.
+- Peer disabled: no new calls; in-flight remote tasks become `unknown` when their stream or poll ends. *(Review 4, P4-2: stricter.)*
+  Outbound federation off, a peer switched off or removed, or its card changed: no new calls, and its running peer jobs
+  stop at once. The guarded fetch asks before every request whether the peer is still trusted as the job pinned it, and
+  every saved federation change tells the A2A worker, which aborts that peer's open attempts; they end `unknown
+  PEER_WITHDRAWN` (the remote outcome is not known). No request, not even a cancel, follows the withdrawal.
 
 ### 11.3 Timeouts and uncertain outcomes
 
@@ -906,8 +925,9 @@ anything.
   permitted) and lessons only of its own allowed project.
 - **SSRF (A2A, Task 13):** a guarded `fetchImpl` for the SDK: `https:` only (plain `http:` only for loopback when the
   owner enables "local test peer"); DNS resolved first and every address checked with `isPublicAddress`
-  (`src/base-context.mjs:26`) unless the peer entry explicitly allows one private address; the connection pinned to the
-  checked address; `redirect: 'manual'`, redirects followed only to the same origin and re-checked, `Authorization`
+  (`src/base-context.mjs:26`) unless the peer entry explicitly allows one private address (review 4: RFC 1918,
+  100.64.0.0/10 or fc00::/7 only), with a time limit on the lookup; the connection pinned to the checked address, never
+  through a proxy; `redirect: 'manual'`, redirects followed only to the same origin and re-checked, `Authorization`
   dropped on any cross-origin hop (so refused); 10 s connect, 60 s request, 1 MiB response, 64 KiB card; userinfo in
   URLs refused. Inbound A2A never fetches caller-supplied URLs (push notifications are not supported).
 - **Prompt injection:** job input, upstream step outputs, memory, Base documents and remote results are wrapped in
@@ -1720,6 +1740,9 @@ fill in what §6.1, §9, §11.4 and §14 item 7 left open.
    required, never sufficient, and the only place Graph relations are read, §9); tools no wider than the parent's
    (`DELEGATION_ESCALATION`, none < web); a chain an external client started stays inside that client's agents while the
    client is active with `submit_jobs` (`DELEGATION_NOT_ALLOWED`, `CLIENT_REVOKED`); A2A-started chains cannot delegate yet;
+   a chain with an ancestor that cannot be read (damaged) is refused whole, since who started it cannot be checked
+   (`DELEGATION_NOT_ALLOWED`; the prompt then offers no agent); nothing is planned under a cancelled ancestor
+   (`DELEGATION_CANCELLED`);
    the agent is registered (`AGENT_NOT_FOUND`) and, when the parent has a project, has it on its `projectAllowlist`
    (`PROJECT_NOT_ALLOWED`); then `#pin` (switched off, stale, provider or tools unsupported, Base resources required).
    Questions need `askOwner` (`HANDOFF_OFF`); a malformed request is `HANDOFF_INVALID`; at most **5 handoffs per job**
@@ -1745,19 +1768,25 @@ fill in what §6.1, §9, §11.4 and §14 item 7 left open.
    may also be `{ app: true }` (what Promptboard itself records, such as a refusal: attributing it to the agent or the owner
    would be false) and `to` may be `{ clientId }` (a client's own job's question goes to the client). Kinds `request result
    review needs_input blocked`; text and json ≤ 16 KiB each, cleaned as owner text (secrets masked, folders cut); ≤ 500 per
-   job, of which ≤ 200 from the owner or clients (so handoff records always fit). Only the engine writes them: the owner and
+   job, of which ≤ 200 notes (`review`, `request`) from the owner or clients (so handoff records always fit; an answer to the
+   job's question is not a note: at most one per handoff, it always fits). Only the engine writes them: the owner and
    a client may add `review` or `request` notes to their own jobs (records that a later attempt reads as data), no agent can
    post. **Read receipts** are `readAt`, set only when the recipient (the owner or that client) marks messages read; never
    for an agent, and never a statement about execution (the job's status and attempts are the execution receipts).
 7. **Revocation and cancellation.** A queued sub-job (also one waiting for approval) is checked again at its claim
-   (`Delegation.recheck`): delegation still on, the relation still drawn, the chain's client still active and allowed; else it
+   (`Delegation.recheck`): delegation still on, the relation still drawn, the chain's client still active and allowed, the
+   chain readable to its root and no ancestor cancelled; else it
    fails `DELEGATION_REVOKED` with no attempt and no process (and its parent goes on with that outcome). A disabled or stale
    registration refuses new sub-jobs at `#pin` and fails queued ones at claim (§11.2). A cancelled job cancels its open
    sub-jobs (`by: app`, "Cancelled because the job that delegated it was cancelled."), which cascade down the tree; sub-jobs
-   that need the owner's decision are left for it. A sub-job whose parent still waits for it cannot be deleted (`JOB_IN_USE`).
+   that need the owner's decision are left for it. A cancel that meets a handoff saved first (the attempt ended by itself
+   while it was stopped, or before the worker returned) cancels the job that now waits, and its new sub-jobs follow. A
+   sub-job whose parent still waits for it cannot be deleted (`JOB_IN_USE`).
 8. **External clients** (`rest.mjs`, own jobs only, §22's checks first): `POST /machine/v1/jobs/:id/children` (`submit_jobs`,
    counts as a submit, `Idempotency-Key` header; the same policy and the client's own scope; the parent does not wait for it;
-   a finished parent is `JOB_FINISHED`), `GET …/messages` and `POST …/messages/read` (`read_job_result`), `POST …/messages` and
+   a finished parent is `JOB_FINISHED`; the same key with another request — agent, task, json or tools — is
+   `IDEMPOTENCY_CONFLICT` 409, checked before the policy so a true retry is still answered), `GET …/messages` and
+   `POST …/messages/read` (`read_job_result`), `POST …/messages` and
    `POST …/answer` (`submit_jobs`). Messages are returned without `attemptId`. The client's sub-job is its own job
    (`requester: machine`, `delegation.by: 'machine'`). The stdio MCP server gained one tool per route in the wave B
    integration (§22 item 11).
@@ -1776,7 +1805,11 @@ fill in what §6.1, §9, §11.4 and §14 item 7 left open.
    (`PREVIOUS_OPEN`); a job slot is submitted under the key `slot:<ms>` with requester `{ kind: 'schedule', id }` and `job.schedule
    = { id, slot }` before the schedule saves it, so a restart in between finds the same job; a pipeline slot is saved before its
    run starts (runs have no key: a crash loses that run rather than starting it twice); a refusal at fire time uses the slot
-   and records the code; firing never bumps the revision. Run now (`POST …/run { idempotencyKey? }`, key `run:<key>`) starts
+   and records the code, except one that means "try again" for a job target (any 5xx such as `SHUTTING_DOWN`, and
+   `BASE_CHANGED`), which leaves the slot for the next check, also after a restart (its key `slot:<ms>` makes the retry
+   safe); a slot fires only while the row as saved now still has it due (a schedule switched off and on again after the
+   tick read it counts from the new confirmation); firing never bumps the revision. Run now (`POST …/run { idempotencyKey? }`,
+   key `run:<key>`) starts
    one job at once even while off or while the previous job is open. On-demand schedules cannot be switched on.
 10. **Export and import (§4.4).** The Network export carries `schedules` (job targets only, as `{ id, name, target, cadence,
     timeZone, createdAt, updatedAt }`) **only when there are any**, so exports without schedules stay readable by Promptboard
@@ -1803,10 +1836,11 @@ fill in what §6.1, §9, §11.4 and §14 item 7 left open.
 14. **UI** (`public/network-delegation.js`, plain DOM, page tokens and hairlines, both themes, ≤ 730 px one column). A job's
     record in Activity: "Started by" (you, an external client, a schedule with its slot, or "Delegated by the agent of job …"
     linking to the parent), Approve/Reject when it waits for approval, the question with an answer form (kept across live
-    redraws), the sub-job tree (four levels, 50 rows, each with its status, how it was made and Approve/Reject), and the
+    redraws, with its focus and caret), the sub-job tree (four levels, 50 rows, each with its status, how it was made and
+    Approve/Reject), and the
     handoff messages with Unread marks, "Mark … as read" and a folded note form. Activity's side column gains **Schedules**
     (the computer's zone, each schedule's state, repeat, next time, last skip; Switch on… with a confirmation, Switch off, Run
-    now, Last job, Edit, Delete; an editor dialog; since the wave B integration the editor's “It runs” makes a job or a run of
+    now (off while its request is in flight: one click, one job), Last job, Edit, Delete; an editor dialog; since the wave B integration the editor's “It runs” makes a job or a run of
     a published pipeline version — only published versions are listed, the server checks again — with an optional run input
     and Task 10's run facts (`runFacts`) for the chosen version; Switch on… and Run now of a pipeline schedule show those facts
     first and stay disabled while the version cannot start, while Run now of a job schedule starts at once as before; Last run
@@ -1829,3 +1863,163 @@ fill in what §6.1, §9, §11.4 and §14 item 7 left open.
     principal is defined; an inbound A2A job is `requester: { kind: 'a2a', id }`, and a question from such a job goes to the
     owner (`#requesterParty`). Inbound A2A that wants delegation should extend `#rootClient` with that principal's scope, never
     widen it. A `federated` step's job is a normal job, so it can be a parent or a sub-job only through these checks.
+
+## 24. Task 13 decisions (A2A federation and remote Agent Cards)
+
+Built in `src/network/a2a-registry.mjs` (switches, trusted peers, card normalisation; owned by `NetworkRegistry` as
+`registry.federation`), `src/network/a2a-client.mjs` (the SSRF-guarded fetch, the remote-state mapping, the peer job worker),
+`src/network/a2a-server.mjs` (the inbound Agent Card and JSON-RPC endpoint), `public/network-federation.js` (Network →
+Federation), with small additive edits to the job engine, pipelines, Graph, the machine listener and the routes. Items 9 and
+11 deviate from §10.4 and §4.4; the others fill in §10.4, §11.3 and §11.5.
+
+1. **Dependency.** `@a2a-js/sdk` 1.3.0 (Apache-2.0, published 2026-09-29), `npm install --save-exact`; its only hard dependency
+   `jose ^6.2.3` resolves to the installed 6.2.12 (shared with the MCP SDK); Express, gRPC and database peers stay uninstalled
+   (all optional). `npm audit`: 0 vulnerabilities. Licence in `THIRD_PARTY_NOTICES.md`. Interfaces verified in the installed
+   package: `A2A_PROTOCOL_VERSION` is `"1.0"` (the brief's `PROTOCOL_VERSION`); `TaskState` is the numeric proto enum
+   (`TASK_STATE_*`); client `ClientFactory({ transports, cardResolver, clientConfig })`, `JsonRpcTransportFactory({ fetchImpl })`,
+   `DefaultAgentCardResolver({ fetchImpl })`; server `DefaultRequestHandler`, `JsonRpcTransportHandler.handle(body, context)`,
+   `InMemoryTaskStore`, `ServerCallContext`; errors in `@a2a-js/sdk/errors`. Only A2A **1.x JSON-RPC** is spoken; the SDK's v0.3
+   compatibility layer is not enabled (a 0.3-only card is refused with `CARD_UNSUPPORTED`).
+2. **Storage.** `network/federation.json` (`promptboard.network-federation` v1, `.bak`, 0600) = `{ revision, outbound: { enabled },
+   inbound: { enabled, agents: [{ agentId, description ≤ 300, requireApproval, publishedAt }] ≤ 50, peers: [Peer] ≤ 100 }`;
+   both switches `false` by default; reading creates nothing. `Peer = { id: peer_…, cardUrl, card (normalised, below), cardSha256
+   (of the normalised card), credential: { env, scheme } | null, localTest, privateAddress, enabled, approvedAt, refreshedAt,
+   revision }`. A credential is the **name** of an environment variable and one of the card's bearer or header-API-key schemes;
+   its value is read from the app's environment at each call and is never stored, returned, logged or journaled (the owner
+   sees only `set: true|false`). *(Review 4, P4-8.)* A new reference must match `^PROMPTBOARD_A2A_[A-Z0-9_]{1,48}$`, so no other
+   variable of the app (a provider's key, `PATH`) can reach a peer. A peer stored earlier with another name (`^[A-Z_][A-Z0-9_]{0,63}$`)
+   still loads and shows `renameNeeded: true`; submit and claim refuse it (`CREDENTIAL_REFERENCE_INVALID`, nothing sent)
+   until the owner renames it. Nothing is migrated silently.
+3. **Routes** (all behind `handle()`, in `NETWORK_ROUTES` and the paired-device table). `GET /api/network/federation`
+   (switches, peers, published agents with names, and the inbound card address when the machine listener serves it) and
+   `DELETE /api/network/federation/peers/:id` are allowed from a paired phone: they show no secret (a credential is only a
+   variable's name) and removing a peer only removes trust. **Local-only** (`localOnly()`), each because it creates a way in,
+   changes trust or makes an outbound request from an address typed on the phone: `POST …/peers/preview` (one guarded outbound
+   fetch), `POST …/peers` (trust), `PATCH …/peers/:id` (trust, credential reference, card refresh), `PATCH …/outbound` (lets
+   the app call peers; **added**: §10.1 row 13 listed only the inbound switch) and `PATCH …/inbound` (exposure). Creating an A2A
+   caller reuses `POST /api/network/clients` with `kind: 'a2a'`, already local-only.
+4. **Peer lifecycle.** Preview needs outbound on (`FEDERATION_OFF` otherwise: off means no outbound call at all) and saves
+   nothing. Approve takes the `cardSha256` the owner reviewed, fetches the card again and keeps it only when it hashes the same
+   (`CARD_CHANGED`), so what is trusted is exactly what was reviewed; one peer per card URL (`PEER_EXISTS`). Refresh is a new
+   preview, then `PATCH { cardSha256 }` with the same rule; *(review 4, P4-5)* a refreshed card that moves the endpoint to
+   another origin drops the credential reference unless the same `PATCH` names it again (`credentialEnv`). Switching a peer
+   off refuses new jobs (`PEER_DISABLED`); removing it makes queued jobs fail at claim (`PEER_NOT_FOUND`) and Graph/pipelines
+   show it missing. Either one, or outbound off, also stops the peer's running jobs at once (§11.2, `PEER_WITHDRAWN`).
+5. **Card normalisation (untrusted metadata).** Kept: `name` (1 line, ≤ 120, required), `description` (≤ 2,000), `version`,
+   `provider` (organisation text only), the first `supportedInterfaces` entry with binding JSONRPC and version `1.x` whose URL
+   passes the URL policy (item 6) and its tenant (`[A-Za-z0-9._~-]{0,100}`), `capabilities.streaming`/`pushNotifications`
+   (`=== true` only), input/output modes (media-type-shaped, ≤ 20), security schemes (proto-JSON `httpAuthSecurityScheme`,
+   `apiKeySecurityScheme`, … and JSON-Schema `type` styles; ≤ 10; a header API key never names a reserved header such as
+   Cookie or Host) and the scheme names security requirements name, skills (≤ 50: id, name, description ≤ 1,000, tags,
+   examples). Dropped: every other URL (icon, documentation, provider link), extensions and signatures. Text loses control
+   characters and every format character (`\p{Cf}`: bidi controls, zero-width characters, ALM, soft hyphen, BOM) and the
+   Unicode tag block U+E0000–E007F (review 4, P4-7); markup is kept as text and flagged; nothing is ever interpreted as HTML (the UI sets text
+   only). Arrays, not keyed objects, so no card key can reach an object prototype. The normalised card is at most 64 KiB
+   (skills are cut). The preview lists fixed warnings (shortened, dropped fields, markup, more skills, endpoint on another
+   origin, credential needed, signatures not verified).
+6. **SSRF guard (`guardedFetch`, every request: card preview and every SDK call).** (a) URL: absolute, ≤ 2,048, no userinfo, no
+   fragment, `https:` only; `http:` (and https) only for a **local test peer**, whose host must be `127.x`, `[::1]` or
+   `localhost`. (b) Origin allowlist: the card's origin for a preview, the endpoint's origin for calls; anything else is
+   refused before any lookup. (c) DNS: the host is resolved (`dns.lookup`, all answers) on **every hop**; every answer must be
+   public (`isPublicAddress`), or loopback for a local test peer, or the one private address the owner allowed for that peer
+   (https only; never loopback or public); one bad answer refuses the request. *(Review 4.)* That address must be RFC 1918,
+   100.64.0.0/10 or fc00::/7 (`privateRange`: never unspecified, link-local, multicast or broadcast), checked again at each
+   call; a lookup is given up after the connect limit (10 s) or when the request is cancelled. (d) Pinning: the connection uses the checked
+   address through the request's own `lookup` and a fresh socket (`agent: false`), so a DNS answer that changes between the
+   check and the connect is never used; TLS still verifies the host name. No proxy: Node's env-proxy mode
+   (`NODE_USE_ENV_PROXY`, `--use-env-proxy` with `HTTP(S)_PROXY`) configures only the global agents, never an `agent: false`
+   request (checked by a test, Node 24.14). (e) Redirects: at most 3, **only within the same
+   origin** (scheme, host and port), each hop resolved and checked again; a POST only on 307/308; to another origin nothing is
+   sent, so no credential can reach it. (f) Headers: `Authorization`, `Cookie`, `Proxy-Authorization`, `Host` and `X-Api-Key` from
+   the caller are dropped; the credential header is added per hop and only when the hop's origin is the endpoint's. (g) Limits:
+   10 s to connect, 60 s per request (a stream: 60 s without data, bounded overall by the job's time limit), 1 MiB per response
+   (a card 64 KiB, a stream 8 MiB; refused from `Content-Length` and cut while reading), 1 MiB per request body. (h) Non-2xx
+   answers become fixed codes (`REMOTE_AUTH`, `REMOTE_NOT_FOUND`, `REMOTE_BUSY`, `REMOTE_REFUSED`, `REMOTE_SERVER_ERROR`); the
+   peer's body is never kept or shown, and (review 4, P4-4) the answer is closed, not drained, as is a redirect's. (i) Trust:
+   every request first asks whether the peer is still trusted (`PEER_WITHDRAWN`, §11.2). Shared fix: `isPublicAddress` (`src/base-context.mjs`, also Base document imports) now
+   canonicalises IPv6 first (so `0:0:0:0:0:ffff:7f00:1` is checked as 127.0.0.1) and refuses NAT64, 6to4, Teredo,
+   documentation and multicast prefixes.
+7. **Peer jobs in the job engine (small additive edits).** A job names `peerId` instead of `agentId` (`agentId: null`,
+   `peerId` on the job). It carries only input and instructions: tools, memory, project and lessons are refused (`PEER_SCOPE`).
+   Acceptance pins `request.peer = { peerId, peerRevision, name, cardSha256, endpoint }` (outbound on, peer trusted and on);
+   claim re-checks and refuses a changed card (`PEER_CHANGED`), so nothing is sent for a card nobody accepted. The attempt
+   records `provider: 'a2a'`, `sideEffects: 'external_unknown'` and, from `spawned({ remoteTaskId })`, the peer's task ID as
+   soon as the peer names it (opaque: kept exactly, ≤ 200 characters, only ever sent back to the same peer). Peer jobs run on
+   the engine's separate `peerWorker` (an `A2AWorker`, always present); `worker` is unchanged, so without a local worker local
+   jobs stay queued while peer jobs run. Both share the pool and `maxConcurrentJobs`. **Time limit → `unknown`** (`TIMEOUT`,
+   outcome uncertain) for a peer job, never `failed`: the remote task may go on. **Cancel** asks the peer (`CancelTask`); the
+   job is `cancelled` with "The remote agent confirmed the cancellation." only when the answer is the same task in state
+   CANCELED, otherwise with outcome `uncertain` and "… did not confirm, so it may still finish its work." A retry always needs
+   `confirmUncertain` (external side effects).
+8. **Outbound adapter (`A2AWorker`).** `ClientFactory` with exactly one transport, `JsonRpcTransportFactory({ fetchImpl:
+   guarded })`, and `DefaultAgentCardResolver({ fetchImpl: guarded })`, built from the stored card's one endpoint (never a
+   fetched card), `clientConfig.polling: true`. `launching` is saved before the first byte; the message ID is the attempt ID;
+   text = instructions and input, plus one data part for the input json. Streaming when the card says so; if the stream ends
+   after the peer named its task, the worker polls that task (`GetTask`, `historyLength: 0`, every 2 s; 3 failed checks in a row
+   → `unknown REMOTE_UNREACHABLE`); a stream that ends before a task ID → `unknown REMOTE_STREAM_LOST`. Without streaming:
+   `SendMessage` (`returnImmediately: true`), then polling. A direct `Message` reply completes at once. State mapping
+   (`remoteOutcome`): SUBMITTED, WORKING → running; COMPLETED → completed (text required, else the engine's `unknown
+   NO_RESULT`); FAILED → `failed REMOTE_FAILED`; CANCELED → `failed REMOTE_CANCELLED`; REJECTED → `failed REMOTE_REJECTED`;
+   INPUT_REQUIRED → `failed REMOTE_INPUT_REQUIRED` and AUTH_REQUIRED → `failed REMOTE_AUTH_REQUIRED` (Promptboard cannot
+   answer them in this version); UNSPECIFIED or any undefined value → `unknown REMOTE_STATE_UNKNOWN`. A report about another task
+   ID → `unknown REMOTE_PROTOCOL`. Result: the artifacts' text parts (append chunks honoured), else the final status message;
+   the last JSON data part ≤ 64 KiB as `json`; file parts are never downloaded or decoded (a line says how many there were);
+   > 1 MiB of text or > 50 artifacts → `failed OUTPUT_LIMIT`. Errors before the request could reach the peer, or an explicit
+   refusal (4xx, JSON-RPC error) → `failed` with the code; anything after (timeouts, lost connections, 5xx, unreadable answers)
+   → `unknown`. Reasons and activity labels are fixed text; the peer's own words never become a reason, an event or a prompt.
+   *(Review 4.)* A peer's json is never read as a Task 12 handoff (P4-1: `finish()` skips `parseHandoff` for `peerId` jobs).
+   Each open attempt has its own controller, aborted when trust is withdrawn (§11.2) and when the attempt ends, so no request
+   or stream outlives its job (P4-4); the worker forgets an attempt when it ends, or when the engine stopped it, in `cancel()`
+   (P4-3).
+9. **Inbound endpoint (deviation from §10.4: no `DefaultRequestHandler`).** `GET /.well-known/agent-card.json` and `POST
+   /a2a/v1` live on the machine listener (the exception before the `/machine/v1/` check that §22 item 16 foresaw), after its Host,
+   Origin, fetch-site, proxy and owner-credential checks. Both answer 404 unless inbound is on and at least one published agent
+   is switched on and not stale. The card is public, as A2A discovery expects (listener on 127.0.0.1 only): name "Promptboard",
+   the endpoint `http://127.0.0.1:<port>/a2a/v1`, JSON-RPC 1.0, streaming and push off, one bearer scheme, and one skill per
+   published agent (`id` = registration ID, the owner's description; never Base content). `POST /a2a/v1` needs a client token of
+   `kind: 'a2a'` (an API client's token is 401 there, and an A2A token is 401 on `/machine/v1`), counts toward the client's 60
+   requests and 10 submits a minute, takes ≤ 256 KiB of JSON and ends with the client's other requests on revoke or rotation
+   (`onRevoke`). The SDK's `JsonRpcTransportHandler` parses and answers JSON-RPC; the request handler is Promptboard's own,
+   because `DefaultRequestHandler` keeps tasks in a `TaskStore` under IDs it generates and drives their state from executor
+   events, which would make a second, in-memory record beside the job and lose the mapping at a restart. Here **the task ID is
+   the job ID** and every answer is read from the job (so it survives a restart). `SendMessage`: one message to one published
+   agent in the caller's scope (`metadata.skillId`; with exactly one, it is chosen), text parts → input, one data part → json;
+   files and links refused (`ContentTypeNotSupported`) and never fetched; follow-ups with a `taskId`, streaming, `ListTasks`,
+   push configs and the extended card are refused with A2A errors; idempotency key `a2a:<messageId>` scoped to the caller (the
+   same message answers the same task: one job); `source: 'a2a'`, `requester: { kind: 'a2a', id }`; memory `none` unless the
+   caller has `read_scoped_memory`; the published entry's `requireApproval`; no project, network or tools. Blocking sends wait
+   until the job ends or needs the owner, at most 10 minutes (then the current state; use `returnImmediately` and `GetTask` for
+   long work). Job → task state: queued, waiting for approval → SUBMITTED; preparing, running, waiting for input → WORKING;
+   completed → COMPLETED (with the hash-checked result as one artifact when the caller has `read_job_result`); failed → FAILED;
+   cancelled → CANCELED; unknown, interrupted → UNSPECIFIED with "The outcome of this task is not known …". Status texts are
+   fixed (plus the error code); never the request, prompt, memory, attempts, process IDs or file paths. Another caller's or the
+   owner's job is `TaskNotFound`. Unexpected errors answer a fixed message (the SDK would otherwise echo `error.message`).
+10. **A2A callers.** `machine-auth.mjs`: `CLIENT_KINDS = ['api', 'a2a']`; `authenticate(header, kind = 'api')`; `create({ kind:
+    'a2a' })` requires every agent to be published for A2A now (`AGENT_NOT_PUBLISHED`) and no networks or projects. They share
+    clients.json, its 100-active limit, rotation and revocation, and appear in Network → Settings too.
+11. **Graph (deviation from §4.4 export).** Node `{ id, type: 'federated', peerId, position, collapsed? }`, each peer once per
+    network; saving or publishing a node for an unknown peer is `NETWORK_REFERENCE_INVALID` (`details.peerIds`); `refs.peers` and
+    issues `PEER_MISSING`, `PEER_DISABLED`, `FEDERATION_OFF`. Peers are **never exported** (not even card metadata): an import
+    must never create trust, so a remote peer node keeps its peer ID and shows as missing until the owner adds that peer. A
+    relation to a remote peer grants nothing, like every relation.
+12. **Pipelines.** Step `federated { peerId, instructions ≤ 32 KiB, timeoutMs }` with ports `text|json` (typed like an agent's);
+    the compiler requires the peer to be a `federated` node of the step's network version (`PIPELINE_PEER_NOT_IN_NETWORK`),
+    trusted (`PEER_NOT_FOUND`), on (`PEER_DISABLED`) and outbound on (`FEDERATION_OFF`); `summary.remoteSteps`. A step without
+    the owner's label is labelled "Remote step" (review 4, P4-7), never with the peer's card name, since labels reach the next
+    step's input. The runner submits a peer job (receipt checks `peerId`), never retries it on its own (its `sideEffects` is `external_unknown`), and an
+    `unknown` (time limit, lost stream) blocks the step and leaves its descendants pending (§6.3), as for agents.
+13. **UI.** Network → Federation (`#/network/federation`, the former placeholder) in Settings' visual language: the outbound
+    switch and trusted peers (card, endpoint, protocol, skills, security, credential variable and whether it is set, card hash;
+    Refresh card…, Credential…, Switch off/on, Remove…), Add peer… (URL, local test peer, private address) → a review dialog of
+    the card's own text as text with its warnings and the credential reference → Approve (Refresh card… shows the credential
+    too and, when the endpoint moved to another origin, says from where to where and starts the field empty); the inbound switch with the listener
+    state and the card and endpoint addresses; Published for A2A (per agent: publish, description, approval); A2A callers
+    (create with a one-time token in this module's own dialog, revoke). Graph: "Add remote peer…", a dashed tag-shaped node in
+    the remote colour, ⇄ in the lists, relations to it dotted and labelled "remote". Pipelines: a "Remote peer…" palette step,
+    its form (peer, instructions, time limit), the same tag shape, dashed arrows labelled "remote", and in a run the job state
+    and the remote task ID ("Only the states and results the peer reports over A2A").
+14. **Future seams (not built).** Multi-hop or public federation, remote workers or orchestration on other servers, a
+    marketplace; push notifications (inbound never calls a caller back); inbound streaming and `ListTasks`; inbound pipeline
+    versions (an inbound task is one job of one agent); the v0.3 compatibility layer; card signature (JWS) verification;
+    OAuth 2.0, OpenID Connect and mTLS credentials; follow-up turns and INPUT_REQUIRED answers; a federated peer as a Task 12
+    delegation target (it would be a `peerId` child job with the same pin and claim checks); peer export with re-approval.

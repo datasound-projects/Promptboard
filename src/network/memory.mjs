@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { serial } from '../durable.mjs';
 import { lessonsPrompt } from '../lessons.mjs';
 import { escapeId } from '../origin.mjs';
-import { cleanText, conflict, fail, indent, newId, object, oneLine, only, page, readDocument, requireRevision, writeDocument } from './storage.mjs';
+import { cleanText, conflict, fail, indent, newId, object, oneLine, only, page, readSettings, requireRevision, writeDocument } from './storage.mjs';
 
 const SCHEMA = 'promptboard.network-memory';
 export const MEMORY_KINDS = Object.freeze(['fact', 'lesson', 'preference', 'procedure']);
@@ -137,7 +137,10 @@ export class NetworkMemory {
   }
   async #load(scope) {
     const key = scopeKey(scope);
-    if (!this.#docs.has(key)) this.#docs.set(key, await readDocument(this.#path(scope), { schema: SCHEMA, label: 'This memory',
+    if (!this.#docs.has(key)) this.#docs.set(key, await readSettings(this.#path(scope), { schema: SCHEMA, now: this.now, events: this.registry.events, label: 'This memory',
+      recoveryMessage: 'This memory was read from a backup. Recovered notes are proposals; review and approve them again before a job can use them.',
+      reset: (data, at) => ({ ...data, records: data.records.map(record => ({ ...record, status: 'proposed', decidedAt: null, updatedAt: at, revision: record.revision + 2,
+        history: [...record.history, { at, action: 'proposed', revision: record.revision + 2 }].slice(-LIMITS.history) })) }),
       valid: data => sameScope(data.scope, scope) && Number.isSafeInteger(data.revision) && Array.isArray(data.records) && data.records.every(record => storedRecord(record, scope)) })
       ?? { schema: SCHEMA, version: 1, scope, revision: 0, records: [] });
     return this.#docs.get(key);
@@ -176,7 +179,7 @@ export class NetworkMemory {
       const doc = await this.#load(scope);
       const items = doc.records.filter(record => (!status || record.status === status) && terms.every(term => `${record.kind} ${record.text}`.toLocaleLowerCase().includes(term))).sort(newest);
       const counts = Object.fromEntries(STATUSES.map(name => [name, doc.records.filter(record => record.status === name).length]));
-      return { revision: doc.revision, scope, counts, ...page(items, offset, limit, 'records') };
+      return { revision: doc.revision, ...(doc.recovery ? { recovery: doc.recovery } : {}), scope, counts, ...page(items, offset, limit, 'records') };
     });
   }
   /** A new record, proposed: no job receives it until the owner approves it. */

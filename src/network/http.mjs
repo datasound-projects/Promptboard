@@ -1,8 +1,9 @@
 /**
  * Owner Network routes (/api/network/*), mounted in src/server.mjs behind its unchanged token, Host, Origin, proxy and
- * fetch-site checks. Every route here is also allowed from a paired device (architecture §10.2) except the three
- * external-client routes that show a new token or open the machine listener (local-only, listed below): the others create
- * no way in, show no secret and change no trust (a paired device has the owner's control, so it may submit and cancel jobs).
+ * fetch-site checks. Every route here is also allowed from a paired device (architecture §10.2) except the ten marked
+ * local-only below (src/remote-access.mjs localOnly): they show a new token, open the machine listener, switch on standing
+ * automation, or change federation trust or exposure. The others create no way in, show no secret and change no trust (a
+ * paired device has the owner's control, so it may submit and cancel jobs).
  * Only the job routes lead to work, and only through the job engine's worker. NETWORK_ROUTES below is the one route table:
  * the dispatcher reads it, and tests/remote-access.test.mjs checks that every row has exactly one paired-device row there.
  *
@@ -92,6 +93,16 @@
  *   DELETE /api/network/schedules/:id       { expectedRevision }
  *   POST /api/network/schedules/:id/confirm { expectedRevision, confirm: true }: switches it on (local-only)
  *   POST /api/network/schedules/:id/run     { idempotencyKey? } → 202: Run now
+ *
+ * Federation (a2a-registry.mjs; architecture §10.4, §24). Previewing a card makes one guarded outbound request; approving,
+ * changing a peer and both switches change trust or exposure: those are local-only. Reading and removing a peer are not.
+ *   GET  /api/network/federation            switches, trusted peers, agents published for A2A, the inbound card address
+ *   POST /api/network/federation/peers/preview  { url, localTest?, privateAddress? } → { preview } (nothing saved; local-only)
+ *   POST /api/network/federation/peers      { url, cardSha256, expectedRevision, localTest?, privateAddress?, credentialEnv?, credentialScheme? } → 201 (local-only)
+ *   PATCH /api/network/federation/peers/:id { expectedRevision, enabled?, credentialEnv?, credentialScheme?, cardSha256? } (local-only)
+ *   DELETE /api/network/federation/peers/:id { expectedRevision }
+ *   PATCH /api/network/federation/outbound  { expectedRevision, enabled } (local-only)
+ *   PATCH /api/network/federation/inbound   { expectedRevision, enabled?, agents? } (local-only)
  */
 import { activitySummary } from './activity.mjs';
 import { EVENT_FILTERS } from './events.mjs';
@@ -112,7 +123,7 @@ const query = (params, keys) => ({ ...Object.fromEntries(keys.map(key => [key, p
 const preview = params => ({ projectId: params.get('projectId') || null, networkId: params.get('networkId') || null, memory: params.get('memory') || 'agent',
   projectLessons: ({ true: true, false: false, null: false })[params.get('projectLessons')] ?? params.get('projectLessons') });
 
-const CLIENT = '(cli_[0-9a-f]{20})', AGENT = '(agt_[0-9a-f]{20})', NETWORK = '(net_[0-9a-f]{20})', MEMORY = '(mem_[0-9a-f]{20})', POST = '(pst_[0-9a-f]{20})', JOB = '(job_[0-9a-f]{20})';
+const CLIENT = '(cli_[0-9a-f]{20})', PEER = '(peer_[0-9a-f]{20})', AGENT = '(agt_[0-9a-f]{20})', NETWORK = '(net_[0-9a-f]{20})', MEMORY = '(mem_[0-9a-f]{20})', POST = '(pst_[0-9a-f]{20})', JOB = '(job_[0-9a-f]{20})';
 const PIPELINE = '(pip_[0-9a-f]{20})', RUN = '(run_[0-9a-f]{20})', STEP = '(n_[0-9a-f]{12}(?:/n_[0-9a-f]{12}){0,4})', SCHEDULE = '(sch_[0-9a-f]{20})';
 const route = (method, path, run, status, stream = false) => Object.freeze({ method, pattern: new RegExp(`^/api/network${path}$`), run, status, stream });
 /** Memory routes of one scope: an agent's (agents/agt_…) or a network's (networks/net_…). */
@@ -206,7 +217,21 @@ export const NETWORK_ROUTES = Object.freeze([
   route('DELETE', `/schedules/${SCHEDULE}`, async (c, id) => c.schedules.remove(id, await c.body(BODY.small))),
   route('POST', `/schedules/${SCHEDULE}/confirm`, async (c, id) => c.schedules.confirm(id, await c.body(BODY.small))),
   route('POST', `/schedules/${SCHEDULE}/run`, async (c, id) => c.schedules.runNow(id, await c.body(BODY.small)), () => 202),
+  route('GET', '/federation', async c => federationView(c)),
+  route('POST', '/federation/peers/preview', async c => c.network.federation.preview(await c.body(BODY.small))),
+  route('POST', '/federation/peers', async c => c.network.federation.approve(await c.body(BODY.small)), () => 201),
+  route('PATCH', `/federation/peers/${PEER}`, async (c, id) => c.network.federation.update(id, await c.body(BODY.small))),
+  route('DELETE', `/federation/peers/${PEER}`, async (c, id) => c.network.federation.remove(id, await c.body(BODY.small))),
+  route('PATCH', '/federation/outbound', async c => c.network.federation.setOutbound(await c.body(BODY.small))),
+  route('PATCH', '/federation/inbound', async c => c.network.federation.setInbound(await c.body(BODY.small))),
 ]);
+/** Federation as the owner sees it, with where A2A callers would reach it now (the machine listener's own address). */
+async function federationView(c) {
+  const [view, status, published] = await Promise.all([c.network.federation.view(), c.machine.status(), c.machine.a2a.published()]);
+  const url = status.listener.listening ? status.listener.url : null, serving = Boolean(url && published.length);
+  return { ...view, inbound: { ...view.inbound, listener: { enabled: status.listener.enabled, listening: status.listener.listening, url }, serving,
+    cardUrl: serving ? `${url}/.well-known/agent-card.json` : null, endpoint: serving ? `${url}/a2a/v1` : null } };
+}
 
 export async function networkRoute({ network, jobs, events, board, pipelines, runs, machine, schedules, req, res, pathname, searchParams, jsonBody, send }) {
   const body = async limit => {

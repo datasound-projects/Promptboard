@@ -7,6 +7,7 @@
 // they ran at the same time without timing; exit 4 after 30 s), [[delegate:<agt_id>]] (Task 12: the report ends with a delegation
 // request for that agent, unless the prompt carries earlier work on the job, when it answers finally), [[ask]] (the same with one
 // question for whoever submitted the job). FAKE_HEADLESS_LOG names a folder for one <pid>.json per run and <pid>.end.
+// [[odd]] emits unknown output; [[toolfail]] emits a failed tool with a private path.
 import { spawn } from 'node:child_process';
 import { readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -42,6 +43,11 @@ if (cli === 'claude') {
   if (has('auth')) { out({ type: 'assistant', error: 'authentication_failed', message: { content: [] } }); out({ type: 'result', is_error: true, result: 'Not logged in' }); await end(1); }
   if (!has('nosession')) out({ type: 'system', subtype: 'init', session_id: 'claude-session-1' });
   if (args[args.indexOf('--tools') + 1].includes('WebSearch')) out({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'WebSearch', input: { query: 'release notes /Users/someone/private' } }] } });
+  if (has('odd')) { out({ type: 'mystery_event', path: '/Users/someone/private/odd.txt' }); process.stdout.write('this line is not json\n'); out({ type: 'stream_event', event: { type: 'unheard_of' } }); }
+  if (has('toolfail')) {
+    out({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'mcp__files__read', input: { path: '/Users/someone/private/secret.txt' } }] } });
+    out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', is_error: true, content: 'ENOENT: /Users/someone/private/secret.txt' }] } });
+  }
   if (has('hang')) await hang();
   if (has('big')) { const chunk = JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'x'.repeat(65536) } } }); for (let i = 0; i < 270; i++) process.stdout.write(`${chunk}\n`); }
   for (const part of text.split(/(?<=\.)/)) out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: part } } });
@@ -53,6 +59,11 @@ if (cli === 'claude') {
   if (has('crash')) await end(3);
   if (!has('nosession')) out({ type: 'thread.started', thread_id: 'codex-thread-1' });
   out({ type: 'turn.started' });
+  if (has('odd')) { out({ type: 'item.completed', item: { id: 'x1', type: 'quantum_step', text: '/Users/someone/private/odd.txt' } }); out({ type: 'unknown.kind' }); process.stdout.write('this line is not json\n'); }
+  if (has('toolfail')) {
+    out({ type: 'item.started', item: { id: 't1', type: 'mcp_tool_call', server: 'files', tool: 'read', status: 'in_progress' } });
+    out({ type: 'item.completed', item: { id: 't1', type: 'mcp_tool_call', server: 'files', tool: 'read', status: 'failed', error: { message: 'ENOENT: /Users/someone/private/secret.txt' } } });
+  }
   if (args.includes('web_search="live"')) { out({ type: 'item.started', item: { id: 'w1', type: 'web_search', query: '' } }); out({ type: 'item.completed', item: { id: 'w1', type: 'web_search', query: 'release notes', action: { type: 'search', query: 'release notes' } } }); }
   if (has('hang')) await hang();
   out({ type: 'item.completed', item: { id: 'r1', type: 'reasoning', text: 'HIDDEN REASONING' } });

@@ -35,7 +35,7 @@ export function request(port, path, { method = 'GET', headers = {}, body, raw, h
 export const refused = port => new Promise(resolve => { const socket = net.connect({ host: '127.0.0.1', port }); socket.once('connect', () => { socket.destroy(); resolve(false); }); socket.once('error', error => resolve(error.code === 'ECONNREFUSED')); });
 
 /** A board with projects Site and Docs, Base agents (Claude, Codex, Gemini), then the app. `dataDir` restarts on a used folder. */
-export async function fixture(t, { dataDir = null, worker = fakeWorker(), machineOptions } = {}) {
+export async function fixture(t, { dataDir = null, worker = fakeWorker(), machineOptions, serverOptions = {} } = {}) {
   if (!dataDir) {
     dataDir = await mkdtemp(join(tmpdir(), 'pb-network-machine-'));
     t.after(() => rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
@@ -45,7 +45,7 @@ export async function fixture(t, { dataDir = null, worker = fakeWorker(), machin
     await board.base.create({ id: 'scout', kind: 'profile', name: 'Scout', configuration: { agent: { provider: 'codex' } } });
     await board.base.create({ id: 'gem', kind: 'profile', name: 'Gem', configuration: { agent: { provider: 'gemini' } } });
   }
-  const app = await startServer({ port: 0, dataDir, executor: null, networkWorker: worker, catalogReader: async provider => ({ provider, source: 'test fixture', models: [] }), ...(machineOptions ? { machineOptions } : {}) });
+  const app = await startServer({ port: 0, dataDir, executor: null, networkWorker: worker, catalogReader: async provider => ({ provider, source: 'test fixture', models: [] }), ...(machineOptions ? { machineOptions } : {}), ...serverOptions });
   t.after(() => app.close());
   const port = Number(new URL(app.url).port), session = (await (await fetch(`${app.url}/api/session`)).json()).token;
   const owner = (path, method = 'GET', body, headers = {}) => request(port, path, { method, body, headers: { 'X-STE-Token': session, ...headers } });

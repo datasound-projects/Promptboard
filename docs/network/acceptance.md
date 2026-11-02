@@ -283,6 +283,10 @@ Must pass before Task 12 starts; proven by the tests named.
    reported as measured numbers.
 6. Accessibility and security audit of every new route (Host/Origin/token/machine checks, redaction, SSRF, scopes).
 7. Docs: README, `docs/network/*`, SECURITY.md (only as needed), CHANGELOG (Task 14 only).
+8. `network-settings-recovery`: torn and missing authority files never revive clients, registrations, handoffs, schedules
+   or federation; the safe reset persists before use, failed writes grant no authority, newer/both-damaged copies stay
+   unchanged, notices are visible and recovery is journaled once. Restored memory needs fresh approval. Recovered graph
+   relations stay visible but cannot delegate across restarts until explicitly confirmed; a rename cannot confirm them.
 
 ## 6. Failure and recovery matrix
 

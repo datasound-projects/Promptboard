@@ -23,7 +23,7 @@
  */
 import { join } from 'node:path';
 import { serial } from '../durable.mjs';
-import { cleanText, conflict, fail, NetworkError, object, only, oneLine, readDocument, requireRevision, writeDocument } from './storage.mjs';
+import { cleanText, conflict, fail, NetworkError, object, only, oneLine, readSettings, requireRevision, writeDocument } from './storage.mjs';
 
 const SCHEMA = 'promptboard.network-delegation', KIB = 1024;
 export const DELEGATION_DEFAULTS = Object.freeze({ askOwner: false, delegate: false, maxDepth: 2, maxChildren: 3, budgetShare: 50, requireApproval: true });
@@ -75,11 +75,12 @@ export class Delegation {
    * `registry` reads registrations and network drafts; `clients()` answers the machine clients' list (machine-auth.mjs
    * `list()`), so a chain that an external client started stays inside that client's scope.
    */
-  constructor({ dataDir, registry, clients = null, now = Date.now }) { Object.assign(this, { path: join(dataDir, 'network', 'delegation.json'), registry, clients, now }); }
+  constructor({ dataDir, registry, clients = null, events = null, now = Date.now }) { Object.assign(this, { path: join(dataDir, 'network', 'delegation.json'), registry, clients, events, now }); }
   #serial = serial();
   #doc = null;
   async #load() {
-    return this.#doc ??= await readDocument(this.path, { schema: SCHEMA, label: 'The Network delegation policy', valid: stored }) ?? { schema: SCHEMA, version: 1, revision: 0, ...DELEGATION_DEFAULTS };
+    return this.#doc ??= await readSettings(this.path, { schema: SCHEMA, label: 'The Network delegation policy', valid: stored, now: this.now, events: this.events,
+      reset: data => ({ ...data, askOwner: false, delegate: false, requireApproval: true }) }) ?? { schema: SCHEMA, version: 1, revision: 0, ...DELEGATION_DEFAULTS };
   }
   /** GET /api/network/delegation: the policy (off by default) and its ranges. */
   async policy() { const { schema, version, ...policy } = await this.#serial(() => this.#load()); return { policy, ranges: DELEGATION_RANGES, limits: HANDOFF_LIMITS }; }
@@ -104,11 +105,14 @@ export class Delegation {
   async #targets(networkId, agentId) {
     let network;
     try { ({ network } = await this.registry.network(networkId)); } catch (error) { if (error.code === 'NOT_FOUND') return new Set(); throw error; }
+    if (network.delegationReviewRequired) return new Set(); // A backup may restore a relation the owner removed: no authority until reviewed and saved.
     const nodes = new Map(network.nodes.filter(node => node.type === 'agent').map(node => [node.id, node.agentId]));
     return new Set(network.edges.filter(edge => edge.relation === 'delegate' && nodes.get(edge.from) === agentId && nodes.has(edge.to)).map(edge => nodes.get(edge.to)));
   }
   /** The active client that started the chain (its root job's requester), null when the chain did not start with a client. */
   async #rootClient(chain) {
+    // A chain cut short (an ancestor that cannot be read) hides who started it, so its scope cannot be checked: refuse (fail closed).
+    if (chain.broken) refuse('A job earlier in this chain cannot be read, so who started the chain cannot be checked.', 'DELEGATION_NOT_ALLOWED');
     const root = chain.at(-1);
     if (root.requester?.kind === 'a2a') refuse('Jobs from remote A2A callers cannot delegate in this version.', 'DELEGATION_NOT_ALLOWED');
     if (root.requester?.kind !== 'machine') return null;
@@ -126,6 +130,7 @@ export class Delegation {
    */
   async plan({ policy, parent, request, chain, tasks, children, by, attempt = null }) {
     if (!policy.delegate) refuse('Delegation is switched off. The owner can switch it on in Network → Settings.', 'DELEGATION_OFF');
+    if (chain.some(job => job.status === 'cancelled')) refuse('A job this one was delegated from was cancelled, so it cannot get sub-jobs.', 'DELEGATION_CANCELLED', 409);
     if (!parent.networkId) refuse('This job does not run in a network, so it has no delegate relations to use.', 'DELEGATION_NO_NETWORK', 409);
     const depth = chain.length; // The sub-job's depth: the root job is depth 0.
     if (depth > policy.maxDepth) refuse(`Sub-jobs may be at most ${policy.maxDepth} deep; this one would be ${depth} deep.`, 'DELEGATION_DEPTH', 409);
@@ -158,6 +163,7 @@ export class Delegation {
     const revoked = reason => refuse(`${reason} Nothing ran.`, 'DELEGATION_REVOKED', 409);
     if (!policy.delegate) revoked('Delegation was switched off before this sub-job started.');
     if (!parent) revoked('The job that delegated this sub-job no longer exists.');
+    if (chain.slice(1).some(item => item.status === 'cancelled')) revoked('A job it was delegated from was cancelled before it started.');
     if (!(await this.#targets(job.networkId, parent.agentId)).has(job.agentId)) revoked('The delegate relation this sub-job used was removed from the network before it started.');
     try { const client = await this.#rootClient(chain); if (client && !client.scopes.agents.includes(job.agentId)) revoked('The external client that started this chain may no longer use this agent.'); }
     catch (error) { if (error.code === 'DELEGATION_REVOKED' || !(error instanceof NetworkError)) throw error; revoked(error.message); }

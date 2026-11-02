@@ -191,17 +191,20 @@ test('a restart on the same folder keeps IDs, revisions, scopes, drafts and vers
   assert.deepEqual([before.agents.agents[0].revision, before.agents.agents[0].enabled, before.agents.agents[0].projectAllowlist, before.agents.agents[0].networks], [2, false, ['p1', 'p2'], [network.id]]);
 });
 
-test('damaged and newer files fail closed: a backup is used and the damaged file set aside; nothing is overwritten', async t => {
+test('damaged and newer files fail closed: a backup suspends registrations, retains damaged bytes, and persists its safe state', async t => {
   const { registry, open, file } = await fixture(t);
   await register(registry, 'lead', 0);
   await register(registry, 'reviewer', 1); // agents.json now holds revision 2, its backup revision 1.
   await writeFile(file('agents.json'), '{"schema":"promptboard.network-agents",');
   const recovered = open({ fresh: true });
-  assert.deepEqual([(await recovered.listAgents()).revision, (await recovered.listAgents()).total], [1, 1], 'the backup loads');
+  const restored = await recovered.listAgents();
+  assert.deepEqual([restored.revision, restored.total, restored.agents[0].enabled, restored.recovery.code], [3, 1, false, 'SETTINGS_RECOVERED'], 'the backup loads with access disabled and a fresh revision');
   const names = await readdir(file());
-  assert.ok(names.some(name => /^agents\.json\.corrupt-\d+-[0-9a-f]{8}$/.test(name)) && !names.includes('agents.json'), 'the damaged file is set aside');
-  await register(recovered, 'team', 1);
-  assert.equal(JSON.parse(await readFile(file('agents.json.bak'), 'utf8')).revision, 1, 'the good backup survived the next save');
+  assert.ok(names.some(name => /^agents\.json\.corrupt-\d+-[0-9a-f]{8}$/.test(name)) && names.includes('agents.json'), 'the damaged file is set aside and a safe primary saved');
+  assert.equal(JSON.parse(await readFile(file('agents.json.bak'), 'utf8')).revision, 1, 'recovery preserves the original good backup');
+  await register(recovered, 'team', restored.revision);
+  const savedBackup = JSON.parse(await readFile(file('agents.json.bak'), 'utf8'));
+  assert.deepEqual([savedBackup.revision, savedBackup.rows[0].enabled], [3, false], 'the next save backs up the safe state');
   // Both copies damaged: refused, nothing moved or written.
   await writeFile(file('agents.json'), 'not json'); await writeFile(file('agents.json.bak'), '[]');
   const listing = (await readdir(file())).sort();
@@ -242,7 +245,9 @@ test('an unreadable network draft is listed as unavailable and refused; the othe
   assert.deepEqual((await open({ fresh: true }).listNetworks()).unavailable.filter(item => edited.some(network => network.id === item.id)).map(item => item.code), ['NETWORK_DATA_DAMAGED', 'NETWORK_DATA_DAMAGED']);
   // A damaged draft whose backup is good (the save above kept revision 1 as the backup) loads from the backup.
   await writeFile(draftFile(file, good.id), 'x');
-  assert.deepEqual([(await open({ fresh: true }).network(good.id)).network.revision, (await readdir(file('networks'))).some(name => name.startsWith(`${good.id.replace('_', '__')}.json.corrupt-`))], [1, true]);
+  const restored = (await open({ fresh: true }).network(good.id)).network;
+  assert.deepEqual([restored.revision, restored.delegationReviewRequired, (await readdir(file('networks'))).some(name => name.startsWith(`${good.id.replace('_', '__')}.json.corrupt-`))], [3, true, true]);
+  assert.deepEqual(restored.nodes, good.nodes, 'the graph remains available for review');
 });
 
 test('a published version whose bytes no longer match its hash is refused, also as a sub-network pin', async t => {
