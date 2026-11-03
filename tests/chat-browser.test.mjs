@@ -89,10 +89,21 @@ test('Chat and its global icon fit phone/tablet/desktop widths in both themes, p
   await browser.resize(390, 844);
   await ev(`document.querySelector('#skip-link').focus();`); await browser.key('Enter', 'Enter', 13);
   await wait(`document.activeElement?.id==='chat-view'`, 'skip link enters Chat');
-  for (let stop = 0; stop < 10; stop++) {
+  const requiredStops = ['[data-agent="workspace"]', '[data-agent="guide"]', '.chat-settings > summary', '#chat-thread', '.chat-source-buttons button', '.chat-message-actions button', '#chat-input'];
+  const visited = new Set(), focusedNodes = new Set(); let leftChat = false;
+  // Once Tab leaves Chat, headless platforms can expose browser chrome as BODY
+  // or wrap to the skip link. Audit every in-page control, not an arbitrary
+  // number of further browser-chrome stops.
+  for (let stop = 0; stop < 40; stop++) {
     await browser.key('Tab', 'Tab', 9);
+    const focused = await ev(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); const root=document.querySelector('#chat-view'),n=document.activeElement;return {tag:n?.tagName,id:n?.id,inside:root.contains(n),index:[...root.querySelectorAll('*')].indexOf(n),matches:${J(requiredStops)}.filter(selector=>n?.matches(selector))};`);
+    if (!focused.inside) { leftChat = true; break; }
+    assert.equal(focusedNodes.has(focused.index), false, `Chat focus must not cycle: ${J(focused)}`); focusedNodes.add(focused.index);
+    for (const selector of focused.matches) visited.add(selector);
     assert.equal(await browser.layout(`const n=document.activeElement,r=n.getBoundingClientRect(),s=getComputedStyle(n);return r.width>0&&r.height>0&&r.bottom>0&&r.top<innerHeight&&(s.outlineStyle!=='none'||s.boxShadow!=='none');`), true, `visible focus at stop ${stop}`);
   }
+  assert.equal(leftChat, true, 'Tab leaves Chat without a keyboard trap');
+  assert.deepEqual([...visited].sort(), [...requiredStops].sort(), 'Tab reaches every expected Chat control with visible focus');
   await ev(`document.querySelector('#chat-input').focus();`); await browser.type('Keep this exact draft');
   await ev(`location.hash='#/base';`); await wait(`document.documentElement.dataset.page==='base'`, 'leave Chat');
   await click('#chat-open'); await wait(`document.documentElement.dataset.page==='chat' && document.querySelector('#chat-input').value==='Keep this exact draft'`, 'draft returns');
