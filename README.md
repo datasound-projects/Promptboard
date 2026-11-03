@@ -15,6 +15,7 @@
   <a href="#compose">Compose</a> ·
   <a href="#kanban">Kanban</a> ·
   <a href="#base">Base</a> ·
+  <a href="#network">Network</a> ·
   <a href="#docs">Docs</a>
 </p>
 
@@ -45,6 +46,7 @@ Promptboard opens at **http://127.0.0.1:4318**. To update, run `git pull --ff-on
 | [**Compose**](#compose) | Turn a rough request into a precise prompt. |
 | [**Kanban**](#kanban) | Agents take each task through Planning → Executing → Code Review → Testing → Merge. |
 | [**Base**](#base) | One library of agent profiles, skills, MCP servers and knowledge. |
+| [**Network**](#network) | Connect Base agents in networks and pipelines, and run general jobs outside Kanban. |
 
 All pages share one project: a plan in Origin becomes cards in Kanban, with nothing copied by hand. Each page also works on its own.
 
@@ -146,6 +148,32 @@ Each card gets its own Git branch and worktree. When a card enters a column, a f
 
 <sub>The demos use the real app with simulated agents. Saves, Git branches, checks and merges are real. Re-record them with `node scripts/record-demo.mjs`.</sub>
 
+## Network
+
+**Use your Base agents for work that is not a code change: research, reviews, summaries and checks.**
+
+Every Network job only reads. It runs on this computer with your signed-in CLI, in an empty folder of its own: never a project, a repository or a card.
+
+- **Agents.** Register a Base agent or agent profile once; its definition stays in Base. Its profile shows what its CLI can report, and holds its jobs (**Tasks**), **Activity**, approved **Memory** and your **Posts**.
+- **Graph.** Put agents, published sub-networks and remote peers on a canvas, and draw typed relations (message, delegate, share result). A relation grants nothing and moves no data. Publish a version: it never changes again.
+- **Pipelines.** Draw what runs after what: agent steps, parallel branches, joins, conditions, approvals, remote peers and an output report. Validate, publish, then run one published version. A run keeps that exact version while you edit.
+- **Activity.** A live feed of every job and step from a journal that survives restarts, each agent's status beside what its CLI can report, jobs that wait for you, schedules, and the Kanban runs of registered agents. No percentages; usage and cost only as the CLI reports them.
+- **Library.** Every network with its versions and where each is used. Rename, duplicate, archive, delete, export and import.
+- **Federation.** Off in both directions until you turn it on. Call remote A2A agents you approved by their exact Agent Card, and let outside A2A agents use agents you publish.
+- **Settings.** Let apps and MCP hosts on this computer, such as Claude Code or Codex, use your agents through jobs, each with its own token and scope. Choose whether agents may ask you a question or delegate sub-jobs.
+- **Nothing runs by itself.** Saving, publishing and importing start nothing. Work starts only from a job or run you confirm, a schedule you switched on at this computer, a client you created, or a handoff your policy allows. When Promptboard cannot tell whether a job finished, it says so and waits for you; it never runs it again on its own.
+
+What Network can see of a running job depends on the CLI. It never guesses: a quiet job is not called idle or done.
+
+| Agent | While a job runs, Activity shows | Usage |
+| --- | --- | --- |
+| Claude Code | each tool call (a web search, a page read) | tokens and cost |
+| Codex | its web searches only | tokens |
+| Gemini CLI | nothing until the final answer | not reported |
+| Remote A2A peer | only the task states the peer reports | not reported |
+
+See the [Network user guide](docs/network/user-guide.md), [MCP and A2A setup](docs/network/setup-mcp-a2a.md) and [Network troubleshooting](docs/network/troubleshooting.md).
+
 ## Also included
 
 - **CLIs** (top bar): connect, sign in and check each CLI.
@@ -154,16 +182,16 @@ Each card gets its own Git branch and worktree. When a card enters a column, a f
 - **Settings**: theme, start page, default agents, how many agents run at once, terminal and notifications.
 - **Remote access (iPhone)**: open Promptboard in Safari on your phone through Tailscale or Twingate after pairing it once. Everything keeps running on the computer. See [Remote access](docs/remote-access.md).
 - **Docker sandbox**: run a project's card agents (Claude Code, Codex) in a container that sees only the card's workspace. See [Docker sandbox](docs/docker-sandbox.md).
-- **Command line**: `node bin/ste.mjs --provider claude < request.txt` writes a prompt without the app. Run `--help` for all options.
+- **Command line**: `node bin/ste.mjs --provider claude < request.txt` writes a prompt without the app, and `node bin/ste.mjs --mcp` serves your Network agents to an MCP host ([setup](docs/network/setup-mcp-a2a.md)). Run `--help` for all options.
 
 ## Supported CLIs
 
-| CLI | Compose | Kanban |
-| --- | --- | --- |
-| [Claude Code](https://code.claude.com/docs/en/quickstart) | ✓ | ✓ |
-| [OpenAI Codex CLI](https://developers.openai.com/codex/cli) | ✓ | ✓ |
-| [Gemini CLI](https://geminicli.com/docs/get-started/installation/) | ✓ | ✓ (not live-verified) |
-| [Antigravity](https://antigravity.google/docs/getting-started?tab=cli) (`agy`) | ✓ | — |
+| CLI | Compose | Kanban | Network |
+| --- | --- | --- | --- |
+| [Claude Code](https://code.claude.com/docs/en/quickstart) | ✓ | ✓ | ✓ |
+| [OpenAI Codex CLI](https://developers.openai.com/codex/cli) | ✓ | ✓ | ✓ |
+| [Gemini CLI](https://geminicli.com/docs/get-started/installation/) | ✓ | ✓ (not live-verified) | ✓ (no web search; not live-verified) |
+| [Antigravity](https://antigravity.google/docs/getting-started?tab=cli) (`agy`) | ✓ | — | — |
 
 Agents run through each CLI's own sign-in and plan. Promptboard has no account of its own.
 
@@ -173,6 +201,7 @@ Agents run through each CLI's own sign-in and plan. Promptboard has no account o
 - Prompts and the context you select go only to the provider you choose, through its CLI.
 - Boards, logs and worktrees stay in your local data folder. New repositories go in `~/Promptboard/projects`.
 - In autonomous mode an agent can change files in its task workspace. Read [SECURITY.md](SECURITY.md) before you use sensitive repositories.
+- Network jobs only read. A job's text, its agent's Base definition and the memory and lessons you allow go to that agent's provider through its CLI, as in a Kanban run. External clients and A2A federation stay off until you turn them on at this computer: the machine listener serves `127.0.0.1` only, and a remote peer gets only what a pipeline step sends it. Network data stays in the data folder's `network/` folder, outside board backups.
 
 ## Good to know
 
@@ -187,6 +216,7 @@ Agents run through each CLI's own sign-in and plan. Promptboard has no account o
 - [Origin](docs/origin.md) · [Research](docs/origin-research.md) · [Project Context](docs/origin-project-context.md) · [Shared projects](docs/shared-projects.md) · [Coordinator](docs/coordinator.md) · [Project memory](docs/project-memory.md)
 - [Compose context](docs/compose-context.md) · [Prompt checks](docs/verification.md)
 - [Base delivery](docs/base-delivery.md) · [CLI adapters](docs/cli-adapters.md) · [Session persistence](docs/session-persistence.md)
+- [Network user guide](docs/network/user-guide.md) · [MCP and A2A setup](docs/network/setup-mcp-a2a.md) · [Network troubleshooting](docs/network/troubleshooting.md) · [All Network docs](docs/network/README.md)
 - [Changelog](CHANGELOG.md) · [Release verification](RELEASE-VERIFICATION.md) · [All docs](docs/)
 
 ## Contributing

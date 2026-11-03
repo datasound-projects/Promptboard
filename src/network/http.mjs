@@ -1,0 +1,257 @@
+/**
+ * Owner Network routes (/api/network/*), mounted in src/server.mjs behind its unchanged token, Host, Origin, proxy and
+ * fetch-site checks. Every route here is also allowed from a paired device (architecture §10.2) except the ten marked
+ * local-only below (src/remote-access.mjs localOnly): they show a new token, open the machine listener, switch on standing
+ * automation, or change federation trust or exposure. The others create no way in, show no secret and change no trust (a
+ * paired device has the owner's control, so it may submit and cancel jobs).
+ * Only the job routes lead to work, and only through the job engine's worker. NETWORK_ROUTES below is the one route table:
+ * the dispatcher reads it, and tests/remote-access.test.mjs checks that every row has exactly one paired-device row there.
+ *
+ *   GET  /api/network/agents                ?q tag capability status kind provider baseResourceId projectId networkId offset limit
+ *   POST /api/network/agents                { baseResourceId, expectedRevision, displayName?, tags?, capabilities?, enabled?, projectAllowlist? }
+ *   GET  /api/network/agents/:id
+ *   PATCH /api/network/agents/:id           { expectedRevision, …fields }
+ *   GET  /api/network/networks              ?q agentId archived=true offset limit
+ *   POST /api/network/networks              { name, description?, nodes?, edges? }
+ *   GET  /api/network/networks/:id          the draft with refs, issues and usedBy
+ *   PATCH /api/network/networks/:id         { expectedRevision, name?, description?, nodes?, edges?, archived? }
+ *   DELETE /api/network/networks/:id        { expectedRevision }: only a never-published network nothing uses
+ *   POST /api/network/networks/:id/publish  { expectedRevision }
+ *   POST /api/network/networks/:id/duplicate { name? }
+ *   GET  /api/network/networks/:id/versions/:n
+ *   GET  /api/network/export
+ *   POST /api/network/import                { data, expectedRevision }
+ *
+ * Memory of an agent (agents/agt_…) or a network (networks/net_…), and an agent's reports (memory.mjs, posts.mjs):
+ *   GET  …/memory                           ?q status offset limit
+ *   POST …/memory                           { expectedRevision (of the memory), kind, text }: a proposal
+ *   PATCH …/memory/:mid                     { expectedRevision (of the record), kind?, text? }
+ *   POST …/memory/:mid/approve              { expectedRevision, decision: 'approve' | 'reject' }
+ *   DELETE …/memory/:mid                    { expectedRevision }
+ *   GET  /api/network/agents/:id/memory/preview   ?projectId networkId memory=none|agent|agent+network projectLessons=true|false
+ *   GET  /api/network/agents/:id/posts      ?offset limit
+ *   POST /api/network/agents/:id/posts      { expectedRevision, markdown, references? }
+ *   PATCH /api/network/agents/:id/posts/:pid  { expectedRevision, markdown?, references? }
+ *   DELETE /api/network/agents/:id/posts/:pid { expectedRevision }
+ *
+ * Jobs (jobs.mjs). None starts a process by itself: a job runs only when the worker (worker-local.mjs) claims it.
+ *   GET  /api/network/settings              maxConcurrentJobs, defaultTimeoutMs, outputRetentionDays, limits
+ *   PATCH /api/network/settings             { expectedRevision, …settings }
+ *   GET  /api/network/jobs                  ?status agentId projectId networkId parentJobId offset limit
+ *   POST /api/network/jobs                  { agentId, input: { text, json? }, instructions?, tools?, permissions?, limits?, requireApproval?, projectId?, networkId?, parentJobId?, idempotencyKey? }
+ *   GET  /api/network/jobs/:id              the job, its accepted request and child jobs
+ *   GET  /api/network/jobs/:id/result       a completed job's result { text, json } (checked against its hash)
+ *   DELETE /api/network/jobs/:id            { expectedRevision }: a finished job only
+ *   POST /api/network/jobs/:id/cancel       {}
+ *   POST /api/network/jobs/:id/approve      { expectedRevision, decision: 'approve' | 'reject' }
+ *   POST /api/network/jobs/:id/retry        { expectedRevision, confirm: true, confirmUncertain? }
+ *   POST /api/network/jobs/:id/close        { expectedRevision }
+ *
+ * Activity (events.mjs, activity.mjs; architecture §19). Reads only: no route appends an event.
+ *   GET  /api/network/events                ?after | before, limit (1–200), agentId jobId networkId pipelineRunId
+ *   GET  /api/network/events/stream         ?after: NDJSON replay from `after`, then live events and a ping every 15 s
+ *   GET  /api/network/activity              agents' statuses with coverage, open jobs, Kanban runs of registered agents
+ * Pipelines (pipeline-model.mjs) and their runs (pipeline-runner.mjs). Saving, validating and publishing start nothing;
+ * a run starts only with an explicit start that confirms it, and its steps are jobs of the job engine.
+ *   GET  /api/network/pipelines             ?q networkId offset limit
+ *   POST /api/network/pipelines             { networkId, networkVersion, name, description?, settings?, nodes?, edges? }
+ *   GET  /api/network/pipelines/:id         the draft
+ *   PATCH /api/network/pipelines/:id        { expectedRevision, name?, description?, networkVersion?, settings?, nodes?, edges? }
+ *   DELETE /api/network/pipelines/:id       { expectedRevision }: only a never-published pipeline
+ *   POST /api/network/pipelines/:id/validate { version? }: compiles the draft (or that version) without running it
+ *   POST /api/network/pipelines/:id/publish { expectedRevision }: only when it compiles
+ *   GET  /api/network/pipelines/:id/versions/:n
+ *   POST /api/network/pipelines/:id/runs    { version, confirm: true, input?: { text?, json? } } → 202 { runId, run }
+ *   GET  /api/network/pipeline-runs         ?pipelineId status offset limit
+ *   GET  /api/network/pipeline-runs/:id     the run with its plan
+ *   POST /api/network/pipeline-runs/:id/cancel {}
+ *   POST /api/network/pipeline-runs/:id/nodes/:nodeId/approve { decision: 'approve' | 'reject' } (nodeId may be <substep>/<step>)
+ *   GET  /api/network/pipeline-runs/:id/nodes/:nodeId/report   an output step's saved report, hash-checked
+ *
+ * External clients (machine-auth.mjs, rest.mjs; architecture §10.3, §22). Creating or rotating a client shows a new
+ * token and the listener opens a port, so those three are local-only (src/remote-access.mjs localOnly); listing and
+ * revoking are allowed from a paired device (revoking only removes access).
+ *   GET  /api/network/clients               the clients and their scopes; never a token or its hash
+ *   POST /api/network/clients               { name, scopes: { agents, networks?, projects?, permissions }, expiresInDays? } → 201 { client, token } (local-only)
+ *   DELETE /api/network/clients/:id         {}: revoke for good; its open streams end at once
+ *   POST /api/network/clients/:id/rotate    { expectedRevision } → { client, token } (local-only)
+ *   GET  /api/network/listener              the machine listener (off by default) and the MCP command
+ *   PATCH /api/network/listener             { enabled?, port? } (local-only)
+ *
+ * Handoffs, messages and schedules (Task 12: delegation.mjs, messages.mjs, schedules.mjs; architecture §23). Switching
+ * handoffs on and switching a schedule on create standing automation, so those two are local-only; everything else here is
+ * the owner's control over saved definitions and their own jobs. No save, edit or import starts anything.
+ *   GET  /api/network/jobs/:id/messages     the job's messages (oldest first) and how many to you are unread
+ *   POST /api/network/jobs/:id/messages     { kind: 'review' | 'request', text, json? } → 201: a note for the record
+ *   POST /api/network/jobs/:id/messages/read { ids? }: read receipts (never execution state)
+ *   POST /api/network/jobs/:id/answer       { expectedRevision, text }: answers the question a waiting job asked
+ *   GET  /api/network/delegation            the handoff policy (off by default) and its ranges
+ *   PATCH /api/network/delegation           { expectedRevision, askOwner?, delegate?, maxDepth?, maxChildren?, budgetShare?, requireApproval? } (local-only)
+ *   GET  /api/network/schedules             the schedules, their next times and this computer's time zone
+ *   POST /api/network/schedules             { expectedRevision, name, target, cadence } → 201, switched off
+ *   PATCH /api/network/schedules/:id        { expectedRevision, name?, target?, cadence?, enabled?: false }
+ *   DELETE /api/network/schedules/:id       { expectedRevision }
+ *   POST /api/network/schedules/:id/confirm { expectedRevision, confirm: true }: switches it on (local-only)
+ *   POST /api/network/schedules/:id/run     { idempotencyKey? } → 202: Run now
+ *
+ * Federation (a2a-registry.mjs; architecture §10.4, §24). Previewing a card makes one guarded outbound request; approving,
+ * changing a peer and both switches change trust or exposure: those are local-only. Reading and removing a peer are not.
+ *   GET  /api/network/federation            switches, trusted peers, agents published for A2A, the inbound card address
+ *   POST /api/network/federation/peers/preview  { url, localTest?, privateAddress? } → { preview } (nothing saved; local-only)
+ *   POST /api/network/federation/peers      { url, cardSha256, expectedRevision, localTest?, privateAddress?, credentialEnv?, credentialScheme? } → 201 (local-only)
+ *   PATCH /api/network/federation/peers/:id { expectedRevision, enabled?, credentialEnv?, credentialScheme?, cardSha256? } (local-only)
+ *   DELETE /api/network/federation/peers/:id { expectedRevision }
+ *   PATCH /api/network/federation/outbound  { expectedRevision, enabled } (local-only)
+ *   PATCH /api/network/federation/inbound   { expectedRevision, enabled?, agents? } (local-only)
+ */
+import { activitySummary } from './activity.mjs';
+import { EVENT_FILTERS } from './events.mjs';
+import { JOB_LIMITS } from './jobs.mjs';
+import { PIPELINE_LIMITS } from './pipeline-model.mjs';
+import { NETWORK_LIMITS } from './registry.mjs';
+import { NetworkError } from './storage.mjs';
+
+// A draft may reach 8 MiB; an import carries every draft and version (ponytail: one body, split imports past 32 MiB).
+const BODY = { small: 64 * 1024, network: NETWORK_LIMITS.draftBytes + 64 * 1024, pipeline: PIPELINE_LIMITS.draftBytes + 64 * 1024, import: 32 * 1024 * 1024 };
+const integer = (value, fallback) => value === null ? fallback : /^\d{1,9}$/.test(value) ? Number(value) : NaN; // NaN is refused by the registry.
+// A sequence number; anything else is NaN, which the journal refuses.
+const seq = value => value === null || value === '' ? undefined : /^\d{1,15}$/.test(value) ? Number(value) : NaN;
+const eventQuery = params => ({ after: seq(params.get('after')), before: seq(params.get('before')), limit: params.get('limit') === null ? 100 : /^\d{1,9}$/.test(params.get('limit')) ? Number(params.get('limit')) : NaN,
+  ...Object.fromEntries(EVENT_FILTERS.map(key => [key, params.get(key) || undefined])) });
+const query = (params, keys) => ({ ...Object.fromEntries(keys.map(key => [key, params.get(key) || undefined])), offset: integer(params.get('offset'), 0), limit: integer(params.get('limit'), 50) });
+// The preview's question as resolve() takes it; a value it does not know is passed on and refused there.
+const preview = params => ({ projectId: params.get('projectId') || null, networkId: params.get('networkId') || null, memory: params.get('memory') || 'agent',
+  projectLessons: ({ true: true, false: false, null: false })[params.get('projectLessons')] ?? params.get('projectLessons') });
+
+const CLIENT = '(cli_[0-9a-f]{20})', PEER = '(peer_[0-9a-f]{20})', AGENT = '(agt_[0-9a-f]{20})', NETWORK = '(net_[0-9a-f]{20})', MEMORY = '(mem_[0-9a-f]{20})', POST = '(pst_[0-9a-f]{20})', JOB = '(job_[0-9a-f]{20})';
+const PIPELINE = '(pip_[0-9a-f]{20})', RUN = '(run_[0-9a-f]{20})', STEP = '(n_[0-9a-f]{12}(?:/n_[0-9a-f]{12}){0,4})', SCHEDULE = '(sch_[0-9a-f]{20})';
+const route = (method, path, run, status, stream = false) => Object.freeze({ method, pattern: new RegExp(`^/api/network${path}$`), run, status, stream });
+/** Memory routes of one scope: an agent's (agents/agt_…) or a network's (networks/net_…). */
+const memoryRoutes = (kind, prefix) => [
+  route('GET', `${prefix}/memory`, (c, id) => c.network.memory.list(kind, id, query(c.searchParams, ['q', 'status']))),
+  route('POST', `${prefix}/memory`, async (c, id) => c.network.memory.propose(kind, id, await c.body(BODY.small))),
+  route('PATCH', `${prefix}/memory/${MEMORY}`, async (c, id, record) => c.network.memory.edit(kind, id, record, await c.body(BODY.small))),
+  route('DELETE', `${prefix}/memory/${MEMORY}`, async (c, id, record) => c.network.memory.remove(kind, id, record, await c.body(BODY.small))),
+  route('POST', `${prefix}/memory/${MEMORY}/approve`, async (c, id, record) => c.network.memory.decide(kind, id, record, await c.body(BODY.small))),
+];
+const jobAction = (action, method) => route('POST', `/jobs/${JOB}/${action}`, async (c, id) => c.jobs[method](id, await c.body(BODY.small)));
+const OWNER = Object.freeze({ owner: true });
+/**
+ * Import (Task 12): the file's schedule definitions are checked with the rest before anything is written, then added after
+ * the registrations and networks, with their references remapped and switched off.
+ */
+async function importNetwork(c, input) {
+  const data = input?.data, ids = key => new Set(Array.isArray(data?.[key]) ? data[key].map(item => item?.id) : []);
+  const schedules = await c.schedules.checkImport(data?.schedules, { agentIds: ids('agents'), networkIds: ids('networks') });
+  const answer = await c.network.import(input), added = await c.schedules.importDefinitions(schedules, answer.remapped, new Set(await c.network.projects()));
+  return added.imported ? { ...answer, imported: { ...answer.imported, schedules: added.imported }, warnings: [...answer.warnings, ...added.warnings] } : answer;
+}
+/**
+ * Every Network route: method, path pattern and handler `(context, ...path IDs)`; `status(answer)` when it is not 200.
+ * Patterns never overlap, so each request matches at most one path; a known path with another method is 404.
+ */
+export const NETWORK_ROUTES = Object.freeze([
+  route('GET', '/agents', c => c.network.listAgents(query(c.searchParams, ['q', 'tag', 'capability', 'status', 'kind', 'provider', 'baseResourceId', 'projectId', 'networkId']))),
+  route('POST', '/agents', async c => c.network.registerAgent(await c.body(BODY.small))),
+  route('GET', `/agents/${AGENT}`, (c, id) => c.network.agent(id)),
+  route('PATCH', `/agents/${AGENT}`, async (c, id) => c.network.updateAgent(id, await c.body(BODY.small))),
+  ...memoryRoutes('agent', `/agents/${AGENT}`),
+  route('GET', `/agents/${AGENT}/memory/preview`, (c, id) => c.network.memory.resolve(id, preview(c.searchParams))),
+  route('GET', `/agents/${AGENT}/posts`, (c, id) => c.network.posts.list(id, query(c.searchParams, []))),
+  route('POST', `/agents/${AGENT}/posts`, async (c, id) => c.network.posts.create(id, await c.body(BODY.small))),
+  route('PATCH', `/agents/${AGENT}/posts/${POST}`, async (c, id, post) => c.network.posts.update(id, post, await c.body(BODY.small))),
+  route('DELETE', `/agents/${AGENT}/posts/${POST}`, async (c, id, post) => c.network.posts.remove(id, post, await c.body(BODY.small))),
+  route('GET', '/networks', c => c.network.listNetworks(query(c.searchParams, ['q', 'agentId', 'archived']))),
+  route('POST', '/networks', async c => c.network.createNetwork(await c.body(BODY.network))),
+  route('GET', `/networks/${NETWORK}`, (c, id) => c.network.networkDetail(id)),
+  route('PATCH', `/networks/${NETWORK}`, async (c, id) => c.network.updateNetwork(id, await c.body(BODY.network))),
+  route('DELETE', `/networks/${NETWORK}`, async (c, id) => c.network.deleteNetwork(id, await c.body(BODY.small))),
+  route('POST', `/networks/${NETWORK}/publish`, async (c, id) => c.network.publishNetwork(id, await c.body(BODY.small))),
+  route('POST', `/networks/${NETWORK}/duplicate`, async (c, id) => c.network.duplicateNetwork(id, await c.body(BODY.small))),
+  route('GET', `/networks/${NETWORK}/versions/([1-9]\\d{0,8})`, (c, id, number) => c.network.version(id, Number(number))),
+  ...memoryRoutes('network', `/networks/${NETWORK}`),
+  // Schedule definitions only when there are any, so an export without them stays readable by a Promptboard before Task 12.
+  route('GET', '/export', async c => { const exported = await c.network.export(), schedules = await c.schedules.definitions(); return schedules.length ? { ...exported, schedules } : exported; }),
+  route('POST', '/import', async c => importNetwork(c, await c.body(BODY.import))),
+  route('GET', '/settings', c => c.jobs.settings()),
+  route('PATCH', '/settings', async c => c.jobs.updateSettings(await c.body(BODY.small))),
+  route('GET', '/jobs', c => c.jobs.list(query(c.searchParams, ['status', 'agentId', 'projectId', 'networkId', 'parentJobId', 'pipelineRunId']))),
+  route('POST', '/jobs', async c => c.jobs.submit(await c.body(JOB_LIMITS.submitBody)), accepted => (accepted.deduplicated ? 200 : 202)),
+  route('GET', `/jobs/${JOB}`, (c, id) => c.jobs.read(id)),
+  route('GET', `/jobs/${JOB}/result`, (c, id) => c.jobs.result(id)),
+  route('DELETE', `/jobs/${JOB}`, async (c, id) => c.jobs.remove(id, await c.body(BODY.small))),
+  jobAction('cancel', 'cancel'), jobAction('approve', 'approve'), jobAction('retry', 'retry'), jobAction('close', 'closeJob'),
+  route('GET', '/events', c => c.events.read(eventQuery(c.searchParams))),
+  // The stream answers on the response itself; the client key is the paired device's session, or the computer.
+  route('GET', '/events/stream', c => c.events.stream({ res: c.res, after: seq(c.searchParams.get('after')), client: c.req.promptboardRemote?.id ?? 'local' }), undefined, true),
+  route('GET', '/activity', c => activitySummary({ registry: c.network, jobs: c.jobs, events: c.events, board: c.board })),
+  route('GET', '/pipelines', c => c.pipelines.list(query(c.searchParams, ['q', 'networkId']))),
+  route('POST', '/pipelines', async c => c.pipelines.create(await c.body(BODY.pipeline))),
+  route('GET', `/pipelines/${PIPELINE}`, (c, id) => c.pipelines.get(id)),
+  route('PATCH', `/pipelines/${PIPELINE}`, async (c, id) => c.pipelines.update(id, await c.body(BODY.pipeline))),
+  route('DELETE', `/pipelines/${PIPELINE}`, async (c, id) => c.pipelines.remove(id, await c.body(BODY.small))),
+  route('POST', `/pipelines/${PIPELINE}/validate`, async (c, id) => c.pipelines.validate(id, await c.body(BODY.small))),
+  route('POST', `/pipelines/${PIPELINE}/publish`, async (c, id) => c.pipelines.publish(id, await c.body(BODY.small))),
+  route('GET', `/pipelines/${PIPELINE}/versions/([1-9]\\d{0,8})`, (c, id, number) => c.pipelines.version(id, Number(number))),
+  route('POST', `/pipelines/${PIPELINE}/runs`, async (c, id) => c.runs.startRun(id, await c.body(JOB_LIMITS.submitBody)), () => 202),
+  route('GET', '/pipeline-runs', c => c.runs.list(query(c.searchParams, ['pipelineId', 'status']))),
+  route('GET', `/pipeline-runs/${RUN}`, (c, id) => c.runs.read(id)),
+  route('POST', `/pipeline-runs/${RUN}/cancel`, async (c, id) => c.runs.cancel(id, await c.body(BODY.small))),
+  route('POST', `/pipeline-runs/${RUN}/nodes/${STEP}/approve`, async (c, id, node) => c.runs.decide(id, node, await c.body(BODY.small))),
+  route('GET', `/pipeline-runs/${RUN}/nodes/${STEP}/report`, (c, id, node) => c.runs.report(id, node)),
+  route('GET', '/clients', c => c.machine.clients.list()),
+  route('POST', '/clients', async c => c.machine.clients.create(await c.body(BODY.small)), () => 201),
+  route('DELETE', `/clients/${CLIENT}`, async (c, id) => c.machine.clients.revoke(id, await c.body(BODY.small))),
+  route('POST', `/clients/${CLIENT}/rotate`, async (c, id) => c.machine.clients.rotate(id, await c.body(BODY.small))),
+  route('GET', '/listener', c => c.machine.status()),
+  route('PATCH', '/listener', async c => c.machine.configure(await c.body(BODY.small))),
+  route('GET', `/jobs/${JOB}/messages`, (c, id) => c.jobs.messagesOf(id, { reader: OWNER })),
+  route('POST', `/jobs/${JOB}/messages`, async (c, id) => c.jobs.postMessage(id, await c.body(BODY.small), { from: OWNER }), () => 201),
+  route('POST', `/jobs/${JOB}/messages/read`, async (c, id) => c.jobs.readMessages(id, await c.body(BODY.small), { reader: OWNER })),
+  jobAction('answer', 'answer'),
+  route('GET', '/delegation', c => c.jobs.delegation.policy()),
+  route('PATCH', '/delegation', async c => c.jobs.delegation.update(await c.body(BODY.small))),
+  route('GET', '/schedules', c => c.schedules.list()),
+  route('POST', '/schedules', async c => c.schedules.create(await c.body(JOB_LIMITS.submitBody)), () => 201),
+  route('PATCH', `/schedules/${SCHEDULE}`, async (c, id) => c.schedules.update(id, await c.body(JOB_LIMITS.submitBody))),
+  route('DELETE', `/schedules/${SCHEDULE}`, async (c, id) => c.schedules.remove(id, await c.body(BODY.small))),
+  route('POST', `/schedules/${SCHEDULE}/confirm`, async (c, id) => c.schedules.confirm(id, await c.body(BODY.small))),
+  route('POST', `/schedules/${SCHEDULE}/run`, async (c, id) => c.schedules.runNow(id, await c.body(BODY.small)), () => 202),
+  route('GET', '/federation', async c => federationView(c)),
+  route('POST', '/federation/peers/preview', async c => c.network.federation.preview(await c.body(BODY.small))),
+  route('POST', '/federation/peers', async c => c.network.federation.approve(await c.body(BODY.small)), () => 201),
+  route('PATCH', `/federation/peers/${PEER}`, async (c, id) => c.network.federation.update(id, await c.body(BODY.small))),
+  route('DELETE', `/federation/peers/${PEER}`, async (c, id) => c.network.federation.remove(id, await c.body(BODY.small))),
+  route('PATCH', '/federation/outbound', async c => c.network.federation.setOutbound(await c.body(BODY.small))),
+  route('PATCH', '/federation/inbound', async c => c.network.federation.setInbound(await c.body(BODY.small))),
+]);
+/** Federation as the owner sees it, with where A2A callers would reach it now (the machine listener's own address). */
+async function federationView(c) {
+  const [view, status, published] = await Promise.all([c.network.federation.view(), c.machine.status(), c.machine.a2a.published()]);
+  const url = status.listener.listening ? status.listener.url : null, serving = Boolean(url && published.length);
+  return { ...view, inbound: { ...view.inbound, listener: { enabled: status.listener.enabled, listening: status.listener.listening, url }, serving,
+    cardUrl: serving ? `${url}/.well-known/agent-card.json` : null, endpoint: serving ? `${url}/a2a/v1` : null } };
+}
+
+export async function networkRoute({ network, jobs, events, board, pipelines, runs, machine, schedules, req, res, pathname, searchParams, jsonBody, send }) {
+  const body = async limit => {
+    const value = await jsonBody(req, limit);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new NetworkError('Send a JSON object.');
+    return value;
+  };
+  try {
+    for (const row of NETWORK_ROUTES) {
+      if (row.method !== req.method) continue;
+      const match = row.pattern.exec(pathname);
+      if (!match) continue;
+      const answer = await row.run({ network, jobs, events, board, pipelines, runs, machine, schedules, req, res, searchParams, body }, ...match.slice(1));
+      if (row.stream) return; // It answered on the response.
+      return send(res, row.status ? row.status(answer) : 200, answer);
+    }
+    return send(res, 404, { error: 'This Network route does not exist.', code: 'NOT_FOUND' });
+  } catch (error) {
+    // Fixed messages; details carry IDs only (a cycle path, unresolved references), never file paths or content.
+    if (error instanceof NetworkError) return send(res, error.status, { error: error.message, code: error.code, ...(error.details ? { details: error.details } : {}) });
+    throw error;
+  }
+}

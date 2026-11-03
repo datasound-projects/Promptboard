@@ -24,13 +24,17 @@ async function cancellable(promise, signal) {
 }
 
 export function isPublicAddress(address) {
-  if (address.startsWith('::ffff:')) return isPublicAddress(address.slice(7));
+  if (address.startsWith('::ffff:') && isIP(address.slice(7)) === 4) return isPublicAddress(address.slice(7));
   if (isIP(address) === 4) {
     const [a, b] = address.split('.').map(Number);
     return !(a === 0 || a === 10 || a === 127 || a >= 224 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && [0, 168].includes(b) || a === 100 && b >= 64 && b <= 127 || a === 198 && [18, 19].includes(b));
   }
-  if (isIP(address) === 6) return !/^(?:0*:0*:0*:0*:0*:0*:0*:0*[01]$|::|f[cd]|fe[89ab])/i.test(address);
-  return false;
+  if (isIP(address) !== 6) return false;
+  // Every spelling of one IPv6 address (0:0:0:0:0:ffff:7f00:1, ::ffff:127.0.0.1) has one canonical form; an IPv4-mapped
+  // one is checked as IPv4. NAT64, 6to4, Teredo, documentation and multicast prefixes can lead anywhere: refused.
+  const canonical = new URL(`http://[${address}]`).hostname.slice(1, -1), mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(canonical);
+  if (mapped) { const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16); return isPublicAddress(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`); }
+  return !/^(?:::|f[cdf]|fe[89ab]|64:ff9b:|2002:|2001:db8:|2001:0?:)/i.test(canonical);
 }
 
 /** Resolve and pin a public address on every redirect; no cookies, auth, proxy, or private networks. */

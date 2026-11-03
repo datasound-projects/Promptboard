@@ -19,8 +19,9 @@ test('Settings → Docker sandbox builds the image with progress, saves the Clau
   await writeFile(join(dir, 'docker'), `#!${process.execPath}\nrequire(${JSON.stringify(fake('fake-docker.cjs'))});\n`, { mode: 0o755 });
   for (const cli of ['claude', 'codex']) await writeFile(join(dir, cli), `#!${process.execPath}\nconsole.log('9.8.7');\n`, { mode: 0o755 });
   await writeFile(join(dir, 'auth.json'), '{}');
-  const saved = Object.fromEntries(['PATH', 'CODEX_HOME', 'FAKE_DOCKER_STATE', 'FAKE_DOCKER_BUILD_MS'].map(key => [key, process.env[key]]));
-  Object.assign(process.env, { PATH: `${dir}${delimiter}${process.env.PATH}`, CODEX_HOME: dir, FAKE_DOCKER_STATE: dir, FAKE_DOCKER_BUILD_MS: '1500' });
+  const buildGate = join(dir, 'continue-build');
+  const saved = Object.fromEntries(['PATH', 'CODEX_HOME', 'FAKE_DOCKER_STATE', 'FAKE_DOCKER_BUILD_MS', 'FAKE_DOCKER_BUILD_GATE'].map(key => [key, process.env[key]]));
+  Object.assign(process.env, { PATH: `${dir}${delimiter}${process.env.PATH}`, CODEX_HOME: dir, FAKE_DOCKER_STATE: dir, FAKE_DOCKER_BUILD_MS: '0', FAKE_DOCKER_BUILD_GATE: buildGate });
   t.after(() => { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
@@ -33,6 +34,7 @@ test('Settings → Docker sandbox builds the image with progress, saves the Clau
   assert.match(await text(), /Docker is running\..*The image is not built yet\./);
   await ev(`document.querySelector('#set-sandbox-build').click();`);
   await wait(`!!document.querySelector('#set-sandbox-cancel') && /Step 1\\/3/.test(document.querySelector('.sandbox-log').textContent)`, 'build progress');
+  await writeFile(buildGate, 'continue');
   await wait(`/Image ready: promptboard-sandbox:/.test(document.querySelector('#set-sandbox-group').textContent)`, 'image ready', 20000);
   // The token is typed like a paste, saved, and never shown again.
   await ev(`document.querySelector('#set-sandbox-token').focus();`);

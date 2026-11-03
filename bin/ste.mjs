@@ -14,6 +14,7 @@ Use the terminal:  node bin/ste.mjs --provider codex < request.txt
 Choose a model:    node bin/ste.mjs --provider claude --model MODEL_ID < request.txt
 Check CLIs:        node bin/ste.mjs --doctor
 Prepare a brief:   node bin/ste.mjs --instructions < request.txt
+Serve MCP:         PROMPTBOARD_MACHINE_TOKEN=… node bin/ste.mjs --mcp
 
 Options:
   --gui                         Open the browser app
@@ -36,6 +37,10 @@ Options:
   --json                        Print the full result and verification report as JSON
   --allow-draft                 Allow a flagged draft on stdout (exit code stays 2)
   --doctor                      Show installed CLI versions; does not check sign-in
+  --mcp                         Serve Network agents to an MCP host over stdio. Needs a client
+                                token from Network → Settings in PROMPTBOARD_MACHINE_TOKEN (or
+                                a file named by PROMPTBOARD_MACHINE_TOKEN_FILE), never as an
+                                option; PROMPTBOARD_MACHINE_URL defaults to http://127.0.0.1:4330
   --version                     Show the app version
   --help                        Show this help
 
@@ -48,11 +53,12 @@ A human must still check meaning and STE use.
 async function main() {
   const args = process.argv.slice(2);
   const options = {};
-  const flags = new Set(['gui', 'no-open', 'instructions', 'json', 'allow-draft', 'doctor', 'version', 'help']);
+  const flags = new Set(['gui', 'no-open', 'instructions', 'json', 'allow-draft', 'doctor', 'version', 'help', 'mcp']);
   const valued = new Set(['port', 'provider', 'model', 'effort', 'language', 'quality', 'detail', 'task']);
   for (let i = 0; i < args.length; i++) {
     const key = args[i].replace(/^--/, '');
-    if (!args[i].startsWith('--') || (!flags.has(key) && !valued.has(key))) throw new Error(`Unknown option: ${args[i]}`);
+    // A client token is never repeated into a log: it belongs in PROMPTBOARD_MACHINE_TOKEN, not in argv.
+    if (!args[i].startsWith('--') || (!flags.has(key) && !valued.has(key))) throw new Error(`Unknown option: ${/pbm_/.test(args[i]) ? 'a Promptboard client token (set it as PROMPTBOARD_MACHINE_TOKEN instead; never pass it as an option)' : args[i]}`);
     if (flags.has(key)) options[key] = true;
     else {
       if (!args[i + 1] || args[i + 1].startsWith('--')) throw new Error(`Set a value for --${key}.`);
@@ -61,6 +67,13 @@ async function main() {
   }
   if (options.help) return console.log(help);
   if (options.version) return console.log(VERSION);
+  if (options.mcp) {
+    // stdout belongs to MCP: only protocol messages go there. The token comes from the environment, never from argv.
+    if (args.length !== 1) throw new Error('--mcp takes no other option. Set PROMPTBOARD_MACHINE_TOKEN and PROMPTBOARD_MACHINE_URL in its environment.');
+    const { serveMcp } = await import('../src/network/mcp.mjs');
+    serveMcp();
+    return;
+  }
   if (options.doctor) {
     for (const item of await detectProviders({ paths: true })) console.log(`${item.name}: ${item.available ? item.version || 'installed' : item.reason || 'not installed'}${item.path ? ` · ${item.path}` : ''}`);
     return;

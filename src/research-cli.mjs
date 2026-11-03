@@ -36,6 +36,22 @@ export function researchArgs({ provider, model = '', effort = '', web = false, s
 }
 
 const fail = (message, code, extra = {}) => Object.assign(new ProviderError(message, code), extra);
+// Token counts and cost as the CLI reported them (never estimated); a field is kept only when it is a number. Input counts
+// exclude cache reads and include cache writes, as src/usage.mjs counts them.
+const reported = value => Number.isFinite(value) && value >= 0;
+function usageOf(provider, event) {
+  const usage = event.usage || {}, row = {};
+  if (provider === 'claude') {
+    if (reported(usage.input_tokens)) row.inputTokens = usage.input_tokens + (reported(usage.cache_creation_input_tokens) ? usage.cache_creation_input_tokens : 0);
+    if (reported(usage.cache_read_input_tokens)) row.cachedTokens = usage.cache_read_input_tokens;
+    if (reported(event.total_cost_usd)) row.costUsd = event.total_cost_usd;
+  } else {
+    if (reported(usage.input_tokens)) row.inputTokens = Math.max(0, usage.input_tokens - (reported(usage.cached_input_tokens) ? usage.cached_input_tokens : 0));
+    if (reported(usage.cached_input_tokens)) row.cachedTokens = usage.cached_input_tokens;
+  }
+  if (reported(usage.output_tokens)) row.outputTokens = usage.output_tokens;
+  return Object.keys(row).length ? row : null;
+}
 const short = (value, max = 160) => { const text = String(value ?? '').replace(/\s+/g, ' ').trim(); return text.length > max ? `${text.slice(0, max - 1)}…` : text; };
 
 /** Live events from one parsed CLI line. Returns what to keep: session ID, final text, errors. */
@@ -58,6 +74,7 @@ function readLine(provider, event, state, onEvent) {
       if (typeof event.session_id === 'string') state.session = event.session_id;
       state.final = typeof event.result === 'string' ? event.result : state.final;
       state.error = event.is_error === true;
+      state.usage = usageOf(provider, event) || state.usage;
     }
     return;
   }
@@ -69,15 +86,20 @@ function readLine(provider, event, state, onEvent) {
       state.streamed += text; state.final = item.text; onEvent({ type: 'delta', text });
     } else if (item.type === 'web_search' && event.type === 'item.completed') onEvent({ type: 'activity', kind: 'search', label: short(item.action?.query || item.query || 'the web') }); // The query is known only when the search completes.
     else if (item.type === 'mcp_tool_call' && event.type === 'item.started') onEvent({ type: 'activity', kind: 'tool', label: short(`${item.server || ''} · ${item.tool || ''}`) });
-  } else if (event.type === 'error' || event.type === 'turn.failed') state.error = true;
+  } else if (event.type === 'turn.completed') state.usage = usageOf(provider, event) || state.usage;
+  else if (event.type === 'error' || event.type === 'turn.failed') state.error = true;
 }
 
 /**
  * Run one research turn. Calls `onEvent` with { type: 'delta' | 'activity', ... } while the CLI works and resolves
  * with { text, session, durationMs }. A cancelled or failed run rejects; its error carries the text produced so far
- * (`partial`) and `resumeFailed` when a resumed session could not continue before any text.
+ * (`partial`), the CLI's `exitCode` when it exited, and `resumeFailed` when a resumed session could not continue before
+ * any text. Optional, for Network jobs (none changes a run without them): `onSpawn(pid)` once the process starts,
+ * `onUsage({ inputTokens?, outputTokens?, cachedTokens?, costUsd? })` when the stream reported usage, and `requireFinal`,
+ * which refuses (INVALID_OUTPUT) an exit 0 without the structured final answer (Claude's `result` event, Codex's completed
+ * `agent_message`) instead of using the streamed text.
  */
-export async function streamResearch({ provider, model = '', effort = '', prompt, cwd, signal, session = null, persist = true, web = false, tools = [], mcpConfig, codexArgs = [], onEvent = () => {} } = {}) {
+export async function streamResearch({ provider, model = '', effort = '', prompt, cwd, signal, session = null, persist = true, web = false, tools = [], mcpConfig, codexArgs = [], onEvent = () => {}, onSpawn = null, onUsage = null, requireFinal = false } = {}) {
   if (!['claude', 'codex'].includes(provider)) throw fail('Research uses Claude Code or Codex.', 'INVALID_PROVIDER');
   if (model && (typeof model !== 'string' || !SAFE_MODEL.test(model))) throw fail('Use a model ID or alias with no spaces or command flags.', 'INVALID_MODEL');
   validateEffort(provider, effort);
@@ -90,11 +112,12 @@ export async function streamResearch({ provider, model = '', effort = '', prompt
   const args = researchArgs({ provider, model, effort, web, session, persist, tools, mcpConfig, codexArgs });
   if (provider === 'codex') args.push(...await codexMcpOverride(executable, { cwd, signal }), '-');
   const started = Date.now();
-  const state = { session: provider === 'claude' && session ? session.id : null, streamed: '', final: null, error: false };
+  const state = { session: provider === 'claude' && session ? session.id : null, streamed: '', final: null, error: false, usage: null };
   return new Promise((resolve, reject) => {
     let child;
     try { child = spawnOwned(executable.command, [...executable.prefix, ...args], { cwd, env: provider === 'claude' && effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort } : {} }); }
     catch { reject(fail('The CLI could not start. Check its installation.', 'SPAWN_FAILED')); return; }
+    try { onSpawn?.(child.pid); } catch {}
     let stdout = '', pending = '', stderr = '', failure = null, settled = false, killTimer, hardTimer;
     const finish = (error, value) => {
       if (settled) return;
@@ -129,13 +152,15 @@ export async function streamResearch({ provider, model = '', effort = '', prompt
     child.on('error', () => finish(failure || fail('The CLI could not start. Check its installation.', 'SPAWN_FAILED')));
     child.on('close', code => {
       if (pending) line(pending);
+      if (state.usage) try { onUsage?.(state.usage); } catch {}
       if (failure) { if (process.platform !== 'win32') stopProcess(child, 'SIGKILL'); finish(failure); return; }
       const text = (state.final ?? state.streamed).trim();
-      if (code !== 0 || state.error || !text) {
+      if (code !== 0 || state.error || !text || (requireFinal && state.final === null)) {
         const known = classifyProviderFailure(provider, { stdout, stderr, exitCode: code });
         const error = known || fail(code === 0 && !state.error ? 'The CLI did not return an answer. Check its version and try again.' : 'The CLI failed for an unrecognized reason. Run the CLI in your terminal to see its diagnostics.', code === 0 && !state.error ? 'INVALID_OUTPUT' : 'CLI_FAILED');
         // A resumed session that ends before any text, for no known provider reason, could not be continued (for example, it was removed).
         if (session?.resume && !known && !state.streamed.trim()) error.resumeFailed = true;
+        error.exitCode = code;
         finish(error); return;
       }
       finish(null, { text: text.slice(0, MAX_TEXT), session: state.session, durationMs: Date.now() - started });

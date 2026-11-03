@@ -11,6 +11,7 @@ import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { privateAddress, remoteSettings, RemoteAccess, tailscaleState } from '../src/remote-access.mjs';
+import { NETWORK_ROUTES } from '../src/network/http.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 import { setup, until } from './helpers/ui-harness.mjs';
 
@@ -255,7 +256,14 @@ test('every route from a paired phone: the local-only ones are refused, every ot
   const id = '00000000-0000-4000-8000-000000000000';
   const LOCAL_ONLY = ['GET /api/remote', 'GET /api/remote?refresh=1', 'POST /api/remote/settings', 'POST /api/remote/pairing', 'POST /api/remote/serve', 'DELETE /api/remote/sessions/all', `DELETE /api/remote/sessions/${id}`,
     'GET /api/editors', 'PUT /api/editors', 'POST /api/auth/login', 'POST /api/auth/cancel', 'POST /api/auth/logout', 'POST /api/github/login', 'POST /api/github/login/cancel', 'POST /api/folder/choose', 'POST /api/projects/p1/open', 'POST /api/tasks/t1/preview', 'DELETE /api/tasks/t1/preview',
-    'POST /api/base/mcp/import/preview', 'POST /api/base/mcp/import', 'POST /api/base/markdown/scan', 'POST /api/base/markdown/import', 'PUT /api/sandbox/claude-token', 'DELETE /api/sandbox/claude-token'];
+    'POST /api/base/mcp/import/preview', 'POST /api/base/mcp/import', 'POST /api/base/markdown/scan', 'POST /api/base/markdown/import', 'PUT /api/sandbox/claude-token', 'DELETE /api/sandbox/claude-token',
+    // Network external clients (Task 11): a new machine token is shown, or the machine listener opens.
+    'POST /api/network/clients', `POST /api/network/clients/cli_${'a'.repeat(20)}/rotate`, 'PATCH /api/network/listener',
+    // Task 12: switching handoffs on lets agents and clients ask for work; confirming a schedule switches standing automation on.
+    'PATCH /api/network/delegation', `POST /api/network/schedules/sch_${'a'.repeat(20)}/confirm`,
+    // Federation (Task 13): previewing a card makes an outbound request; approving or changing a peer and both switches change trust or exposure.
+    'POST /api/network/federation/peers/preview', 'POST /api/network/federation/peers', `PATCH /api/network/federation/peers/peer_${'a'.repeat(20)}`,
+    'PATCH /api/network/federation/outbound', 'PATCH /api/network/federation/inbound'];
   const each = (prefix, rows) => rows.map(row => { const [method, action = ''] = row.split(' '); return `${method} ${prefix}${action ? `/${action}` : ''}`; });
   const ALLOWED = ['GET /', 'GET /app.js', 'GET /api/session', 'GET /api/providers', 'GET /api/status', 'GET /api/models', 'GET /api/usage', 'GET /api/auth', 'POST /api/notifications/connect', 'POST /api/notifications/ack',
     'POST /api/compose/cancel', 'GET /api/compose/batches', 'POST /api/compose/prepare', 'POST /api/compose/sources/document', 'DELETE /api/compose/sources/document/d1', 'POST /api/compose/mcp/test', 'POST /api/split', 'POST /api/generate',
@@ -271,7 +279,30 @@ test('every route from a paired phone: the local-only ones are refused, every ot
       'POST prerequisites', 'POST runs', 'POST resume', 'DELETE worktree', 'GET preview', 'GET revision', 'GET uncommitted', 'GET merge-preview', 'POST commit', 'POST accept-review', 'POST tests', 'POST merge', 'POST update-branch', 'POST abort-merge', 'POST pull-request', 'POST pull-request-status', 'POST complete-no-changes']),
     ...each('/api/base', ['GET', 'GET presets', 'POST avatar/cancel', 'POST avatar/generate', 'POST preview', 'POST apply', 'POST restore-global', 'POST skills/import', 'POST resources', 'POST import/preview', 'POST import', 'POST export', 'POST roots', 'DELETE roots/r1',
       'POST wiki/cancel', 'POST wiki/generate', 'POST wiki/apply', 'POST source/import', 'GET markdown/templates']),
-    ...each('/api/base/resources/b1', ['GET', 'GET revisions', 'GET revisions/1', 'GET avatar', 'POST override', 'POST deploy', 'PATCH', 'DELETE', 'POST test', 'POST refresh', 'GET search'])];
+    ...each('/api/base/resources/b1', ['GET', 'GET revisions', 'GET revisions/1', 'GET avatar', 'POST override', 'POST deploy', 'PATCH', 'DELETE', 'POST test', 'POST refresh', 'GET search']),
+    // Network (architecture §10.2): registry, graph, export, memory, report, job and job-settings routes create no way in and
+    // change no trust (a paired device has the owner's control, so it may submit and cancel jobs).
+    'GET /api/network/agents', 'POST /api/network/agents', 'GET /api/network/networks', 'POST /api/network/networks', 'GET /api/network/export', 'POST /api/network/import',
+    'GET /api/network/settings', 'PATCH /api/network/settings', 'GET /api/network/jobs', 'POST /api/network/jobs',
+    // External clients (Task 11): listing them and the listener shows no secret; revoking only removes access.
+    'GET /api/network/clients', `DELETE /api/network/clients/cli_${'a'.repeat(20)}`, 'GET /api/network/listener',
+    // Federation (Task 13): reading it shows no secret (a credential is only an environment variable's name); removing a peer only removes trust.
+    'GET /api/network/federation', `DELETE /api/network/federation/peers/peer_${'a'.repeat(20)}`,
+    // Activity (Task 08) only reads: the journal, its stream (a revoked device's stream ends with its session) and the summary.
+    'GET /api/network/events', 'GET /api/network/events/stream', 'GET /api/network/activity',
+    ...each(`/api/network/jobs/job_${'a'.repeat(20)}`, ['GET', 'DELETE', 'POST cancel', 'POST approve', 'POST retry', 'POST close', 'GET result']),
+    ...each(`/api/network/agents/agt_${'a'.repeat(20)}`, ['GET', 'PATCH', 'GET memory', 'POST memory', 'GET memory/preview', `PATCH memory/mem_${'b'.repeat(20)}`, `DELETE memory/mem_${'b'.repeat(20)}`, `POST memory/mem_${'b'.repeat(20)}/approve`,
+      'GET posts', 'POST posts', `PATCH posts/pst_${'c'.repeat(20)}`, `DELETE posts/pst_${'c'.repeat(20)}`]),
+    ...each(`/api/network/networks/net_${'a'.repeat(20)}`, ['GET', 'PATCH', 'DELETE', 'POST publish', 'POST duplicate', 'GET versions/1', 'GET memory', 'POST memory', `PATCH memory/mem_${'b'.repeat(20)}`, `DELETE memory/mem_${'b'.repeat(20)}`, `POST memory/mem_${'b'.repeat(20)}/approve`]),
+    // Pipelines and runs (Task 09): starting, cancelling and approving are the owner's control, which a paired device has.
+    'GET /api/network/pipelines', 'POST /api/network/pipelines', 'GET /api/network/pipeline-runs',
+    ...each(`/api/network/pipelines/pip_${'a'.repeat(20)}`, ['GET', 'PATCH', 'DELETE', 'POST validate', 'POST publish', 'GET versions/1', 'POST runs']),
+    ...each(`/api/network/pipeline-runs/run_${'a'.repeat(20)}`, ['GET', 'POST cancel', `POST nodes/n_${'b'.repeat(12)}/n_${'c'.repeat(12)}/approve`, `GET nodes/n_${'b'.repeat(12)}/report`]),
+    // Task 12: messages, answers and read receipts are the owner's control over their own jobs; a schedule can be made (switched
+    // off), edited (an edit of an enabled one switches it off), switched off, deleted or run once, never switched on, from a phone.
+    ...each(`/api/network/jobs/job_${'a'.repeat(20)}`, ['GET messages', 'POST messages', 'POST messages/read', 'POST answer']),
+    'GET /api/network/delegation', 'GET /api/network/schedules', 'POST /api/network/schedules',
+    ...each(`/api/network/schedules/sch_${'a'.repeat(20)}`, ['PATCH', 'DELETE', 'POST run'])];
   // The table covers every route the server and Base declare: a new route must be added here, local-only or not.
   const paths = [...LOCAL_ONLY, ...ALLOWED].map(row => row.split(' ')[1].split('?')[0]);
   for (const file of ['server.mjs', 'base-http.mjs', 'sandbox.mjs']) {
@@ -280,6 +311,11 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     const actions = [...source.matchAll(/action === '([a-z-]+)'/g)].map(match => match[1]).concat([...source.matchAll(/\[([^\]]+)\]\.includes\(action\)/g)].flatMap(match => match[1].match(/[a-z-]+/g)));
     for (const action of actions) assert.ok(paths.some(path => path.endsWith(`/${action}`)), `${file}: the ${action} action is not in the route table`);
   }
+  // Network routes come from the dispatcher's own table (src/network/http.mjs): each method and path pattern has exactly
+  // one row above, and each Network row above is a route of that table, so a route can be neither left out nor invented.
+  const networkRows = [...LOCAL_ONLY, ...ALLOWED].map(row => row.split(' ')).filter(([, path]) => path.startsWith('/api/network'));
+  for (const route of NETWORK_ROUTES) assert.equal(networkRows.filter(([method, path]) => method === route.method && route.pattern.test(path.split('?')[0])).length, 1, `${route.method} ${route.pattern}: one row in ALLOWED or LOCAL_ONLY`);
+  for (const [method, path] of networkRows) assert.ok(NETWORK_ROUTES.some(route => route.method === method && route.pattern.test(path.split('?')[0])), `${method} ${path} is not a Network route`);
   // Refused with the right token too: the refusal comes before the app.
   for (const row of LOCAL_ONLY) {
     const [method, path] = row.split(' ');

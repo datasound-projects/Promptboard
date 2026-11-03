@@ -48,7 +48,7 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
 
   await browser.goto(`${app.url}/#/origin`);
   await wait(`document.querySelector('#origin-start')`, 'start screen');
-  assert.equal(await ev(`return [...document.querySelectorAll('.page-nav a')].map(a => a.textContent).join(' | ');`), 'Origin | Compose | Kanban | Base');
+  assert.equal(await ev(`return [...document.querySelectorAll('.page-nav a')].map(a => a.textContent).join(' | ');`), 'Origin | Compose | Kanban | Base | Network');
   assert.equal(await ev(`return document.querySelector('.page-nav [aria-current="page"]').getAttribute('href');`), '#/origin');
   assert.equal(await ev(`return document.title;`), 'Origin · Promptboard');
   assert.equal(await ev(`return document.querySelector('#origin-main h2').textContent;`), 'What do you want to build?');

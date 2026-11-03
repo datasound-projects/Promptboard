@@ -67,14 +67,15 @@ export function nextFire(cadence, after) {
 /** A recorded time, unless it lies ahead of `now`: then it was written while the clock was wrong, and is ignored. */
 const recorded = (at, now) => (Number.isFinite(at) && at <= now + CLOCK_MARGIN ? at : null);
 // Slots count from the last one used, or from the last change: a schedule switched back on, or given a new time, does
-// not catch up on the slots before. With neither known, counting starts now.
-const since = (schedule, now) => {
+// not catch up on the slots before. With neither known, counting starts now. Network job schedules reuse this and dueSlot
+// (src/network/schedules.mjs), counting from the owner's confirmation instead of the last change.
+export const since = (schedule, now) => {
   const known = [recorded(schedule.lastSlot, now), recorded(schedule.updatedAt ?? schedule.createdAt, now)].filter(at => at !== null);
   return known.length ? Math.max(...known) : now;
 };
 
 /** The slot a schedule is due for at `now`, or null. Of several missed slots only the latest counts: one card, not one per slot. */
-function dueSlot(schedule, now) {
+export function dueSlot(schedule, now) {
   let slot = nextFire(schedule.cadence, since(schedule, now));
   if (slot === null || slot > now) return null;
   for (let next = nextFire(schedule.cadence, Math.max(slot, now - 32 * DAY)); next !== null && next <= now; next = nextFire(schedule.cadence, next)) slot = next;

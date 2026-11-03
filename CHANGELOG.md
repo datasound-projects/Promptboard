@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Network.** A fifth workspace page for Base-linked agents, approved agent/network memory, visual relationship graphs and nested networks. Publish execution pipelines with parallel work, bounded retries, approvals and saved reports; run read-only jobs with durable ownership, live Activity, delegation and opt-in schedules. Running pipelines keep their accepted versions across edits and restarts.
+- **Private agent interfaces.** An opt-in loopback listener with scoped REST credentials and a stdio MCP bridge, plus separately enabled A2A callers and trusted peers. Server-side scope checks, revocation, pinned endpoints and SSRF protection apply to every request. Provider observation and enforcement limits are documented in `docs/network/`.
+- **Network recovery and accessibility.** Crash, corruption, end-to-end and performance coverage; keyboard dialogs, announced errors and mobile list fallbacks. Restoring security settings from a backup disables access and automation before saving; recovered memory requires approval again. Recovery notices persist and are recorded in Activity.
 - **Scheduled cards.** Kanban → **Schedules** makes cards that land in To Do daily, on weekdays, weekly or monthly, at a time you pick. Quick starts cover a nightly dependency update and weekly docs and security sweeps.
   - **Run with Autopilot** (asked to confirm once) hands each new card to Autopilot. A paused Autopilot is never resumed.
   - A time missed while Promptboard was closed gives one card, not one per missed time.

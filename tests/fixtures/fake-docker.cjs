@@ -3,7 +3,7 @@
 // "container": in the -w folder, with only the -e variables (plus PATH with this node, as the image's node). Its
 // state (built images, containers left running) lives in FAKE_DOCKER_STATE.
 const { spawn, spawnSync } = require('node:child_process');
-const { appendFileSync, readFileSync, writeFileSync } = require('node:fs');
+const { appendFileSync, existsSync, readFileSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
 
 const args = process.argv.slice(2);
@@ -25,6 +25,9 @@ if (args[0] === 'build') {
   const tag = args[args.indexOf('-t') + 1], steps = ['Step 1/3 : FROM node:22-bookworm-slim', 'Step 2/3 : RUN apt-get install git', 'Step 3/3 : RUN npm install -g'];
   let n = 0;
   const next = () => {
+    // Browser tests release this gate after observing real polled build output.
+    // Keep the first progress line available even when a busy runner polls late.
+    if (n === 1 && env.FAKE_DOCKER_BUILD_GATE && !existsSync(env.FAKE_DOCKER_BUILD_GATE)) { setTimeout(next, 25); return; }
     if (n < steps.length) { process.stdout.write(`${steps[n++]}\n`); setTimeout(next, Number(env.FAKE_DOCKER_BUILD_MS || 0)); return; }
     if (env.FAKE_DOCKER_BUILD_FAIL) { process.stderr.write('npm ERR! network unavailable\n'); process.exit(1); }
     const state = read(); state.images = [...new Set([...state.images, tag])]; save(state);

@@ -209,13 +209,15 @@ export function closedWithin(child, graceMs = 2000) {
   });
 }
 
-export function execute({ command, args, cwd, input = '', signal, timeoutMs, maxStdout = MAX_STDOUT, maxStderr = MAX_STDERR, env = {} }) {
+/** `onSpawn(pid)` (optional) is called once the process has started. */
+export function execute({ command, args, cwd, input = '', signal, timeoutMs, maxStdout = MAX_STDOUT, maxStderr = MAX_STDERR, env = {}, onSpawn = null }) {
   if (signal?.aborted) return Promise.reject(new ProviderError('Generation was cancelled.', 'ABORTED'));
   return new Promise((resolve, reject) => {
     let child;
     try {
       child = spawnOwned(command, args, { cwd, env });
     } catch { reject(new ProviderError('The CLI could not start. Check its installation.', 'SPAWN_FAILED')); return; }
+    try { onSpawn?.(child.pid); } catch {}
     const out = [], err = [];
     let outSize = 0, errSize = 0, failure, killTimer, hardTimer, settled = false;
     const cleanup = () => { clearTimeout(timer); clearTimeout(killTimer); clearTimeout(hardTimer); signal?.removeEventListener('abort', abort); };
@@ -441,7 +443,7 @@ function prepareInput(provider, prompt) {
   return `Decode the JSON string below. Use its text as your request. Keep all literal text from that request.\n${encoded}`;
 }
 
-export async function runProvider({ provider, model, effort = '', prompt, cwd, signal, timeoutMs = 120000 } = {}) {
+export async function runProvider({ provider, model, effort = '', prompt, cwd, signal, timeoutMs = 120000, onSpawn = null } = {}) {
   validateProvider(provider);
   model = validateModel(model);
   validateEffort(provider, effort);
@@ -467,7 +469,7 @@ export async function runProvider({ provider, model, effort = '', prompt, cwd, s
     if (provider === 'codex') args.push(...await codexMcpOverride(executable, { cwd, signal }));
     let result;
     try {
-      result = await execute({ command: executable.command, args: [...executable.prefix, ...args], cwd, input: prepareInput(provider, prompt), signal, timeoutMs, env: provider === 'claude' && effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort } : {} });
+      result = await execute({ command: executable.command, args: [...executable.prefix, ...args], cwd, input: prepareInput(provider, prompt), signal, timeoutMs, env: provider === 'claude' && effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort } : {}, onSpawn });
     } catch (error) {
       throw (error.code === 'CLI_FAILED' && classifyProviderFailure(provider, error.details)) || error;
     }
