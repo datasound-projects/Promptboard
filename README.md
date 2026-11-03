@@ -16,6 +16,7 @@
   <a href="#kanban">Kanban</a> ·
   <a href="#base">Base</a> ·
   <a href="#network">Network</a> ·
+  <a href="#chat">Chat</a> ·
   <a href="#docs">Docs</a>
 </p>
 
@@ -47,6 +48,7 @@ Promptboard opens at **http://127.0.0.1:4318**. To update, run `git pull --ff-on
 | [**Kanban**](#kanban) | Agents take each task through Planning → Executing → Code Review → Testing → Merge. |
 | [**Base**](#base) | One library of agent profiles, skills, MCP servers and knowledge. |
 | [**Network**](#network) | Connect Base agents in networks and pipelines, and run general jobs outside Kanban. |
+| [**Chat**](#chat) | Ask about saved workspace data or get guidance for the installed app version. |
 
 All pages share one project: a plan in Origin becomes cards in Kanban, with nothing copied by hand. Each page also works on its own.
 
@@ -174,6 +176,17 @@ What Network can see of a running job depends on the CLI. It never guesses: a qu
 
 See the [Network user guide](docs/network/user-guide.md), [MCP and A2A setup](docs/network/setup-mcp-a2a.md) and [Network troubleshooting](docs/network/troubleshooting.md).
 
+## Chat
+
+**Find information and understand the app, with source-backed answers.** Open the speech-bubble icon at the top right.
+
+- **Workspace** searches saved projects across Origin, Compose, Kanban, Base and Network. Browser-only Compose History is opt-in.
+- **App guide** explains this installed version’s features, settings, field labels and workflows using bundled documentation and interface text.
+- **Read-only.** Neither agent can change projects/settings, run commands, create tasks or approve pipelines. Conversations are saved locally and kept separate by agent.
+- **Check the evidence.** Each factual section needs a real source ID and matching quotation before it is displayed. Answers show their build and source-read time; missing evidence and older snapshots are identified. A matching quotation does not guarantee a model’s interpretation is correct.
+
+See [Chat: Workspace and App guide](docs/workspace-chat.md) for context scope, provider settings, source limits, cancellation and version checks.
+
 ## Also included
 
 - **CLIs** (top bar): connect, sign in and check each CLI.
@@ -186,12 +199,12 @@ See the [Network user guide](docs/network/user-guide.md), [MCP and A2A setup](do
 
 ## Supported CLIs
 
-| CLI | Compose | Kanban | Network |
-| --- | --- | --- | --- |
-| [Claude Code](https://code.claude.com/docs/en/quickstart) | ✓ | ✓ | ✓ |
-| [OpenAI Codex CLI](https://developers.openai.com/codex/cli) | ✓ | ✓ | ✓ |
-| [Gemini CLI](https://geminicli.com/docs/get-started/installation/) | ✓ | ✓ (not live-verified) | ✓ (no web search; not live-verified) |
-| [Antigravity](https://antigravity.google/docs/getting-started?tab=cli) (`agy`) | ✓ | — | — |
+| CLI | Compose | Kanban | Network | Chat |
+| --- | --- | --- | --- | --- |
+| [Claude Code](https://code.claude.com/docs/en/quickstart) | ✓ | ✓ | ✓ | ✓ |
+| [OpenAI Codex CLI](https://developers.openai.com/codex/cli) | ✓ | ✓ | ✓ | ✓ |
+| [Gemini CLI](https://geminicli.com/docs/get-started/installation/) | ✓ | ✓ (not live-verified) | ✓ (no web search; not live-verified) | ✓ (not live-verified) |
+| [Antigravity](https://antigravity.google/docs/getting-started?tab=cli) (`agy`) | ✓ | — | — | — |
 
 Agents run through each CLI's own sign-in and plan. Promptboard has no account of its own.
 

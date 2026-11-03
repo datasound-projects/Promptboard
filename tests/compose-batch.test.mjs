@@ -487,7 +487,9 @@ test('the queue shows what each task asks and when its run started; Cancel all s
   await call(`/${record.id}/settings`, { concurrency: 3 });
   const before = Date.now();
   await call(`/${record.id}/run`, { itemIds: ['t2', 't3', 't4'] });
-  batch = await settle(call, record.id, view => view.items.filter(item => item.state === 'running').length === 3);
+  // A persisted running state precedes temporary-folder preparation and the
+  // actual CLI call. Wait for all three simulated clients before testing Stop.
+  batch = await settle(call, record.id, view => view.items.filter(item => item.state === 'running').length === 3 && runner.max === 3);
   assert.ok(batch.items.filter(item => item.state === 'running').every(item => item.startedAt >= before - 50));
   assert.equal(runner.max, 3);
   const stopped = Date.now();

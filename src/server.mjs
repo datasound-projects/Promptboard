@@ -59,6 +59,8 @@ import { Delegation } from './network/delegation.mjs';
 import { NetworkSchedules } from './network/schedules.mjs';
 import { A2AWorker } from './network/a2a-client.mjs';
 import { NetworkError } from './network/storage.mjs';
+import { ChatService, chatRoute } from './chat.mjs';
+import { ChatError } from './chat-knowledge.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -95,6 +97,7 @@ const assets = new Map([
   ['/network-pipeline.js', ['network-pipeline.js', 'text/javascript; charset=utf-8']],
   ['/network-delegation.js', ['network-delegation.js', 'text/javascript; charset=utf-8']],
   ['/network-federation.js', ['network-federation.js', 'text/javascript; charset=utf-8']],
+  ['/chat.js', ['chat.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal and graph assets, served from the installed packages by exact path only (no CDN,
 // no directory browsing). Missing files (no npm install) return 404: the dock and the Network graph fall back.
@@ -142,7 +145,7 @@ export async function generate(request, { runner = runProvider, signal, catalogR
 // Map internal codes to HTTP statuses. Message text always comes from fixed strings.
 const STATUS = { ABORTED: 499, TIMEOUT: 504, BUSY: 409, AUTH_IN_PROGRESS: 409, NOT_INSTALLED: 409, UNSUPPORTED: 400, INVALID_PROVIDER: 400, INVALID_MODEL: 400, INVALID_EFFORT: 400, INVALID_INPUT: 400 };
 // Domain errors whose messages are fixed, user-facing strings.
-const EXPOSED = [AgentError, BatchError, BaseDeliveryError, BaseError, BoardError, CoordinatorError, DeliveryError, GitError, GitHubError, LessonsError, NetworkError, NotificationError, OriginError, RepositoryPipelineError, ResearchError, StoreError, WorkspaceFileError];
+const EXPOSED = [AgentError, BatchError, BaseDeliveryError, BaseError, BoardError, ChatError, CoordinatorError, DeliveryError, GitError, GitHubError, LessonsError, NetworkError, NotificationError, OriginError, RepositoryPipelineError, ResearchError, StoreError, WorkspaceFileError];
 /** The one error-to-HTTP mapping. Unexpected errors get the route's fallback text, never internal details. */
 function failureBody(error, fallback, unknown = { status: 502, code: 'UNKNOWN' }) {
   if (EXPOSED.some(Type => error instanceof Type)) return { status: error.status || 500, body: { error: error.message, code: error.code || 'INVALID_REQUEST' } };
@@ -376,7 +379,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, networkWorker, networkEventOptions = {}, machineOptions = {}, networkScheduleOptions = {}, networkPipelineOptions = {}, a2aOptions = {} } = {}) {
+export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch, chatOptions = {}, networkWorker, networkEventOptions = {}, machineOptions = {}, networkScheduleOptions = {}, networkPipelineOptions = {}, a2aOptions = {} } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   // One app per data folder; the board itself loads lazily, so starting never reads or writes board files.
   const lock = await lockDataDir(dataDir);
@@ -499,6 +502,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
   let composeContext;
   const getCompose = () => composeContext ??= import('./compose-context.mjs').then(({ ComposeContext }) => new ComposeContext(composeMcp ? { mcp: composeMcp } : {}));
+  const chat = new ChatService({ dataDir, services: { board, origin, contexts, research, prompts, batches, coordinator, lessons, network, jobs: networkJobs, pipelines, runs: pipelineRuns, schedules: networkSchedules, machine }, runner: call => track(runner(call)), ...chatOptions });
   let closing = false, remoteAccess = null;
   // `remote` is a paired device, already checked by the remote listener (its host, origin and session).
   const handle = async (req, res, remote = null) => {
@@ -562,6 +566,10 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     if (/^\/api\/coordinator(?:\/|$)/.test(pathname)) {
       try { return await coordinatorRoute({ coordinator, runner, track, claim, req, res, pathname, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The Coordinator request failed. Project data is unchanged.', { status: 500, code: 'COORDINATOR_FAILED' }); }
+    }
+    if (/^\/api\/chat(?:\/|$)/.test(pathname)) {
+      try { return await chatRoute({ chat, claim, track, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
+      catch (error) { return sendFailure(res, error, 'Chat could not be opened. No workspace changes were made.', { status: 500, code: 'CHAT_FAILED' }); }
     }
     if (/^\/api\/network(?:\/|$)/.test(pathname)) {
       try { return await networkRoute({ network, jobs: networkJobs, events: networkEvents, board: () => board.state(), pipelines, runs: pipelineRuns, machine, schedules: networkSchedules, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }

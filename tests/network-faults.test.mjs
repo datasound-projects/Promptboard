@@ -11,11 +11,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import fsp, { mkdtemp, readdir, readFile, rm, truncate, writeFile } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { startServer } from '../src/server.mjs';
 import { fakeWorker } from './helpers/network-worker.mjs';
 import { fixture, request, until } from './helpers/network-machine.mjs';
@@ -84,8 +84,16 @@ test('a crash after every durable write of a pipeline run and its step jobs: eac
   fsp.rename = async function (from, to) {
     const answer = await rename.call(this, from, to);
     if (capturing && String(to).startsWith(networkDir) && !String(to).endsWith('.bak')) {
-      const files = tree(networkDir), print = hex(JSON.stringify(Object.entries(files).sort().map(([path, bytes]) => [path, hex(bytes)])));
-      if (!seen.has(print)) { seen.add(print); const dir = join(snapshots, String(copies.length)); cpSync(networkDir, dir, { recursive: true }); copies.push({ dir, after: relative(networkDir, String(to)) }); }
+      // Other writes can finish in libuv while this observer runs. Uncommitted
+      // .tmp-* files can disappear during cpSync, making an already-successful
+      // rename look like a failed application write. Snapshot committed bytes
+      // once and copy those exact bytes; the later matrix tests stray temp files.
+      const files = tree(networkDir, path => path.includes('.tmp-')), print = hex(JSON.stringify(Object.entries(files).sort().map(([path, bytes]) => [path, hex(bytes)])));
+      if (!seen.has(print)) {
+        seen.add(print); const dir = join(snapshots, String(copies.length));
+        for (const [path, bytes] of Object.entries(files)) { const target = join(dir, path); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, bytes); }
+        copies.push({ dir, after: relative(networkDir, String(to)) });
+      }
     }
     return answer;
   };
@@ -93,7 +101,9 @@ test('a crash after every durable write of a pipeline run and its step jobs: eac
   t.after(() => { fsp.rename = rename; syncBuiltinESMExports(); });
 
   const runId = (await ok(`/api/network/pipelines/${pipeline.id}/runs`, 'POST', { version: 1, confirm: true, input: { text: 'Crash me.' } }, 202)).runId;
-  await until(async () => (await ok(`/api/network/pipeline-runs/${runId}`)).run.status === 'waiting_for_approval', 'the run waits', 20000);
+  let observedRun;
+  await until(async () => { observedRun = (await ok(`/api/network/pipeline-runs/${runId}`)).run; return observedRun.status === 'waiting_for_approval'; }, 'the run waits', 20000)
+    .catch(error => { t.diagnostic(`Run before snapshot-test timeout: ${JSON.stringify(observedRun)}`); throw error; });
   await ok(`/api/network/pipeline-runs/${runId}/nodes/${N('approve')}/approve`, 'POST', { decision: 'approve' });
   await until(async () => (await ok(`/api/network/pipeline-runs/${runId}`)).run.status === 'completed', 'the run completes', 20000);
   capturing = false; fsp.rename = rename; syncBuiltinESMExports();

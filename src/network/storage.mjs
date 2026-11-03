@@ -10,7 +10,7 @@ import { access, mkdir, readdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { redactLocal } from '../compose-local.mjs';
 import { noPaths } from '../coordinator.mjs';
-import { readWithBackup, setAside, syncDir, writeAtomic } from '../durable.mjs';
+import { readWithBackup, setAside, syncDir, writeAtomic, inReadOnlySnapshot } from '../durable.mjs';
 
 export class NetworkError extends Error {
   constructor(message, code = 'INVALID_INPUT', status = 400, details) { super(message); this.code = code; this.status = status; if (details) this.details = details; }
@@ -69,7 +69,9 @@ export async function readDocument(path, { schema, supported = 1, valid, label, 
     damaged.push(file);
   });
   if (data === undefined && damaged.length) fail(`${label} is damaged and has no usable backup. Nothing was changed; move the damaged file out of the data folder to start again.`, 'NETWORK_DATA_DAMAGED', 409);
+  if (damaged.length && inReadOnlySnapshot()) fail(`${label} requires recovery. Open its page before retrieving it in Chat.`, 'NETWORK_RECOVERY_REQUIRED', 409);
   await setAside(damaged);
+  if (data !== undefined && source !== path && recover && inReadOnlySnapshot()) fail(`${label} requires recovery. Open its settings page before retrieving it in Chat.`, 'NETWORK_RECOVERY_REQUIRED', 409);
   return data !== undefined && source !== path && recover ? recover(data) : data;
 }
 

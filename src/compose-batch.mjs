@@ -339,6 +339,29 @@ export class ComposeBatches {
     return out.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
+  /** Retrieval never invokes the normal loader, which repairs files and clears interrupted runs. */
+  snapshot(batchId) {
+    return this.#serial(async () => {
+      id(batchId, 'Choose a valid batch.');
+      const read = async path => {
+        let damaged = false;
+        const value = await readWithBackup([path, `${path}.bak`], bytes => { const value = parseObject(bytes); if (!value) damaged = true; return value; });
+        if (!value && damaged) throw new BatchError('Saved Compose batch data is unreadable.', 'BATCH_UNREADABLE', 409);
+        return value;
+      };
+      const meta = await read(this.#path(batchId));
+      if (!meta) return null;
+      if (!Array.isArray(meta.order) || meta.order.length > BATCH_LIMITS.items) throw new BatchError('Saved Compose batch data is unreadable.', 'BATCH_UNREADABLE', 409);
+      const items = [];
+      for (const itemId of meta.order) {
+        const item = await read(this.#path(batchId, id(itemId)));
+        if (!item) throw new BatchError('A saved Compose batch item is unavailable.', 'BATCH_UNREADABLE', 409);
+        items.push({ ...item, ...(item.run ? { activeInThisProcess: this.#active.has(item.run.id), recordedRunState: item.run.state } : {}) });
+      }
+      return { ...meta, items };
+    });
+  }
+
   /** The queue: one compact row per task. Prompts and reports are read one task at a time with `item()`. */
   async view(batchId) {
     const batch = await this.#require(batchId), record = await this.#record(batch.meta.id);

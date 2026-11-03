@@ -13,7 +13,7 @@ import { assignTaskNumbers, validateTaskNumbers } from './task-numbers.mjs';
 import { taskPriority } from './task-priority.mjs';
 import { taskLabels, taskLabelIds, labelRevision } from './task-labels.mjs';
 import { externalIssueSource } from './external-source.mjs';
-import { serial, writeAtomic } from './durable.mjs';
+import { serial, writeAtomic, inReadOnlySnapshot, assertWritableSnapshot } from './durable.mjs';
 
 export const STATE_SCHEMA = 'promptboard.state';
 export const STATE_VERSION = 14;
@@ -187,6 +187,19 @@ export class Store {
   /** Load once. A corrupt file falls back to the backup; neither file is overwritten silently. */
   async load() {
     if (this.state) return this.state;
+    if (inReadOnlySnapshot()) {
+      let missing = true, state;
+      for (const path of [this.path, `${this.path}.bak`]) {
+        try { state = await this.#readFile(path); break; }
+        catch (error) {
+          if (['STATE_VERSION_UNSUPPORTED', 'STATE_READ_FAILED'].includes(error.code)) throw error;
+          if (error.code !== 'ENOENT') missing = false;
+        }
+      }
+      if (!state && !missing) throw new StoreError('The saved board is unreadable. Read-only retrieval left every file unchanged.', 'STATE_READ_FAILED');
+      if (state && state.version < STATE_VERSION) throw new StoreError('Open Kanban to upgrade the saved board before retrieving it in Chat.', 'STATE_MIGRATION_REQUIRED');
+      return state ?? emptyState();
+    }
     this.loading ??= (async () => {
       await mkdir(this.dir, { recursive: true, mode: 0o700 });
       // Temporary files from an interrupted write are never valid state.
@@ -248,6 +261,7 @@ export class Store {
    * the stored state is unchanged. Returns whatever `change` returns.
    */
   update(change) {
+    assertWritableSnapshot();
     const run = async () => {
       const current = await this.load();
       const draft = structuredClone(current);

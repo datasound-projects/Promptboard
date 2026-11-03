@@ -8,7 +8,7 @@ npm run check
 npm test
 ```
 
-The suite first runs non-browser test files two at a time, then runs files using `tests/helpers/browser.mjs` one at a time. This keeps Chrome fixtures separate from competing Git, PTY and JSDOM work; it does not disable tests or extend their timeouts. The runner uses the same Node executable and propagates failures from either phase.
+The suite first runs ordinary non-browser test files two at a time, then runs the long Kanban stage-engine file alone, then runs files using `tests/helpers/browser.mjs` one at a time. This keeps Chrome fixtures separate from competing Git, PTY and JSDOM work. The stage-engine file has a 15-minute aggregate budget for its many full Git/PTY flows; its declared individual scenario deadlines remain unchanged. Other files retain a five-minute budget. No tests are disabled. The runner uses the same Node executable and propagates failures from every phase.
 
 A test Chrome ends with the process that launched it, also after an uncaught error, `process.exit` or SIGINT, SIGTERM or SIGHUP. A process killed with SIGKILL cannot stop it, so the next `launch()` stops helper Chromes whose owner process is gone and removes their `pb-chrome-<pid>-` profiles (macOS and Linux). `PB_CPU_THROTTLE=6 npm test` slows every test page like a busy CI runner, to find timing assumptions.
 

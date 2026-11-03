@@ -102,7 +102,7 @@ test('the Network start page applies only without an explicit route', async t =>
   const explicit = await setup(t, { prefs: saved, hash: '#/kanban' }); await explicit.idle();
   assert.deepEqual([explicit.$('#kanban-view').hidden, explicit.$('#network-view').hidden], [false, true]);
   explicit.$('#app-settings-open').click(); await explicit.idle();
-  assert.deepEqual([[...explicit.$('#set-start').options].map(option => option.value), explicit.$('#set-start').value], [['origin', 'compose', 'kanban', 'base', 'network'], 'network']);
+  assert.deepEqual([[...explicit.$('#set-start').options].map(option => option.value), explicit.$('#set-start').value], [['origin', 'compose', 'kanban', 'base', 'network', 'chat'], 'network']);
 });
 
 test('the directory is the server’s: two registrations, searched and filtered by role, provider, capability and status', async t => {
