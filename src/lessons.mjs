@@ -243,6 +243,17 @@ export class Lessons {
       rejected: data.lessons.filter(item => item.status === 'rejected').length, jobs: [...new Map(data.jobs.map(job => [job.taskId, job])).values()] };
   }
 
+  /** Saved project memory for retrieval, without moving damaged files aside or creating defaults. */
+  async snapshot(projectId) {
+    await this.#project(projectId);
+    return this.#serial(async () => {
+      const path = fileOf(this.dir, projectId); let damaged = false;
+      const data = await readWithBackup([path, `${path}.bak`], bytes => { const value = parse(bytes, projectId); if (!value) damaged = true; return value; });
+      if (!data && damaged) fail('Saved project memory is unreadable.', 'LESSONS_UNREADABLE', 409);
+      return data;
+    });
+  }
+
   /** Board.completeTask calls this for every merged card. It only queues; it never waits for a model. */
   queue(taskId) { return this.#enqueue(taskId, { trigger: 'merge' }); }
   /** "Suggest again" (or the first suggestion for a card merged before this feature): an explicit click. */

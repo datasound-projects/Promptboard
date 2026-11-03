@@ -11,6 +11,7 @@ import { attachSession, attachResumedRun, LIVE_SESSION_STATUSES, recoverSessions
 import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store, draftsToCards } from './store.mjs';
+import { inReadOnlySnapshot } from './durable.mjs';
 import { taskPriority } from './task-priority.mjs';
 import { taskLabels, taskLabelIds, labelRevision } from './task-labels.mjs';
 import { assignTaskNumbers, allocateTaskNumber, validateTaskNumbers } from './task-numbers.mjs';
@@ -657,6 +658,7 @@ export class Board {
 
   /** First load: any run left active by a previous process becomes interrupted. Never relaunched. */
   async state() {
+    if (inReadOnlySnapshot()) return this.store.read();
     this.recoveryPromise ||= (async () => {
       const state = await this.store.read();
       for (const project of state.projects) for (const task of project.tasks) for (const key of [

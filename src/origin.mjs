@@ -15,7 +15,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { redactLocal } from './compose-local.mjs';
-import { readWithBackup, serial, writeAtomic } from './durable.mjs';
+import { readWithBackup, serial, writeAtomic, inReadOnlySnapshot } from './durable.mjs';
 import { createBoardFor, enteredName, nameKey, nameTaken, oneName } from './projects.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
@@ -77,6 +77,11 @@ export class OriginStore {
   // ponytail: one queue for all Origin files; per-project queues if saves ever contend.
   #serial(work) {
     return this.queue(async () => {
+      if (inReadOnlySnapshot()) {
+        const names = await readdir(this.dir).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
+        if (names.some(name => /^project-[a-z0-9_-]+\.json$/.test(name)) && !names.includes(MIGRATION_FILE)) throw new OriginError('Open Origin to upgrade older blueprints before retrieving them in Chat.', 'ORIGIN_MIGRATION_REQUIRED', 409);
+        return work();
+      }
       this.ready ??= (async () => {
         await mkdir(this.dir, { recursive: true, mode: 0o700 });
         // Temporary files from an interrupted write are never valid files.
@@ -141,6 +146,14 @@ export class OriginStore {
     catch (error) {
       if (error.code === 'ENOENT') return null;
       if (!damaged(error)) throw error.code === 'ORIGIN_VERSION_UNSUPPORTED' ? error : new OriginError('The Origin project could not be read. Check folder permissions.', 'ORIGIN_READ_FAILED', 500);
+      if (inReadOnlySnapshot()) {
+        try { return { ...(await this.#parse(`${path}.bak`, originId)), recovery: { readFromBackup: true, readOnly: true } }; }
+        catch (backupError) {
+          if (backupError.code === 'ORIGIN_VERSION_UNSUPPORTED') throw backupError;
+          if (backupError.code !== 'ENOENT' && !damaged(backupError)) throw new OriginError('The Origin backup could not be read.', 'ORIGIN_READ_FAILED', 500);
+          return damagedRecord(originId, { readOnly: true, restoredFromBackup: false });
+        }
+      }
       let result = null;
       try { result = await this.#parse(`${path}.bak`, originId); }
       catch (backupError) {
@@ -171,11 +184,13 @@ export class OriginStore {
   async #list() {
     // A file this version cannot read (saved by a newer app, unreadable) is left out, not allowed to hide every project.
     const records = [], unreadable = [];
-    for (const name of (await readdir(this.dir)).filter(entry => /^blueprint-[a-z0-9_-]+\.json$/.test(entry))) {
+    const names = await readdir(this.dir).catch(error => { if (inReadOnlySnapshot() && error.code === 'ENOENT') return []; throw error; });
+    for (const name of names.filter(entry => /^blueprint-[a-z0-9_-]+\.json$/.test(entry))) {
       const id = name.slice(10, -5).replace(/_(.)/g, (_, character) => (character === '_' ? '_' : character.toUpperCase()));
       if (!Model.ID.test(id) || blueprintFileName(id) !== name) continue;
       const record = await this.#read(id).catch(error => { if (!['ORIGIN_VERSION_UNSUPPORTED', 'ORIGIN_READ_FAILED'].includes(error.code)) throw error; unreadable.push(id); return null; });
       if (record && !record.damaged) records.push(record);
+      else if (record?.damaged && inReadOnlySnapshot()) unreadable.push(id);
     }
     this.unreadable = unreadable;
     return records.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0) || a.id.localeCompare(b.id));

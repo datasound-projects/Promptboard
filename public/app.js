@@ -261,7 +261,7 @@ function isMobile() { return window.innerWidth <= 730; }
 function syncSidebarToggle() {
   const expanded = isMobile() ? $('#sidebar').classList.contains('open') : document.documentElement.dataset.sidebar !== 'collapsed';
   $('#menu-toggle').setAttribute('aria-expanded', String(expanded));
-  const what = { base: 'Base categories', kanban: 'projects', origin: 'blueprint sections', network: 'Network sections' }[currentPage()] || 'prompt history';
+  const what = { base: 'Base categories', kanban: 'projects', origin: 'blueprint sections', network: 'Network sections', chat: 'chat conversations' }[currentPage()] || 'prompt history';
   $('#menu-toggle').setAttribute('aria-label', expanded ? `Hide ${what}` : `Show ${what}`);
 }
 function setSidebar(open) {
@@ -415,6 +415,7 @@ async function loadProviders() {
     if (currentPage() === 'base') baseView?.show();
     if (currentPage() === 'origin') originView?.show();
     if (currentPage() === 'network') networkView?.show();
+    if (currentPage() === 'chat') chatView?.show();
     if (currentPage() === 'compose' && composeMode === 'batch') void batchView?.show(true);
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
@@ -1351,7 +1352,7 @@ function openHelp(privacy = false) {
 }
 
 // All views stay in the document. Routing does not replace forms, boards or terminals.
-let baseView = null, originView = null, projectsView = null, coordinatorView = null, batchView = null, networkView = null;
+let baseView = null, originView = null, projectsView = null, coordinatorView = null, batchView = null, networkView = null, chatView = null;
 // Compose has two modes: Single (one prompt, as before) and Batch (many Origin tasks). The choice is remembered.
 const COMPOSE_MODE_KEY = 'promptboard.compose.mode';
 let composeMode = (() => { try { return localStorage.getItem(COMPOSE_MODE_KEY) === 'batch' ? 'batch' : 'single'; } catch { return 'single'; } })();
@@ -1367,40 +1368,43 @@ function setComposeMode(mode, { focus = false } = {}) {
   void batchView?.show(composeMode === 'batch' && currentPage() === 'compose' && Boolean(token));
 }
 // Network owns the sub-routes below #/network (an agent, a section); the other pages are exact hashes.
-function currentPage() { return location.hash === '#/kanban' ? 'kanban' : location.hash === '#/base' ? 'base' : location.hash === '#/origin' ? 'origin' : /^#\/network(?:\/|$)/.test(location.hash) ? 'network' : 'compose'; }
+function currentPage() { return location.hash === '#/kanban' ? 'kanban' : location.hash === '#/base' ? 'base' : location.hash === '#/origin' ? 'origin' : /^#\/network(?:\/|$)/.test(location.hash) ? 'network' : /^#\/chat(?:\/|$)/.test(location.hash) ? 'chat' : 'compose'; }
 let shownPage = null;
 function showPage() {
   const page = currentPage();
-  const kanban = page === 'kanban', base = page === 'base', origin = page === 'origin', network = page === 'network';
+  const kanban = page === 'kanban', base = page === 'base', origin = page === 'origin', network = page === 'network', chat = page === 'chat';
   workspaceFiles?.setVisible(kanban);
   $('#prompt-view').hidden = page !== 'compose';
   $('#kanban-view').hidden = !kanban;
   $('#base-view').hidden = !base;
   if ($('#origin-view')) $('#origin-view').hidden = !origin;
   $('#network-view').hidden = !network;
+  $('#chat-view').hidden = !chat;
   document.documentElement.dataset.page = page;
-  ({ compose: $('#prompt-view'), kanban: $('#kanban-view'), base: $('#base-view'), origin: $('#origin-view'), network: $('#network-view') })[page]?.prepend($('#app-error'));
-  for (const link of document.querySelectorAll('.page-nav a')) {
-    if (link.getAttribute('href') === ({ compose: '#/', kanban: '#/kanban', base: '#/base', origin: '#/origin', network: '#/network' })[page]) link.setAttribute('aria-current', 'page');
+  ({ compose: $('#prompt-view'), kanban: $('#kanban-view'), base: $('#base-view'), origin: $('#origin-view'), network: $('#network-view'), chat: $('#chat-view') })[page]?.prepend($('#app-error'));
+  for (const link of document.querySelectorAll('.page-nav a, #chat-open')) {
+    if (link.getAttribute('href') === ({ compose: '#/', kanban: '#/kanban', base: '#/base', origin: '#/origin', network: '#/network', chat: '#/chat' })[page]) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
-  document.title = `${({ compose: 'Compose', kanban: 'Kanban', base: 'Base', origin: 'Origin', network: 'Network' })[page]} · Promptboard`;
-  $('#skip-link').setAttribute('href', base ? '#base-view' : kanban ? '#kanban-view' : origin ? '#origin-view' : network ? '#network-view' : '#prompt-input');
+  document.title = `${({ compose: 'Compose', kanban: 'Kanban', base: 'Base', origin: 'Origin', network: 'Network', chat: 'Chat' })[page]} · Promptboard`;
+  $('#skip-link').setAttribute('href', base ? '#base-view' : kanban ? '#kanban-view' : origin ? '#origin-view' : network ? '#network-view' : chat ? '#chat-view' : '#prompt-input');
   $('#history-panel').hidden = page !== 'compose';
   $('#workspace-panel').hidden = !kanban;
   $('#base-sidebar-panel').hidden = !base;
   if ($('#origin-sidebar-panel')) $('#origin-sidebar-panel').hidden = !origin;
   $('#network-sidebar-panel').hidden = !network;
+  $('#chat-sidebar-panel').hidden = !chat;
   $('#sidebar').hidden = false;
   $('#menu-toggle').hidden = false;
-  $('#sidebar').setAttribute('aria-label', base ? 'Base library' : kanban ? 'Projects' : origin ? 'Blueprint sections' : network ? 'Network sections' : 'Prompt history');
-  $('#sidebar-scrim').setAttribute('aria-label', base ? 'Close Base categories' : kanban ? 'Close projects' : origin ? 'Close blueprint sections' : network ? 'Close Network sections' : 'Close history');
+  $('#sidebar').setAttribute('aria-label', base ? 'Base library' : kanban ? 'Projects' : origin ? 'Blueprint sections' : network ? 'Network sections' : chat ? 'Chat conversations' : 'Prompt history');
+  $('#sidebar-scrim').setAttribute('aria-label', base ? 'Close Base categories' : kanban ? 'Close projects' : origin ? 'Close blueprint sections' : network ? 'Close Network sections' : chat ? 'Close conversations' : 'Close history');
   if (kanban) renderBoard();
   void batchView?.show(page === 'compose' && composeMode === 'batch' && Boolean(token));
   if (base && token) baseView?.show();
   // Leaving Origin saves pending blueprint edits; opening it reads the selected project's blueprint.
   if (origin && token) void originView?.show(); else if (!origin) void originView?.leave();
   if (network && token) void networkView?.show(); else if (!network) networkView?.leave();
+  if (chat && token) void chatView?.show(); else if (!chat) chatView?.leave();
   setSidebar(false);
   // Moving between Network's own sub-routes (an agent, a section) keeps the scroll position.
   if (!(network && shownPage === 'network')) window.scrollTo(0, 0);
@@ -4146,7 +4150,7 @@ async function addToKanban(event) {
 }
 window.addEventListener('hashchange', showPage);
 // The skip link must not change the hash, which selects the page.
-$('#skip-link').addEventListener('click', event => { event.preventDefault(); ($({ base: '#base-view', kanban: '#kanban-view', origin: '#origin-view', network: '#network-view' }[currentPage()] || '#prompt-input')).focus(); });
+$('#skip-link').addEventListener('click', event => { event.preventDefault(); ($({ base: '#base-view', kanban: '#kanban-view', origin: '#origin-view', network: '#network-view', chat: '#chat-view' }[currentPage()] || '#prompt-input')).focus(); });
 // A name cut off with an ellipsis shows in full as a tooltip, on every page. A title set by the page wins.
 document.addEventListener('pointerover', ({ target }) => {
   if (!(target instanceof Element) || target.closest('[title]:not([data-full-text])')) return;
@@ -5910,7 +5914,7 @@ const UI_PREFS = { startPage: ['promptboard.settings.start-page', 'compose'], op
   keepTabs: ['promptboard.settings.keep-tabs', '1'], termFont: ['promptboard.settings.terminal-font', '12'], dockStart: ['promptboard.settings.dock-start', 'last'], cardPreview: ['promptboard.settings.card-preview', '1'], cardAgent: ['promptboard.settings.card-agent', '0'], cardSpacing: ['promptboard.settings.card-spacing', '0'] };
 function uiPref(name) {
   const [key, fallback] = UI_PREFS[name];
-  const allowed = { startPage: ['origin', 'compose', 'kanban', 'base', 'network'], termFont: ['11', '12', '13', '14', '16'], dockStart: ['last', 'collapsed', 'open'] }[name] || ['0', '1'];
+  const allowed = { startPage: ['origin', 'compose', 'kanban', 'base', 'network', 'chat'], termFont: ['11', '12', '13', '14', '16'], dockStart: ['last', 'collapsed', 'open'] }[name] || ['0', '1'];
   try { const value = localStorage.getItem(key); return allowed.includes(value) ? value : fallback; } catch { return fallback; }
 }
 function setUiPref(name, value) { savePref(UI_PREFS[name][0], value); }
@@ -6260,6 +6264,24 @@ $('#autopilot-save').addEventListener('click', () => saveAutopilot(false));
 $('#autopilot-form').addEventListener('submit', event => { event.preventDefault(); saveAutopilot(true); });
 
 // Base owns its own metadata/content requests, with only these explicit application seams.
+$('#chat-open').addEventListener('click', event => { if (chatView) { event.preventDefault(); chatView.open(); } });
+chatView = window.PromptboardChat?.create({ api, announce, providers: () => providers,
+  defaults: () => { const { provider, model, effort } = settings(); return { provider, model, effort }; },
+  refreshProviders: loadProviders,
+  streamApi: (path, body, { signal } = {}) => tokenFetch(path, { method: 'POST', cache: 'no-store', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  browserContext: question => {
+    const entries = promptHistory.slice(0, HISTORY_LIMIT), words = question.toLocaleLowerCase().match(/[\p{L}\p{N}_]+/gu) || [];
+    const title = entry => String(entry.title || entry.input || 'Saved prompt').split('\n')[0].slice(0, 80);
+    const catalog = entries.map(entry => ({ id: String(entry.id).slice(0, 100), title: title(entry), createdAt: entry.createdAt || '' }));
+    const ranked = entries.map((entry, index) => { const text = `${entry.id}\n${title(entry)}\n${entry.input || ''}\n${entry.prompt || ''}`.toLocaleLowerCase(); return { entry, index, score: words.reduce((sum, word) => sum + (word.length > 2 && text.includes(word) ? 1 : 0), 0) }; }).sort((a, b) => b.score - a.score || a.index - b.index);
+    const history = []; let chars = 0;
+    for (const { entry } of ranked.slice(0, 30)) {
+      const excerpt = value => { const text = typeof value === 'string' ? value : ''; const at = words.map(word => word.length > 2 ? text.toLocaleLowerCase().indexOf(word) : -1).filter(index => index >= 0).sort((a, b) => a - b)[0] || 0; return text.slice(Math.max(0, at - 1000), Math.max(0, at - 1000) + 10000); };
+      const row = { id: String(entry.id).slice(0, 100), title: title(entry), createdAt: entry.createdAt || '', provider: entry.provider || '', model: entry.model || '', input: excerpt(entry.input), prompt: excerpt(entry.prompt) };
+      const size = JSON.stringify(row).length; if (chars + size > 48000) continue; chars += size; history.push(row);
+    }
+    return { catalog, history, total: entries.length };
+  } }) || null;
 baseView = window.PromptboardBase?.create({ api, announce, ensureBoard: loadBoard, refreshBoard: loadBoard, agentFields, readAgentFields, closeSidebar: () => setSidebar(false), remote: () => Boolean(remoteSession),
   acceptBoard: next => { acceptBoard(next); renderBoard(); } }) || null;
 window.PromptboardBaseView = baseView;

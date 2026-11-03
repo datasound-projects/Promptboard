@@ -57,7 +57,7 @@ export class Coordinator {
    * started before the board was created belong to an earlier board with this ID (deleted, then the ID was
    * reused) and are not used; older chats without `createdAt` are dated by their first message.
    */
-  async #load(projectId, kind = 'index') {
+  async #load(projectId, kind = 'index', { readOnly = false } = {}) {
     const path = this.#path(projectId, kind), { project } = await this.#project(projectId);
     const fresh = kind === 'chat' ? { schema: CHAT_SCHEMA, version: VERSION, projectId, createdAt: Date.now(), messages: [], cache: [] }
       : { schema: SCHEMA, version: VERSION, projectId, enabled: true, createdAt: Date.now(), updatedAt: null, boardRevision: null, tasks: {}, events: [], snapshots: [] };
@@ -68,8 +68,9 @@ export class Coordinator {
       if (!((data.createdAt ?? data.messages?.[0]?.at) < project.createdAt)) return data;
     });
     // A damaged file is kept aside (as the board's state is), so the next saves never overwrite the only copy.
-    await setAside(damaged);
-    return loaded ?? fresh;
+    if (!readOnly) await setAside(damaged);
+    if (readOnly && damaged.length && !loaded) throw new CoordinatorError('Saved Coordinator observations are unreadable.', 'COORDINATOR_UNREADABLE', 409);
+    return loaded ?? (readOnly ? null : fresh);
   }
   async #save(data, kind = 'index') {
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
@@ -80,6 +81,15 @@ export class Coordinator {
     const state = await this.board.state(), project = state.projects.find(item => item.id === projectId);
     if (!project) throw new CoordinatorError('This project no longer exists.', 'NOT_FOUND', 404);
     return { state, project, runs: state.runs.filter(run => run.projectId === projectId) };
+  }
+
+  /** Chat reads only previously saved observations; no reconciliation, Git access, repair or write. */
+  snapshot(projectId) {
+    return this.#serial(async () => {
+      const index = await this.#load(projectId, 'index', { readOnly: true });
+      const chat = await this.#load(projectId, 'chat', { readOnly: true });
+      return index || chat ? { index, messages: chat?.messages || [] } : null;
+    });
   }
 
   /** Bring the index up to date from existing records. Deterministic; never calls a model. */

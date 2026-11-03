@@ -1,6 +1,20 @@
 # Live provider verification log
 
-Real CLI runs, recorded separately from the simulated (fake-CLI) test suite. Each checkpoint names its smoke script and uses an installed, signed-in CLI in its own disposable repository. Nothing here ran against a user repository. Entries are newest first.
+Real CLI runs, recorded separately from the simulated (fake-CLI) test suite. Each checkpoint describes its driver and isolated test data: execution smoke checks use disposable repositories, while read-only Chat checks use synthetic app records and public guides. Nothing here ran against a user repository. Entries are newest first.
+
+## 3 November 2026 — Workspace and App guide Chat
+
+The real Chat page and HTTP/storage/retrieval services were exercised on macOS arm64 with Node.js 22.22.0 and the installed CLIs. The preview used a separate data folder with synthetic projects only, with Kanban execution and the Network worker disabled. No user repository was read or changed. These checks used the normal tool-disabled headless adapters; they are not part of CI.
+
+| Provider | Check | Result | Evidence and limits |
+| --- | --- | --- | --- |
+| Codex | Workspace across projects | Pass after retrieval correction | The answer identified all three synthetic projects, both Kanban cards and their saved instructions, the Base profile and Network registration, and zero saved runs. Exact source quotations validated; no workspace changes. Broad questions initially let long usage guides crowd out saved records; mandatory project-directory context and reserved record space corrected this. |
+| Codex | App guide: Network workflow | Pass | Source-backed agent registration → graph → pipeline → approval → saved-report walkthrough. Documentation gaps were stated explicitly; no private workspace records were supplied. |
+| Codex | App guide: Chat settings | Pass after guide-scope correction | The final answer correctly described Chat's manual Model field, provider-level Effort choices, CLI acceptance/rejection and independent Compose/workspace defaults. An earlier answer incorrectly transferred Compose's model-catalog behavior to Chat; the Chat reference and feature-scope instructions were clarified and the same question was repeated successfully. No workspace sources were supplied. |
+| Claude Code (`haiku` and CLI default) | App guide | Refused by provider/CLI policy | `POLICY_DENIED` displayed as a fixed safe error. Tool restrictions were retained. No successful Chat response is claimed for these checks. |
+| Gemini CLI (CLI default) | App guide | Blocked by account/client support | `CLIENT_UNSUPPORTED`: the provider no longer supports this CLI for the current account. The safe error was displayed and tool restrictions were retained; no successful Chat response is claimed. |
+
+Browser checks also covered separate histories, exact-source panels, reload without model replay, cancellation, draft/focus preservation, both themes, phone/tablet/desktop layouts and a six-times CPU slowdown, using simulated provider replies. Exact quotations establish provenance, not infallible interpretation; neither live nor offline checks establish 100% answer accuracy.
 
 ## 20 October 2026 — agent runs repair: typed Executing column, Base MCP tool switched off
 

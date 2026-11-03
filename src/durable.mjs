@@ -4,8 +4,18 @@
  * Callers keep their own error classes and messages.
  */
 import { randomBytes } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { copyFile, link, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
+
+// A retrieval can use existing services without triggering their usual repair writes.
+// Async-local scope keeps simultaneous owner requests fully independent.
+const snapshotScope = new AsyncLocalStorage();
+export const inReadOnlySnapshot = () => snapshotScope.getStore() === true;
+export const readOnlySnapshot = work => snapshotScope.run(true, work);
+export function assertWritableSnapshot() {
+  if (inReadOnlySnapshot()) throw Object.assign(new Error('Workspace writes are unavailable during read-only retrieval.'), { code: 'READ_ONLY_SNAPSHOT' });
+}
 
 /** Flush a folder's entries (after a rename) to disk. Some systems (Windows) cannot; that is ignored. */
 export async function syncDir(dir) {
@@ -36,6 +46,7 @@ async function keepBackup(path) {
  * is thrown; the old file is unchanged.
  */
 export async function writeAtomic(path, bytes, { backup = true } = {}) {
+  assertWritableSnapshot();
   const tmp = temporary(path);
   try {
     const handle = await open(tmp, 'wx', 0o600);
@@ -65,6 +76,7 @@ export async function readWithBackup(paths, parse) {
  * the next save never makes one the backup in place of the only good copy. A file already gone is skipped.
  */
 export async function setAside(files) {
+  if (files.length) assertWritableSnapshot();
   for (const file of files) await rename(file, `${file}.corrupt-${Date.now()}-${randomBytes(4).toString('hex')}`).catch(error => { if (error.code !== 'ENOENT') throw error; });
 }
 

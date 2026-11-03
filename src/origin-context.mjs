@@ -13,7 +13,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { redactLocal } from './compose-local.mjs';
-import { readWithBackup, serial, writeAtomic } from './durable.mjs';
+import { readWithBackup, serial, writeAtomic, inReadOnlySnapshot } from './durable.mjs';
 import { ORIGIN_DIR, OriginError, escapeId } from './origin.mjs';
 import { listTargets } from './base.mjs';
 import { excerptOverhead } from './base-context.mjs';
@@ -454,7 +454,7 @@ export class ContextStore {
       damaged ||= path === join(folder, META);
     });
     // A damaged file beside a good backup is kept aside; the next save would otherwise make it the backup.
-    if (meta && damaged) await rename(join(folder, META), join(folder, `document.corrupt-${Date.now()}-${randomUUID().slice(0, 8)}.json`));
+    if (meta && damaged && !inReadOnlySnapshot()) await rename(join(folder, META), join(folder, `document.corrupt-${Date.now()}-${randomUUID().slice(0, 8)}.json`));
     if (meta || !found) return meta ?? null;
     throw new OriginError('The Project Context file is damaged and no good copy was found. Create Context starts a new document and keeps the damaged files in the app data folder.', 'CONTEXT_DAMAGED', 500);
   }
