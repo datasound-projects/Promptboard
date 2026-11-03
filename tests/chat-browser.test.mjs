@@ -12,9 +12,17 @@ function responseFor(call) {
   return { text: J({ status: 'answer', sections: [{ text: `${workspace ? 'Saved workspace record' : 'Installed app guide'}:\n${source.text.slice(0, 1000)}`, citations: [{ sourceId: source.id, quote: source.text.slice(0, 400) }] }], uncertainties: [] }) };
 }
 async function setup(t, runner = async call => responseFor(call)) {
-  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [{ id: 'claude', name: 'Claude Code', available: true, version: 'simulated Chat fixture' }], runner });
+  const app = await startTestServer(t, { port: 0, executor: null,
+    detector: async () => [{ id: 'claude', name: 'Claude Code', available: true, version: 'simulated Chat fixture' }],
+    authAdapter: { installed: async provider => provider === 'claude', status: async () => ({ state: 'signed-in', method: 'simulated Chat fixture' }), login: async () => assert.fail('Chat must not start sign-in'), logout: async () => assert.fail('Chat must not sign out') }, runner });
   const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
-  const ev = code => browser.eval(code), wait = (value, label, ms = 20000) => browser.until(value, label, ms);
+  const ev = code => browser.eval(code), wait = async (value, label, ms = 20000) => {
+    try { return await browser.until(value, label, ms); }
+    catch (error) {
+      const state = await ev(`return {hash:location.hash,page:document.documentElement.dataset.page,chatError:document.querySelector('#chat-error')?.textContent,appError:document.querySelector('#app-error')?.textContent,status:document.querySelector('#chat-status')?.textContent,version:document.querySelector('#chat-version')?.textContent,provider:document.querySelector('#chat-provider')?.value,composeProvider:document.querySelector('#provider')?.value,sendDisabled:document.querySelector('#chat-send')?.disabled,hasToken:typeof token!=='undefined'&&Boolean(token),providers:typeof providers!=='undefined'?providers:[],messages:[...document.querySelectorAll('.chat-message')].map(node=>node.textContent.slice(0,200))};`);
+      error.message += `\nChat state: ${J(state)}\nBrowser diagnostics: ${J(browser.consoleMessages.slice(-10))}`; throw error;
+    }
+  };
   const click = async selector => {
     const point = await ev(`const b = document.querySelector(${J(selector)}); if (!b) throw new Error('Missing control'); b.scrollIntoView({block:'nearest',inline:'nearest'}); await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); const r=b.getBoundingClientRect(), x=r.left+r.width/2,y=r.top+r.height/2; const hit=document.elementFromPoint(x,y); let parent=b;const ancestors=[];while(parent&&ancestors.length<6){ancestors.push({tag:parent.tagName,id:parent.id,hidden:parent.hidden,display:getComputedStyle(parent).display});parent=parent.parentElement;}return {x,y,visible:!!hit&&(hit===b||b.contains(hit)),rect:r.toJSON(),hit:hit?.id||hit?.tagName,sidebar:document.querySelector('#sidebar').getBoundingClientRect().toJSON(),collapsed:document.documentElement.dataset.sidebar,scrollX,hash:location.hash,page:document.documentElement.dataset.page,ancestors};`);
     assert.equal(point.visible, true, `pointer reaches ${selector}: ${J(point)}`); await browser.click(point.x, point.y);
