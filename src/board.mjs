@@ -57,7 +57,7 @@ const EXECUTABLE_STAGES = new Set(['planning', 'executing', 'code_review', 'test
 export const WORKFLOW_STAGES = Object.freeze(['planning', 'executing', 'code_review', 'testing', 'merge']);
 const POLICIES = ['manual', 'ask', 'start'];
 export const DEFAULT_STAGE_SETTINGS = Object.freeze({ policy: 'start', provider: 'claude', model: '', effort: '', permissionMode: '', instructions: '' });
-const RUN_FIELDS = ['hasReview', 'startedAt', 'endedAt', 'providerSessionId', 'waitingReason', 'errorCode', 'exitCode', 'hasPlan', 'planExcerpt', 'turns', 'lifecycle', 'turnComplete', 'usage', 'activity', 'planRoutes'];
+const RUN_FIELDS = ['hasReview', 'startedAt', 'endedAt', 'providerSessionId', 'waitingReason', 'errorCode', 'exitCode', 'hasPlan', 'planExcerpt', 'turns', 'lifecycle', 'turnComplete', 'usage', 'activity', 'planRoutes', 'baseValidation'];
 // Stages whose first authorized run may create the task branch and worktree.
 const WORKSPACE_STAGES = new Set(['planning', 'executing']);
 
@@ -3833,6 +3833,17 @@ export class Board {
     });
   }
 
+  /** Hook metadata only: this reports an invocation, never its arguments, result or approval. */
+  async recordBaseObservation(runId, observation) {
+    return this.store.update(state => {
+      const run = state.runs.find(item => item.id === runId), manifest = run?.baseManifest;
+      if (!manifest?.resources?.some(entry => entry.resourceId === observation.resourceId && entry.kind === 'mcp' && entry.status === 'ready')) return;
+      const observed = manifest.observed ||= [];
+      if (observed.length >= 200 || observed.some(entry => entry.resourceId === observation.resourceId && entry.toolName === observation.toolName)) return;
+      observed.push({ resourceId: observation.resourceId, toolName: clip(observation.toolName, 400), provider: observation.provider, source: observation.source, at: Date.now() });
+    });
+  }
+
   /** Global settings. Each field is optional; project workflow settings stay with their project. */
   async setSettings({ maxConcurrentRuns, defaultAgent } = {}) {
     const change = {};
@@ -3856,5 +3867,5 @@ export class Board {
 }
 
 function title(column) { return COLUMNS.find(item => item.id === column)?.title || column; }
-function baseSignature(manifest) { return JSON.stringify({ resources: (manifest?.resources || []).map(item => [item.resourceId, item.revision]), profiles: (manifest?.profiles || []).map(item => [item.resourceId, item.revision]) }); }
+function baseSignature(manifest) { return JSON.stringify({ resources: (manifest?.resources || []).map(item => [item.resourceId, item.revision, item.disabledTools || [], item.allowedTools ?? null]), profiles: (manifest?.profiles || []).map(item => [item.resourceId, item.revision]), requirements: manifest?.requirements || null }); }
 function suppliedSignature(manifest) { return JSON.stringify((manifest?.supplied || []).map(item => [item.resourceId, item.revision, item.delivery, item.contentHash || null])); }

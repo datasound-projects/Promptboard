@@ -257,6 +257,7 @@ test('every route from a paired phone: the local-only ones are refused, every ot
   const LOCAL_ONLY = ['GET /api/remote', 'GET /api/remote?refresh=1', 'POST /api/remote/settings', 'POST /api/remote/pairing', 'POST /api/remote/serve', 'DELETE /api/remote/sessions/all', `DELETE /api/remote/sessions/${id}`,
     'GET /api/editors', 'PUT /api/editors', 'POST /api/auth/login', 'POST /api/auth/cancel', 'POST /api/auth/logout', 'POST /api/github/login', 'POST /api/github/login/cancel', 'POST /api/folder/choose', 'POST /api/projects/p1/open', 'POST /api/tasks/t1/preview', 'DELETE /api/tasks/t1/preview',
     'POST /api/base/mcp/import/preview', 'POST /api/base/mcp/import', 'POST /api/base/markdown/scan', 'POST /api/base/markdown/import', 'PUT /api/sandbox/claude-token', 'DELETE /api/sandbox/claude-token',
+    'POST /api/base/resources/r1/auth/credentials', 'POST /api/base/resources/r1/auth/start', 'POST /api/base/resources/r1/auth/cancel', 'POST /api/base/resources/r1/auth/disconnect',
     // Network external clients (Task 11): a new machine token is shown, or the machine listener opens.
     'POST /api/network/clients', `POST /api/network/clients/cli_${'a'.repeat(20)}/rotate`, 'PATCH /api/network/listener',
     // Task 12: switching handoffs on lets agents and clients ask for work; confirming a schedule switches standing automation on.
@@ -266,6 +267,7 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     'PATCH /api/network/federation/outbound', 'PATCH /api/network/federation/inbound'];
   const each = (prefix, rows) => rows.map(row => { const [method, action = ''] = row.split(' '); return `${method} ${prefix}${action ? `/${action}` : ''}`; });
   const ALLOWED = ['GET /', 'GET /app.js', 'GET /api/session', 'GET /api/providers', 'GET /api/status', 'GET /api/models', 'GET /api/usage', 'GET /api/auth', 'POST /api/notifications/connect', 'POST /api/notifications/ack',
+    'GET /base-configure.js', 'GET /api/base/resources/r1/auth', 'GET /api/base/resources/r1/preflight', 'POST /api/base/resources/r1/trial', 'POST /api/base/resources/r1/trial/cancel',
     'POST /api/compose/cancel', 'GET /api/compose/batches', 'POST /api/compose/prepare', 'POST /api/compose/sources/document', 'DELETE /api/compose/sources/document/d1', 'POST /api/compose/mcp/test', 'POST /api/split', 'POST /api/generate',
     'GET /api/coordinator/p1', 'POST /api/coordinator/p1/ask', 'GET /api/sandbox', 'GET /api/sandbox/build', 'POST /api/sandbox/build', 'POST /api/sandbox/build/cancel', 'PUT /api/sandbox/settings', 'GET /api/shared-projects', 'GET /api/origin/projects', 'GET /api/origin/blueprints', 'GET /api/origin/projects/p1/document', 'GET /api/origin/research/p1/chats', `POST /api/origin/research/p1/chats/${id}/run`,
     'GET /api/board', 'GET /api/board/export', 'POST /api/board/migrate', 'POST /api/board/import', 'POST /api/projects', 'POST /api/repository/validate', 'POST /api/tasks', 'PATCH /api/settings',

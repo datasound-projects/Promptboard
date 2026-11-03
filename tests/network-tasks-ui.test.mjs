@@ -30,6 +30,15 @@ async function openTasks(ctx, agent) {
   await ctx.idle();
 }
 
+test('Tasks respects the Base memory ceiling and time limit before confirming a job', async t => {
+  const ctx = await setup(t, { hash: '#/', networkWorker: fakeWorker() }), { $ } = ctx;
+  await ctx.app.board.base.create({ id: 'limited', kind: 'profile', name: 'Limited specialist', configuration: { agent: { provider: 'claude' }, contract: { runtime: { timeoutMinutes: 2 }, memory: { agent: false, network: false, projectLessons: false } } } });
+  const agent = await register(ctx, 'limited'); await openTasks(ctx, agent);
+  assert.equal($('#network-job-memory').checked, false); assert.equal($('#network-job-memory').disabled, true); assert.equal($('#network-job-lessons').disabled, true); assert.equal($('#network-job-timeout').max, '2'); assert.equal($('#network-job-timeout').value, '2');
+  $('#network-job-input').value = 'A bounded job'; $('#network-job-form').dispatchEvent(new ctx.win.Event('submit', { bubbles: true, cancelable: true }));
+  await until(() => $('#network-dialog').open, 'job confirmation'); assert.match($('#network-dialog').textContent, /None/);
+});
+
 test('Tasks: run a job after a confirmation that says what it may use; the list follows it live, shows coverage and activity, renders the result safely, and cancel works', async t => {
   const worker = fakeWorker({ mode: 'manual' });
   const ctx = await setup(t, { hash: '#/', networkWorker: worker }); const { $, win } = ctx;

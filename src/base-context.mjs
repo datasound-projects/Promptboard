@@ -4,10 +4,11 @@ import { lookup } from 'node:dns/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
-import { readdir, realpath, stat, mkdir, writeFile, rm, open } from 'node:fs/promises';
+import { readdir, realpath, stat, mkdir, mkdtemp, writeFile, rm, open } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { resolve, relative, isAbsolute, extname, join } from 'node:path';
+import { resolve, relative, isAbsolute, extname, join, dirname } from 'node:path';
 import { BaseDeliveryError, assertBaseReady, checkBaseRevocations, baseDependencies } from './base-resolver.mjs';
+import { contractPrompt } from './base-agent-contract.mjs';
 
 const MAX_FILE = 256_000, MAX_TOTAL = 2_000_000;
 const TEXT = new Set(['.md', '.mdx', '.txt', '.rst', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.json', '.yaml', '.yml', '.toml', '.css', '.html', '.py', '.go', '.rs', '.java', '.sh', '.sql']);
@@ -173,13 +174,14 @@ export function searchSources(sources, query = '', { budgetChars = 24000 } = {})
   return { selected, omitted, chars: used, estimatedTokens: Math.ceil(used / 4), tokenCountIsEstimate: true };
 }
 
-export async function prepareBase({ manifest, readRevision, currentResources = [], workspacePath, runDir, signal, approvedRoots = [], contextBudget = 48000, query = '' }) {
+export async function prepareBase({ manifest, readRevision, currentResources = [], workspacePath, runDir, signal, approvedRoots = [], contextBudget = 48000, query = '', connections = null }) {
   signal = signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000);
   assertBaseReady(manifest); checkBaseRevocations(manifest, currentResources, approvedRoots); aborted(signal);
-  const prepared = structuredClone(manifest), sections = [], mcpServers = [], subagents = {}, resourceText = new Map();
-  const owned = join(runDir, 'base-context'); let remaining = Math.max(0, Math.min(100000, contextBudget));
+  const prepared = structuredClone(manifest), sections = [], mcpServers = [], subagents = {}, nativeSkills = [], resourceText = new Map(), environment = {};
+  const owned = join(runDir, 'base-context'); let remaining = Math.max(0, Math.min(100000, contextBudget, manifest.requirements?.contextChars ?? 100000));
+  let skillsRoot;
   // Captures are evidence artifacts, retained with the run. Only generated configuration is temporary.
-  const cleanup = async ({ discardCaptures = false } = {}) => { await Promise.all([rm(join(runDir, 'base-claude-mcp.json'), { force: true }), rm(join(runDir, 'gemini-system-settings.json'), { force: true }), ...(discardCaptures ? [rm(owned, { recursive: true, force: true })] : [])]); };
+  const cleanup = async ({ discardCaptures = false } = {}) => { await Promise.all([rm(join(runDir, 'base-claude-mcp.json'), { force: true }), rm(join(runDir, 'gemini-system-settings.json'), { force: true }), ...(skillsRoot ? [rm(skillsRoot, { recursive: true, force: true })] : []), ...(discardCaptures ? [rm(owned, { recursive: true, force: true })] : [])]); };
   try {
     const definitions = new Map(), ordered = [], visited = new Set(); let definitionBytes = 0;
     for (const entry of prepared.resources || []) if (entry.status === 'ready') {
@@ -212,15 +214,33 @@ export async function prepareBase({ manifest, readRevision, currentResources = [
         const definition = definitions.get(entry.resourceId); aborted(signal);
         for (const dep of baseDependencies(definition)) if (dep.required !== false && prepared.resources.find(item => item.resourceId === dep.resourceId)?.status !== 'ready') throw new BaseDeliveryError('A dependency failed preparation; its dependent resource was not supplied.', 'BASE_DEPENDENCY_FAILED');
         const content = definition.content || {}, cfg = definition.configuration || {};
-        let text = '', captures = [], omitted = [];
+        let text = '', captures = [], omitted = [], nativeSkill;
         if (entry.kind === 'mcp') {
-          for (const ref of [...Object.values(cfg.env || {}), ...Object.values(cfg.headers || {})]) if (!process.env[ref]) throw new BaseDeliveryError('A declared MCP environment reference is unavailable.', 'BASE_AUTH_REQUIRED');
+          const connection = connections ? await connections.delivery(definition) : { definition, environment: process.env };
+          const configuration = connection.definition.configuration;
+          const connectionEnvironment = {};
+          for (const ref of [...Object.values(configuration.env || {}), ...Object.values(configuration.headers || {})]) {
+            if (typeof connection.environment[ref] !== 'string' || !connection.environment[ref]) throw new BaseDeliveryError('A declared MCP credential is unavailable. Configure authentication in Base → MCP.', 'BASE_AUTH_REQUIRED');
+            if (environment[ref] !== undefined && environment[ref] !== connection.environment[ref]) throw new BaseDeliveryError('Two MCP connections require different values for the same environment variable. Give each connection a distinct credential reference.', 'BASE_MCP_ENV_CONFLICT');
+            connectionEnvironment[ref] = connection.environment[ref];
+          }
+          Object.assign(environment, connectionEnvironment);
           // Tools switched off on the server or for this assignment are withheld by each CLI's own tool filter.
-          mcpServers.push({ name: `pb_${entry.resourceId.replace(/[^A-Za-z0-9_]/g, '_')}`, resourceId: entry.resourceId, required: entry.required, configuration: cfg, disabledTools: entry.disabledTools || [] });
+          mcpServers.push({ name: `pb_${entry.resourceId.replace(/[^A-Za-z0-9_]/g, '_')}`, resourceId: entry.resourceId, required: entry.required, configuration, disabledTools: entry.disabledTools || [], ...(entry.allowedTools !== undefined ? { allowedTools: entry.allowedTools } : {}) });
         } else if (entry.kind === 'skill') {
-          text = content.body || content.files?.find(file => file.path === 'SKILL.md')?.text || '';
+          text = content.body || content.files?.find(file => file.path === (cfg.entrypoint || 'SKILL.md'))?.text || '';
           if (!text) throw new BaseDeliveryError('Skill instructions are empty or unavailable.', 'BASE_CONTENT_UNAVAILABLE');
-          for (const file of content.files || []) if (file.path !== 'SKILL.md') text += `\n\nSupporting file ${file.path} (reference text; scripts are not executed):\n${file.text}`;
+          if (entry.delivery === 'native-skill') {
+            skillsRoot ||= await mkdtemp(join(runDir, 'base-skills-'));
+            const name = `pb-${createHash('sha256').update(entry.resourceId).digest('hex').slice(0, 24)}`, plugin = join(skillsRoot, entry.resourceId), dir = join(plugin, 'skills', name);
+            await mkdir(join(plugin, '.claude-plugin'), { recursive: true, mode: 0o700 }); await mkdir(dir, { recursive: true, mode: 0o700 });
+            await writeFile(join(plugin, '.claude-plugin', 'plugin.json'), JSON.stringify({ name, version: '1.0.0', description: definition.description || definition.name }), { mode: 0o600 });
+            // Base metadata supplies the native frontmatter; arbitrary imported frontmatter cannot add hooks or auto-approval.
+            const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '');
+            await writeFile(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${JSON.stringify((definition.description || definition.name).replace(/[\r\n]/g, ' ').slice(0, 1000))}\n---\n${body}`, { mode: 0o600 });
+            for (const file of content.files || []) if (file.path.toLowerCase() !== 'skill.md' && file.path.toLowerCase() !== cfg.entrypoint?.toLowerCase()) { const path = join(dir, file.path); await mkdir(dirname(path), { recursive: true, mode: 0o700 }); await writeFile(path, file.text, { mode: 0o600, flag: 'wx' }); }
+            nativeSkill = { resourceId: entry.resourceId, path: plugin }; text = `Native skill package available: ${name}. Supporting files are loaded on demand under the CLI's execution permissions.`;
+          } else for (const file of content.files || []) if (file.path !== 'SKILL.md') text += `\n\nSupporting file ${file.path} (reference text; scripts are not executed):\n${file.text}`;
         } else if (entry.kind === 'profile') text = cfg.agent?.instructions || '';
         else if (entry.kind === 'agentProfile') text = cfg.instructions || '';
         else if (entry.kind === 'markdown') {
@@ -252,8 +272,10 @@ export async function prepareBase({ manifest, readRevision, currentResources = [
           remaining -= text.length;
         }
         if (text || entry.kind === 'mcp') prepared.supplied.push(supplied);
+        if (nativeSkill) nativeSkills.push(nativeSkill);
         if (omitted.length) prepared.warnings.push({ resourceId: entry.resourceId, code: 'BASE_CONTEXT_OMITTED', message: `${omitted.length} source sections/files were omitted by selection or budget.` });
       } catch (error) {
+        resourceText.delete(entry.resourceId);
         if (signal?.aborted || error.code === 'ABORTED' || entry.required) throw error;
         entry.status = 'omitted'; const message = error instanceof BaseDeliveryError ? error.message : 'Resource preparation failed.';
         entry.issues.push(message); prepared.warnings.push({ resourceId: entry.resourceId, code: error.code || 'BASE_PREPARATION_FAILED', message });
@@ -285,6 +307,7 @@ export async function prepareBase({ manifest, readRevision, currentResources = [
       sections.push(`Native subagent available: ${name} — ${definition.name}. Delegate relevant work when useful. Configured availability is not proof of invocation.`);
     }
     aborted(signal); prepared.preparedAt = Date.now();
-    return { sections: sections.join('\n\n'), mcpServers, subagents, manifest: prepared, cleanup };
+    const requirements = contractPrompt(manifest.contracts);
+    return { sections: [sections.join('\n\n'), requirements].filter(Boolean).join('\n\n'), mcpServers, subagents, nativeSkills, environment, manifest: prepared, cleanup };
   } catch (error) { await cleanup({ discardCaptures: true }); throw error instanceof BaseDeliveryError ? error : new BaseDeliveryError('Base resource preparation failed.', signal?.aborted ? 'ABORTED' : 'BASE_PREPARATION_FAILED'); }
 }

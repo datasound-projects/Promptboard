@@ -14,6 +14,7 @@ import { readdir, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { ADAPTERS } from '../agents.mjs';
 import { primaryAgent } from '../base-resolver.mjs';
+import { contractRequirements } from '../base-agent-contract.mjs';
 import { redactLocal } from '../compose-local.mjs';
 import { noPaths } from '../coordinator.mjs';
 import { serial, syncDir } from '../durable.mjs';
@@ -234,7 +235,9 @@ function baseSummary(resources, id) {
   const reason = AGENT_KINDS.includes(resource.kind) ? unusable(resource) || primary || null : 'wrong-kind';
   // The instructions a run would get (profileDefaults order: the agent's own, then the profile's), as a short preview.
   const instructions = [settings.instructions, resource.kind === 'agentProfile' ? resource.configuration?.instructions : ''].filter(value => typeof value === 'string' && value.trim()).join('\n\n').trim();
+  const contracts = [resource.configuration?.contract, ...(agent && agent !== resource ? [agent.configuration?.contract] : [])].filter(Boolean);
   return { kind: resource.kind, name: resource.name, enabled: resource.enabled !== false, trust: resource.trust, revision: resource.revision,
+    ...(contracts.length ? { requirements: contractRequirements(contracts) } : {}),
     provider: settings.provider || null, model: settings.model || null, effort: settings.effort || null, stale: Boolean(reason), staleReason: reason,
     instructions: { summary: redactLocal(instructions.length > SUMMARY ? `${instructions.slice(0, SUMMARY - 1).trimEnd()}…` : instructions), chars: instructions.length },
     // Base's own "Used by" places (assignments, resources, active runs); Base lists them, Network only counts them.

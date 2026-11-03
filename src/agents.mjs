@@ -166,7 +166,7 @@ const shQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 const escapeControls = text => text.replace(new RegExp(CONTROL, 'g'), character => `\\x${character.charCodeAt(0).toString(16).padStart(2, '0')}`);
 
-async function geminiSystemSettings(runDir, hookCommand, { plan = false, pipeline = false, mcpServers = null } = {}) {
+async function geminiSystemSettings(runDir, hookCommand, { plan = false, pipeline = false, mcpServers = null, toolGuard = null } = {}) {
   // Keep any administrator settings: copy the default system file and add our hooks.
   const defaultPath = platform() === 'darwin' ? '/Library/Application Support/GeminiCli/settings.json'
     : platform() === 'win32' ? 'C:\\ProgramData\\gemini-cli\\settings.json' : '/etc/gemini-cli/settings.json';
@@ -177,7 +177,8 @@ async function geminiSystemSettings(runDir, hookCommand, { plan = false, pipelin
   }
   const hook = [{ hooks: [{ type: 'command', command: hookCommand, name: 'promptboard-lifecycle' }] }];
   const hooks = { ...(base.hooks || {}) };
-  for (const event of ['SessionStart', 'BeforeAgent', 'AfterAgent', 'Notification', ...(pipeline ? ['BeforeTool', 'AfterTool', 'SessionEnd'] : [])]) hooks[event] = [...(hooks[event] || []), ...hook];
+  for (const event of ['SessionStart', 'BeforeAgent', 'AfterAgent', 'Notification', ...(pipeline || mcpServers ? ['BeforeTool', 'AfterTool', 'SessionEnd'] : [])]) hooks[event] = [...(hooks[event] || []), ...hook];
+  if (toolGuard) hooks.BeforeTool = [...(hooks.BeforeTool || []), { hooks: [{ type: 'command', command: toolGuard, name: 'promptboard-mcp-policy' }] }];
   const path = `${runDir}/gemini-system-settings.json`;
   // Gemini 0.30 offers plan approval mode only with experimental.plan; it is set for planning sessions only.
   const experimental = plan ? { experimental: { ...(base.experimental || {}), plan: true } } : {};
@@ -211,15 +212,22 @@ export async function buildSession({ provider, stage, config, message, runDir, e
   if (pipeline && !stageRules && (typeof message !== 'string' || CONTROL.test(message))) throw new AgentError('Pipeline input contains terminal control characters. Edit the task, continuation, or selected Base text before starting.', 'INVALID_PIPELINE_INPUT');
   const plan = readOnly || config.permissionMode === 'plan';
   let inArgv;
-  const env = { TERM: 'xterm-256color', PROMPTBOARD_RUN: '1' };
+  const env = { TERM: 'xterm-256color', PROMPTBOARD_RUN: '1', ...(baseDelivery?.environment || {}) };
   const selected = readOnly ? [] : baseDelivery?.mcpServers || [];
+  const mcpMode = baseDelivery?.manifest?.requirements?.mcpMode || 'inherit';
+  let toolGuard = null;
+  if (!readOnly && (mcpMode === 'base-only' || selected.some(server => server.allowedTools !== undefined))) {
+    const path = `${runDir}/base-tool-policy.json`;
+    await writeFile(path, JSON.stringify({ mode: mcpMode, servers: selected.map(server => ({ name: server.name, allowedTools: server.allowedTools })) }), { mode: 0o600 });
+    toolGuard = [nodePath, fileURLToPath(new URL('./base-tool-guard.mjs', import.meta.url)), path, provider].map(shQuote).join(' ');
+  }
   const jsonServers = Object.fromEntries(selected.map(server => {
     const cfg = server.configuration;
     const ref = value => '${' + value + '}';
     const item = cfg.transport === 'stdio'
       ? { command: cfg.command, args: cfg.args || [], env: Object.fromEntries(Object.entries(cfg.env || {}).map(([key, value]) => [key, ref(value)])) }
       : { ...(provider === 'gemini' ? { httpUrl: cfg.endpoint } : { type: 'http', url: cfg.endpoint }), headers: Object.fromEntries(Object.entries(cfg.headers || {}).map(([key, value]) => [key, ref(value)])) };
-    if (provider === 'gemini') { item.trust = false; item.timeout = 15000; if (server.disabledTools?.length) item.excludeTools = [...server.disabledTools]; }
+    if (provider === 'gemini') { item.trust = false; item.timeout = 15000; if (server.disabledTools?.length) item.excludeTools = [...server.disabledTools]; if (server.allowedTools !== undefined) item.includeTools = [...server.allowedTools]; }
     return [server.name, item];
   }));
   // Claude Code names an MCP tool mcp__<server>__<tool>, each part with characters other than letters, digits, _ and -
@@ -229,14 +237,16 @@ export async function buildSession({ provider, stage, config, message, runDir, e
   if (provider === 'claude') {
     const hook = { type: 'command', command: nodePath, args: [HOOK_SCRIPT, eventsFile, 'claude'] };
     const hooks = Object.fromEntries(['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'Notification', 'Stop', 'StopFailure', 'SessionEnd',
-      ...(pipeline ? ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'SubagentStart', 'SubagentStop'] : [])].map(event => [event, [{ hooks: [hook] }]]));
+      ...(pipeline || selected.length ? ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'SubagentStart', 'SubagentStop'] : [])].map(event => [event, [{ hooks: [hook] }]]));
+    if (toolGuard) hooks.PreToolUse = [...(hooks.PreToolUse || []), { matcher: 'mcp__.*', hooks: [{ type: 'command', command: nodePath, args: [fileURLToPath(new URL('./base-tool-guard.mjs', import.meta.url)), `${runDir}/base-tool-policy.json`, provider], onFailure: 'block', timeout: 10 }] }];
     let mcpConfig = '{"mcpServers":{}}';
     if (selected.length) { mcpConfig = `${runDir}/base-claude-mcp.json`; await writeFile(mcpConfig, JSON.stringify({ mcpServers: jsonServers }), { mode: 0o600 }); }
     args = [resumeId ? '--resume' : '--session-id', resumeId || sessionId, '--settings', JSON.stringify({ hooks, statusLine: { type: 'command', command: [nodePath, fileURLToPath(new URL('./usage-status.mjs', import.meta.url)), `${runDir}/usage-status.json`].map(shQuote).join(' ') } })];
     // Writing stages keep user-configured CLI MCPs/plugins; Base adds per-run servers.
     // Read-only stages (legacy Planning/Code Review and the stage engine's typed ones) keep their explicit restriction to no MCPs.
-    if (readOnly) args.push('--strict-mcp-config');
-    if (readOnly || selected.length) args.push('--mcp-config', mcpConfig);
+    if (readOnly || mcpMode === 'base-only') args.push('--strict-mcp-config');
+    if (readOnly || selected.length || mcpMode === 'base-only') args.push('--mcp-config', mcpConfig);
+    if (!readOnly) for (const skill of baseDelivery?.nativeSkills || []) args.push('--plugin-dir', skill.path);
     if (readOnly) args.push('--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash,ExitPlanMode');
     else {
       args.push('--permission-mode', config.permissionMode);
@@ -255,7 +265,9 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     // read the prompt as more tool names when no other option follows them.
     if (inArgv && message) args.push('--', message);
   } else if (provider === 'codex') {
+    if (mcpMode === 'base-only' && !baseDelivery?.mcpIsolationChecked) throw new AgentError('Base-only MCP mode requires a successful CLI configuration check before launch.', 'BASE_MCP_ISOLATION_UNAVAILABLE', 409);
     args = [...(resumeId ? ['resume', resumeId, ...(workspacePath ? ['--cd', workspacePath] : [])] : []), '-c', `notify=[${[nodePath, HOOK_SCRIPT, eventsFile, 'codex'].map(tomlString).join(',')}]`, '--no-alt-screen'];
+    if (mcpMode === 'base-only') args.push(...(baseDelivery.mcpIsolationArgs || []));
     // Read-only columns never ask (nothing to approve). Writing columns ask unless the policy is autonomous.
     if (plan) args.push('--sandbox', 'read-only', '--ask-for-approval', pipeline && !stageRules && config.filesystem == null ? 'on-request' : 'never');
     else args.push('--sandbox', config.permissionMode === 'danger-full-access' ? 'danger-full-access' : 'workspace-write', '--ask-for-approval', autonomous ? 'never' : 'on-request');
@@ -270,16 +282,18 @@ export async function buildSession({ provider, stage, config, message, runDir, e
       // env_vars forwards names without secrets in argv or changes to the CLI environment.
       if (Object.entries(cfg.env || {}).some(([key, value]) => key !== value)) throw new AgentError('Codex MCP environment aliases are unsupported; use matching variable names.', 'BASE_MCP_ENV_ALIAS', 409);
       for (const [key, value] of Object.entries(fields)) args.push('-c', `${prefix}.${key}=${tomlValue(value)}`);
-      args.push('-c', `${prefix}.required=${server.required === true}`, '-c', `${prefix}.startup_timeout_sec=15`);
+      args.push('-c', `${prefix}.enabled=true`, '-c', `${prefix}.required=${server.required === true}`, '-c', `${prefix}.startup_timeout_sec=15`);
       if (server.disabledTools?.length) args.push('-c', `${prefix}.disabled_tools=${tomlValue(server.disabledTools)}`);
+      if (server.allowedTools !== undefined) args.push('-c', `${prefix}.enabled_tools=${tomlValue(server.allowedTools)}`);
     }
     inArgv = fitsArgv(args, message);
     // After the option terminator: a prompt starting with "-" is otherwise a flag, and one equal to a subcommand
     // name (such as "exec" or "login") runs that subcommand.
     if (inArgv && message) args.push('--', message);
   } else if (provider === 'gemini') {
-    env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = await geminiSystemSettings(runDir, [nodePath, HOOK_SCRIPT, eventsFile, 'gemini'].map(shQuote).join(' '), { plan, pipeline, mcpServers: selected.length ? jsonServers : null });
+    env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = await geminiSystemSettings(runDir, [nodePath, HOOK_SCRIPT, eventsFile, 'gemini'].map(shQuote).join(' '), { plan, pipeline, mcpServers: selected.length ? jsonServers : null, toolGuard });
     args = readOnly ? ['--extensions', 'none', '--allowed-mcp-server-names', ''] : [];
+    if (!readOnly && mcpMode === 'base-only') args.push('--extensions', 'none', '--allowed-mcp-server-names', selected.map(server => server.name).join(','));
     if (resumeId) args.push('--resume', resumeId);
     if (readOnly) {
       const policy = `${runDir}/plan-policy.toml`;

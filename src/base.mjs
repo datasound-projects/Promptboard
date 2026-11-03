@@ -7,6 +7,7 @@ import { normalizeAvatarImage } from './base-avatar.mjs';
 import { syncDir, writeAtomic } from './durable.mjs';
 import { markdownFileName, normalizeActivation } from './base-markdown.mjs';
 import { credentialArgs } from './base-mcp-import.mjs';
+import { normalizeAgentContract } from './base-agent-contract.mjs';
 
 // `profile` is an Agent (one agent definition); `agentProfile` composes agents and resources into a deployable setup;
 // `markdown` is a Custom MD file (AGENTS.md, CLAUDE.md, SOUL.md…).
@@ -53,7 +54,8 @@ export function normalizeReferences(input = []) {
     const entry = typeof value === 'string' ? { resourceId: value, required: true } : value;
     if (!object(entry) || (entry.required !== undefined && typeof entry.required !== 'boolean') || (entry.enabled !== undefined && typeof entry.enabled !== 'boolean')) fail('Resource references need an ID, a required flag and an optional on/off switch.');
     const disabledTools = strings(entry.disabledTools, 500, 200, 'Switched-off tools');
-    refs.set(id(entry.resourceId), { resourceId: entry.resourceId, required: entry.required !== false, ...(entry.enabled === false ? { enabled: false } : {}), ...(disabledTools.length ? { disabledTools } : {}) });
+    const allowedTools = entry.allowedTools === undefined ? undefined : strings(entry.allowedTools, 500, 200, 'Allowed tools');
+    refs.set(id(entry.resourceId), { resourceId: entry.resourceId, required: entry.required !== false, ...(entry.enabled === false ? { enabled: false } : {}), ...(disabledTools.length ? { disabledTools } : {}), ...(allowedTools !== undefined ? { allowedTools } : {}) });
   }
   return [...refs.values()];
 }
@@ -158,7 +160,10 @@ export function normalizeContent(input = {}) {
 }
 function configuration(kind, value = {}) {
   if (!object(value)) fail('Resource configuration must be an object.');
-  if (kind === 'skill') return { format: 'instruction', entrypoint: filePath(value.entrypoint || 'SKILL.md') };
+  if (kind === 'skill') {
+    if (value.format !== undefined && !['instruction', 'native-package'].includes(value.format)) fail('Choose instruction text or a native skill package.');
+    return { format: value.format || 'instruction', entrypoint: filePath(value.entrypoint || 'SKILL.md') };
+  }
   if (kind === 'knowledge' && value.sources === undefined) return {};
   if (kind === 'pack') return { resources: normalizeReferences(value.resources) };
   if (kind === 'profile') {
@@ -169,7 +174,7 @@ function configuration(kind, value = {}) {
       if (!object(value.avatar) || value.avatar.version !== 2 || !/^[a-f0-9]{64}$/.test(value.avatar.contentHash || '')) fail('Choose a valid generated agent avatar.');
       avatar = { version: 2, contentHash: value.avatar.contentHash, model: string(value.avatar.model, 120, 'Image model', true), prompt: string(value.avatar.prompt, 2000, 'Avatar prompt'), contentStatus: value.avatar.contentStatus === 'omitted' ? 'omitted' : 'available' };
     }
-    return { agent: { ...agent, instructions: string(value.agent?.instructions, 4000, 'Profile stage instructions') }, binding: normalizeBinding(value.binding), ...(avatar ? { avatar } : {}) };
+    return { agent: { ...agent, instructions: string(value.agent?.instructions, 4000, 'Profile stage instructions') }, binding: normalizeBinding(value.binding), ...(avatar ? { avatar } : {}), ...(value.contract !== undefined ? { contract: normalizeAgentContract(value.contract) } : {}) };
   }
   if (kind === 'agentProfile') {
     if (value.agents !== undefined && (!Array.isArray(value.agents) || value.agents.length > 17)) fail('An agent profile has one primary agent and at most 16 supporting agents.');
@@ -181,7 +186,7 @@ function configuration(kind, value = {}) {
       return { resourceId, role: entry.role === 'primary' ? 'primary' : 'supporting', responsibility: string(entry.responsibility, 500, 'Responsibility'), ...(entry.enabled === false ? { enabled: false } : {}) };
     });
     if (agents.length && agents.filter(entry => entry.role === 'primary').length !== 1) fail('Choose exactly one primary agent.');
-    return { agents, resources: normalizeReferences(value.resources), instructions: string(value.instructions, 4000, 'Profile instructions') };
+    return { agents, resources: normalizeReferences(value.resources), instructions: string(value.instructions, 4000, 'Profile instructions'), ...(value.contract !== undefined ? { contract: normalizeAgentContract(value.contract) } : {}) };
   }
   if (kind === 'markdown') {
     const override = value.override === undefined || value.override === null ? null : value.override;
@@ -193,8 +198,10 @@ function configuration(kind, value = {}) {
     const transport = value.transport || 'stdio';
     if (!['stdio', 'streamable-http'].includes(transport)) fail('MCP transport must be stdio or Streamable HTTP.');
     const auth = value.auth || {};
+    if (auth.mode !== undefined && !['none', 'environment', 'oauth'].includes(auth.mode)) fail('Choose no authentication, private credentials or browser sign-in.');
+    if (auth.mode === 'oauth' && transport !== 'streamable-http') fail('Browser sign-in requires an HTTP MCP endpoint.');
     const disabledTools = strings(value.disabledTools, 500, 200, 'Switched-off tools');
-    const common = { transport, env: envReferences(value.env, 'Environment'), headers: envReferences(value.headers, 'Headers', true), auth: { required: auth.required === true || value.authRequired === true, description: string(auth.description, 500, 'Authentication description') },
+    const common = { transport, env: envReferences(value.env, 'Environment'), headers: envReferences(value.headers, 'Headers', true), auth: { required: auth.required === true || value.authRequired === true || auth.mode === 'oauth', description: string(auth.description, 500, 'Authentication description'), ...(auth.mode ? { mode: auth.mode } : {}), ...(auth.clientId ? { clientId: string(auth.clientId, 512, 'OAuth Client ID') } : {}), ...(auth.scope ? { scope: string(auth.scope, 2000, 'OAuth scopes') } : {}) },
       ...(disabledTools.length ? { disabledTools } : {}) };
     return transport === 'stdio' ? { ...common, command: string(value.command, 4096, 'MCP command', true), args: argumentsList(value.args) } : { ...common, endpoint: endpoint(value.endpoint, 'MCP endpoint') };
   }
@@ -444,7 +451,7 @@ export class Base {
     // definition (a new name, or tools switched on or off) keeps it — the server itself is unchanged.
     const sameServer = JSON.stringify({ ...definition.configuration, disabledTools: undefined }) === JSON.stringify({ ...prior.configuration, disabledTools: undefined })
       && JSON.stringify(definition.content) === JSON.stringify(prior.content);
-    if (!sameServer) delete definition.connectionTest;
+    if (!sameServer) { delete definition.connectionTest; if (definition.kind === 'mcp') definition.enabled = false; }
     validateResourceGraph(state.base.resources.map(resource => resource.id === resourceId ? definition : resource));
     const resource = await this.#writeDefinition(definition, previous);
     return this.#publish([resource.revisionRef], draft => {
@@ -506,7 +513,7 @@ export class Base {
       prompts: integer(Array.isArray(result.prompts) ? result.prompts.length : result.prompts, 0, 0, 10000, 'Discovered prompt count'),
       durationMs: integer(result.durationMs === undefined ? undefined : Math.round(result.durationMs), 0, 0, 120000, 'Connection test duration'), partial: result.partial === true,
       ...(result.server ? { server: { name: string(result.server.name, 200, 'Server name'), version: string(result.server.version, 100, 'Server version') } } : {}) };
-    const metadata = await this.#writeDefinition({ ...definition, revision: previous.revision + 1, updatedAt: Date.now(), connectionTest: clean }, previous);
+    const metadata = await this.#writeDefinition({ ...definition, ...(clean.status === 'failed' ? { enabled: false } : {}), revision: previous.revision + 1, updatedAt: Date.now(), connectionTest: clean }, previous);
     return this.#publish([metadata.revisionRef], draft => { if (draft.base.resources.find(resource => resource.id === resourceId)?.revision !== expectedRevision) throw new BaseError('The MCP definition changed during the test.', 'RESOURCE_REVISION_CONFLICT', 409);
       draft.base.resources = draft.base.resources.map(resource => resource.id === resourceId ? metadata : resource); draft.base.revision++; return metadata; });
   }

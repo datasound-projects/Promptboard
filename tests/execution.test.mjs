@@ -341,6 +341,31 @@ async function attachBase(board, target, resource, mode = 'extend') {
   return board.base.apply({ changes: [{ target, binding: { mode, include: resource ? [{ resourceId: resource.id, required: true }] : [], exclude: [] } }], expectedBaseRevision: (await board.state()).base.revision });
 }
 
+test('Base output failures block an owned Kanban turn/confirmation; correction passes and MCP observations contain identities only', { skip }, async t => {
+  const w = await world(t), mcp = await w.board.base.create({ kind: 'mcp', name: 'Fixture connection', enabled: true, trust: 'trusted', configuration: { transport: 'stdio', command: process.execPath, args: ['fixture-does-not-start-under-the-simulated-cli'] } });
+  const agent = await w.board.base.create({ kind: 'profile', name: 'Checked writer', configuration: { agent: { provider: 'claude' }, binding: { mode: 'extend', include: [{ resourceId: mcp.id, required: true }], exclude: [] }, contract: { checks: { contains: ['REQUIRED_FINAL_MARKER'], excludes: [] } } } });
+  await w.board.base.apply({ changes: [{ target: { scope: 'project', projectId: w.projectId }, binding: { mode: 'inherit' }, profileId: agent.id }] });
+  const card = await w.task('Checked output', 'Implement WRITE_FILE:checked.txt'), started = await w.board.requestRun(card.id, { stage: 'executing', consent: true });
+  const failed = await until(async () => { const run = await w.run(started.id); return run.baseValidation?.passed === false && run; }, 'output checks fail');
+  assert.equal(failed.turnComplete, false); assert.equal(failed.status, 'waiting_for_input'); await assert.rejects(w.supervisor.confirm(started.id), { code: 'BASE_OUTPUT_INVALID' });
+  const tool = `mcp__pb_${mcp.id.replace(/[^A-Za-z0-9_]/g, '_')}__lookup`, events = join(w.dataDir, failed.artifactsDir, 'events.jsonl');
+  await writeFile(events, `${JSON.stringify({ provider: 'claude', name: 'PostToolUse', tool, sessionId: failed.providerSessionId, input: { token: 'PRIVATE_PAYLOAD' }, result: 'PRIVATE_RESULT' })}\n${JSON.stringify({ provider: 'claude', name: 'Stop', sessionId: failed.providerSessionId, message: 'REQUIRED_FINAL_MARKER' })}\n`, { flag: 'a' });
+  const corrected = await until(async () => { const run = await w.run(started.id); return run.turnComplete && run.baseValidation?.passed && run.baseManifest.observed.length && run; }, 'corrected final answer and observation');
+  assert.equal(corrected.baseManifest.observed[0].toolName, tool); assert.doesNotMatch(JSON.stringify(corrected.baseManifest.observed), /PRIVATE_PAYLOAD|PRIVATE_RESULT/); await w.supervisor.cancel(started.id);
+});
+
+test('a Base session time limit stops only its owned waiting CLI and preserves evidence/workspace', { skip, timeout: 80000 }, async t => {
+  const w = await world(t, { limit: 2 }), other = await w.task('Unrelated session', 'Ordinary task'), unrelated = await w.board.requestRun(other.id, { stage: 'executing', consent: true });
+  await until(async () => (await w.run(unrelated.id)).turnComplete, 'unrelated turn');
+  const agent = await w.board.base.create({ kind: 'profile', name: 'One minute limit', configuration: { agent: { provider: 'claude' }, contract: { runtime: { timeoutMinutes: 1 } } } });
+  await w.board.base.apply({ changes: [{ target: { scope: 'project', projectId: w.projectId }, binding: { mode: 'inherit' }, profileId: agent.id }] });
+  const card = await w.task('Limited session', 'Implement WRITE_FILE:limit-proof.txt'), started = await w.board.requestRun(card.id, { stage: 'executing', consent: true });
+  await until(async () => (await w.run(started.id)).turnComplete, 'limited turn'); const pid = w.supervisor.sessions.get(started.id).proc.pid;
+  const ended = await until(async () => { const run = await w.run(started.id); return run.status === 'failed' && !alive(pid) && run; }, 'owned process stops at the real one minute limit', 65000);
+  assert.equal(ended.errorCode, 'BASE_TIME_LIMIT'); assert.equal(await readFile(join(ended.workspacePath, 'limit-proof.txt'), 'utf8'), 'written by the agent\n'); assert.ok((await readFile(join(w.dataDir, ended.artifactsDir, 'last-message.md'), 'utf8')).length);
+  assert.equal((await w.run(unrelated.id)).status, 'waiting_for_input'); assert.ok(w.supervisor.sessions.get(unrelated.id).proc); await w.supervisor.cancel(unrelated.id);
+});
+
 test('Base custom-column task overrides deliver isolated resources to concurrent inherited-provider agents from their own workspaces', { skip }, async t => {
   const w = await world(t, { limit: 2 });
   const project = (await w.board.view()).projects[0];

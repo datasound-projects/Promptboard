@@ -27,6 +27,7 @@ import { RemoteAccess, remoteRoute } from './remote-access.mjs';
 import { openProject, openTargets, runInfo } from './project-run.mjs';
 import { editorList, editorPreferences, openInEditor } from './editors.mjs';
 import { BaseRoutes } from './base-http.mjs';
+import { McpConnections } from './base-mcp-auth.mjs';
 import { BaseError } from './base.mjs';
 import { BaseDeliveryError } from './base-resolver.mjs';
 import { PipelineActions } from './pipeline-actions.mjs';
@@ -70,6 +71,7 @@ const assets = new Map([
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/dom.js', ['dom.js', 'text/javascript; charset=utf-8']],
   ['/base.js', ['base.js', 'text/javascript; charset=utf-8']],
+  ['/base-configure.js', ['base-configure.js', 'text/javascript; charset=utf-8']],
   ['/prefs.js', ['prefs.js', 'text/javascript; charset=utf-8']],
   ['/notifications.js', ['notifications.js', 'text/javascript; charset=utf-8']],
   ['/workspace-files.js', ['workspace-files.js', 'text/javascript; charset=utf-8']],
@@ -386,6 +388,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const usage = usageReader || new UsageDashboard({ dataDir });
   const notifications = new PipelineNotifications();
   const board = new Board({ dataDir, ...(projectsDir ? { projectsDir } : {}), automationActions: new PipelineActions({ notifier: (message, options) => notifications.deliver(message, options) }) });
+  board.mcpConnections = new McpConnections({ dataDir, readResource: id => board.base.detail(id) });
   // Docker mode for card agents: one per data folder. Containers a crash left behind are removed before any run starts.
   const sandbox = new Sandbox({ dataDir });
   void sandbox.sweep();

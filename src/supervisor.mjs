@@ -12,7 +12,8 @@ import { constants, createWriteStream } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { ADAPTERS, AgentError, buildSession, composeMessage, interpretEvent, resolveConfig } from './agents.mjs';
-import { CLAUDE_ERRORS, cliEnv, FAILURE_MESSAGES, killPidGroup, resolveExecutable, trackPid, untrackPid } from './providers.mjs';
+import { CLAUDE_ERRORS, cliEnv, FAILURE_MESSAGES, killPidGroup, resolveExecutable, trackPid, untrackPid, codexMcpOverride, execute } from './providers.mjs';
+import { supportsClaudeMcpPolicy } from './base-tool-guard.mjs';
 import { addClaudeRecord, addCodexRecord, claudeTranscript, findCodexRollout, newUsage, readNewLines, reportedCost, usageSummary } from './usage.mjs';
 import { prepareBase } from './base-context.mjs';
 import { BaseDeliveryError, checkBaseRevocations } from './base-resolver.mjs';
@@ -23,6 +24,8 @@ import { nativeMessageInputReadiness, sendOwnedNativeMessage } from './native-me
 import { Sandbox } from './sandbox.mjs';
 import { untilStopped } from './native-message-common.mjs';
 import { lessonsPrompt } from './lessons.mjs';
+import { validateAgentOutput } from './base-agent-contract.mjs';
+import { baseObservation } from './base-observations.mjs';
 
 const RING_BYTES = 1024 * 1024; // Live scrollback kept per run for reconnects.
 const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
@@ -232,8 +235,18 @@ export class Supervisor {
     signal.throwIfAborted();
     const state = await this.board.state();
     const baseDelivery = await this.basePreparer({ manifest: run.baseManifest, readRevision: ref => this.board.base.readRevision(ref),
-      currentResources: state.base?.resources || [], workspacePath: run.workspacePath, runDir, signal, approvedRoots: state.base?.approvedRoots || [] });
+      currentResources: state.base?.resources || [], workspacePath: run.workspacePath, runDir, signal, approvedRoots: state.base?.approvedRoots || [], connections: this.board.mcpConnections });
     onPrepared(baseDelivery);
+    const strictReadOnly = (!run.config.pipeline || run.stageKind) && ['planning', 'code_review'].includes(run.stageKind || run.stage);
+    if (run.config.provider === 'claude' && !strictReadOnly && (run.baseManifest?.requirements?.mcpMode === 'base-only' || baseDelivery.mcpServers?.some(server => server.allowedTools !== undefined))) {
+      const version = await Promise.resolve(run.config.sandbox === 'docker' ? this.sandbox?.cliVersion?.('claude', { signal })
+        : execute({ command: executable.command, args: [...executable.prefix, '--version'], signal, timeoutMs: 15000, maxStdout: 8192, maxStderr: 8192 }).then(result => result.stdout)).catch(() => '');
+      if (!supportsClaudeMcpPolicy(version)) throw new AgentError('Selected MCP policies require Claude Code 2.1.295 or newer so a failed policy hook blocks the tool. Update the CLI or container image before starting.', 'BASE_MCP_POLICY_VERSION', 409);
+    }
+    if (run.config.provider === 'codex' && run.baseManifest?.requirements?.mcpMode === 'base-only') {
+      baseDelivery.mcpIsolationArgs = await codexMcpOverride(executable, { cwd: run.workspacePath, signal });
+      baseDelivery.mcpIsolationChecked = true;
+    }
     signal.throwIfAborted();
     // Approvals before plans were frozen have no copy; their plan.md is read as before.
     const planDir = planRunId && join(this.dataDir, 'runs', planRunId);
@@ -305,6 +318,14 @@ export class Supervisor {
       if (session.proc && !session.sawEvent) this.board.updateRun(runId, { lifecycle: 'no-events-yet', waitingReason: 'No lifecycle event yet. The CLI may be asking a startup question, such as whether to trust this folder. Check the terminal.' }).catch(() => {});
     }, 10000);
     session.watchdog.unref();
+    if (run.baseManifest?.requirements?.timeoutMs) {
+      session.baseDeadline = setTimeout(() => {
+        session.failure = { code: 'BASE_TIME_LIMIT', reason: 'The Base agent’s execution time limit was reached. Files and output are kept.' };
+        this.#setStatus(session, 'failed', { errorCode: session.failure.code, reason: session.failure.reason }).catch(() => {});
+        this.#kill(session);
+      }, run.baseManifest.requirements.timeoutMs); session.baseDeadline.unref();
+      session.exited.finally(() => clearTimeout(session.baseDeadline));
+    }
     if (session.paste) {
       // Long prompts wait for the CLI's readiness sign (#inputReady); bracketed paste keeps the text intact.
       const proc = session.proc;
@@ -506,6 +527,11 @@ export class Supervisor {
             session.inputEpoch++;
             if (session.initialSubmitPending) this.#initialInputUnconfirmed(session);
           }
+          const observation = baseObservation(session.baseManifest, session.provider, event);
+          if (observation && !(session.baseObserved ||= new Set()).has(observation.toolName)) {
+            await this.board.recordBaseObservation?.(session.runId, observation);
+            session.baseObserved.add(observation.toolName);
+          }
           if (session.activity) {
             session.activity.observe(event);
             // Subagent hooks share the parent's lifecycle file. A subordinate
@@ -614,9 +640,11 @@ export class Supervisor {
       const stage = session.stageKind || (!session.pipeline ? session.stage : null);
       const planning = stage === 'planning', reviewing = stage === 'code_review';
       if (signal.message) await writeFile(join(session.runDir, planning ? 'plan.md' : reviewing ? 'review.md' : 'last-message.md'), signal.message, { mode: 0o600 });
+      const baseValidation = validateAgentOutput(signal.message || '', session.baseManifest?.contracts);
       await this.#setStatus(session, 'waiting_for_input', {
-        turns: session.turns, turnComplete: !session.initialInputUncertain && !session.messageInputPending && !session.messageInputUncertain, ...(planning && signal.message ? { hasPlan: true, planExcerpt: signal.message } : {}), ...(reviewing && signal.message ? { hasReview: true } : {}),
-        waitingReason: session.messageInputUncertain ? 'Native message input remains unconfirmed. Check the terminal; automatic advancement is blocked.'
+        ...(session.baseManifest?.contracts?.length ? { baseValidation } : {}),
+        turns: session.turns, turnComplete: baseValidation.passed && !session.initialInputUncertain && !session.messageInputPending && !session.messageInputUncertain, ...(planning && signal.message ? { hasPlan: true, planExcerpt: signal.message } : {}), ...(reviewing && signal.message ? { hasReview: true } : {}),
+        waitingReason: !baseValidation.passed ? `Base output checks failed: ${baseValidation.errors.join('; ')}. Continue the agent to correct its answer.` : session.messageInputUncertain ? 'Native message input remains unconfirmed. Check the terminal; automatic advancement is blocked.'
           : session.initialInputUncertain ? 'The agent finished a turn, but initial prompt input remains unconfirmed. Check the terminal; automatic advancement is blocked.'
           : planning ? (signal.message ? 'The plan is ready. Review it, continue in the terminal, or approve it.' : 'The agent finished its turn without a plan message. Continue in the terminal.')
           : reviewing ? 'The review is ready. Check the findings, then confirm to record them.'
@@ -782,7 +810,7 @@ export class Supervisor {
         try {
           // The delivered message started a new turn. Codex has no hook to say so, so leave "finished, waiting for
           // you" here, as Enter typed in the terminal does, unless the CLI is already asking a question.
-          const complete = Boolean(session.activity?.parentComplete), working = !complete && session.status === 'waiting_for_input' && !session.activity?.permission;
+          const complete = Boolean(session.activity?.parentComplete) && (await this.board.run(runId)).baseValidation?.passed !== false, working = !complete && session.status === 'waiting_for_input' && !session.activity?.permission;
           await bounded(() => this.board.updateRun(runId, { turnComplete: complete, ...(working ? { status: 'running', waitingReason: '' } : {}) }));
           if (working) { session.status = 'running'; this.#push(session, { status: 'running' }); }
           await bounded(() => this.#publishActivity(session));
@@ -970,6 +998,7 @@ export class Supervisor {
 
   async #confirm(runId) {
     const run = await this.board.run(runId);
+    if (run.baseValidation?.passed === false) throw new AgentError('Correct the answer before completing this stage: its Base output checks failed.', 'BASE_OUTPUT_INVALID', 409);
     // Custom pipeline columns continue one conversation; only typed columns (the stage engine) complete a stage.
     if (run.config.pipeline && !run.stageKind) throw new AgentError('Move this pipeline card or pause its agent; a finished turn does not complete a stage.', 'PIPELINE_STAGE_CONFIRM_UNAVAILABLE', 409);
     if (run.status !== 'waiting_for_input' || !run.turns) throw new AgentError('Confirm after the agent has finished a turn and is waiting.', 'NOT_CONFIRMABLE', 409);

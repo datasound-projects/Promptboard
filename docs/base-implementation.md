@@ -1,5 +1,13 @@
 # Base implementation map
 
+## Agent capability/configuration continuation (2026-11-03)
+
+- `public/base-configure.js` groups the existing editor controls and adds contract/tests, the activated MCP picker, and JSON/link/command/auth setup; `base.js` retains revision-aware saves, assignments and shared resource identity. `app.js` supplies Base's provider descriptors even when the Kanban worker is disabled, preserving configured provider/model values.
+- `src/base-agent-contract.mjs` normalizes optional bounded output/check/runtime/memory/test requirements; the resolver pins them, preparation supplies instructions/context budgets, Supervisor checks final output and session time, and Network narrows accepted job limits/memory and checks final answers. Assignment signatures include tool restrictions so changed selections invalidate stale plan/context assumptions.
+- `src/base-mcp-auth.mjs` owns private per-definition credentials, SDK OAuth/PKCE, guarded discovery and cancellation-safe persistence. Protected local-owner HTTP actions live in `base-http.mjs`; the existing test and preparation paths consume ephemeral delivery. No new dependency or store migration is required.
+- `src/base-tool-guard.mjs` supplies separate deny-only tool policy hooks; native adapter allowlists remain in `agents.mjs`. `base-observations.mjs` maps reported post-tool identities without payloads. Native skill packages use unique run directories and Claude `--plugin-dir`; unsupported contexts report omissions/blockers.
+- `src/base-trials.mjs` uses the existing shared restricted generation slot and an empty temporary folder. Results identify limited coverage/revisions; there is no new executor or full-workflow certification. See [the user-facing configuration guide](base-agent-configuration.md) and SECURITY.md for enforced boundaries and limits.
+
 ## Follow-up audit and agent cards (2026-10-02)
 
 Reference checkout: main `652666e`. The audit found stale editor revisions after MCP discovery/source refresh and replacement of standalone sources during live refresh. Regression tests cover both connection outcomes, retained drafts, mixed sources, and distinct knowledge identities.
@@ -24,7 +32,7 @@ Baseline: the clean local `main` checkout is `06a89c03355d4b71530280db5556a5bf87
 ## Persistence and safety contracts
 
 - `state.base` holds a Base-specific revision, lightweight resource metadata, and approved roots. Target Base revisions are independent of run polling and task text revisions.
-- Resource definitions have stable IDs, immutable revision references, dependencies, and distinct enablement/trust/validation/connection status. Credentials are environment references only; no resolved credentials enter prompts, manifests, exports, or diagnostic responses.
+- Resource definitions have stable IDs, immutable revision references, dependencies, and distinct enablement/trust/validation/connection status. Portable credentials are references; optional private authentication is stored separately. No resolved credentials enter prompts, manifests, exports or diagnostic responses.
 - Layer order: Global → Project → Column → Task → Task-column. Inherit keeps upstream; Extend adds then excludes; Replace discards upstream, including profile resources. Expand packs before exclusions, deduplicate stably, and validate dependencies without silently re-adding exclusions.
 - Queue acceptance pins definition revisions and assignment origins. Launch checks current revocations while retaining pinned content. Capture live sources at launch with a timestamp/hash. Cancellation, failed starts, and shutdown clean up only the affected run's preparation.
 - Existing host/origin/session-token protections cover every Base endpoint. No import/save/assignment starts a CLI, installs software, changes agent permissions, or modifies user CLI/project configuration.

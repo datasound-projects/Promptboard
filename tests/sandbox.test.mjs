@@ -81,6 +81,15 @@ async function boxed(t, { provider = 'codex', server = false, link = false } = {
 }
 const runCalls = calls => calls.filter(call => call.args[0] === 'run' && !call.args.includes('sh'));
 const values = (args, flag) => args.flatMap((arg, at) => arg === flag ? [args[at + 1]] : []);
+
+test('MCP policy metadata checks the actual existing image without credentials, mounts, network or automatic pulls', { skip }, async t => {
+  const docker = await fakes(t), sandbox = new Sandbox({ dataDir: await temp(t, 'pb-sandbox-mcp-version-') });
+  await assert.rejects(sandbox.cliVersion('claude'), { code: 'SANDBOX_IMAGE_MISSING' });
+  const { name } = await sandbox.image(); await docker.setState({ images: [name] });
+  assert.match(await sandbox.cliVersion('claude'), /9\.8\.7/);
+  const args = (await docker.calls()).find(row => row.args.includes('--entrypoint')).args;
+  assert.ok(args.includes('--pull=never')); assert.equal(args[args.indexOf('--network') + 1], 'none'); assert.ok(args.includes('--read-only')); assert.equal(args[args.indexOf('--entrypoint') + 1], 'claude'); assert.deepEqual(args.slice(-2), [name, '--version']); assert.equal(args.includes('-e'), false); assert.equal(args.includes('-v'), false);
+});
 // The container's view, from docker run's -v list: the most specific mount decides, as Docker stacks nested mounts.
 const mountsOf = args => values(args, '-v').map(spec => { const ro = spec.endsWith(':ro'), [source, target] = (ro ? spec.slice(0, -3) : spec).split(':'); return [source, target, ro]; });
 const mountFor = (mounts, path) => mounts.filter(([, target]) => path === target || path.startsWith(target + sep)).sort((a, b) => b[1].length - a[1].length)[0];

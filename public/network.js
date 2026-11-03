@@ -632,7 +632,7 @@ window.PromptboardNetwork = (() => {
       jobChoices(agent); renderJobForm(); renderJobs();
       return tasksRoot;
     }
-    const jobBlockedReason = agent => blocked(agent) || (agent.providerCapabilities?.jobTools?.length ? '' : agent.providerCapabilities?.known ? `Network jobs cannot run ${PROVIDER_NAMES[agent.base.provider] || 'this CLI'}: it cannot be held to read-only work.` : 'No CLI is set for this agent in Base, so it cannot run jobs.');
+    const jobBlockedReason = agent => blocked(agent) || (agent.base.requirements?.targets && !agent.base.requirements.targets.includes('network') ? 'This agent’s Base execution policy allows Kanban only.' : '') || (agent.providerCapabilities?.jobTools?.length ? '' : agent.providerCapabilities?.known ? `Network jobs cannot run ${PROVIDER_NAMES[agent.base.provider] || 'this CLI'}: it cannot be held to read-only work.` : 'No CLI is set for this agent in Base, so it cannot run jobs.');
     function jobChoices(agent) {
       const projects = context.projects(), keep = jobProject.value;
       jobProject.replaceChildren(...select([['', 'No project'], ...projects.map(project => [project.id, agent.projectAllowlist.includes(project.id) ? project.name : `${project.name} (not on its project list)`])]).children);
@@ -643,13 +643,13 @@ window.PromptboardNetwork = (() => {
       const web = jobTools.querySelector('option[value="web"]'), webOk = agent.providerCapabilities?.jobTools?.includes('web');
       web.disabled = !webOk; web.textContent = webOk ? 'Web search (read only)' : `Web search (not available for ${PROVIDER_NAMES[agent.base.provider] || 'this CLI'})`;
       if (!webOk) jobTools.value = 'none';
-      if (tasks.timeoutMinutes === null) void request('/api/network/settings').then(data => { tasks.timeoutMinutes = Math.round(data.settings.defaultTimeoutMs / 60000); if (!jobTimeout.dataset.touched) jobTimeout.value = String(tasks.timeoutMinutes); }, () => {});
+      if (tasks.timeoutMinutes === null) void request('/api/network/settings').then(data => { tasks.timeoutMinutes = Math.round(data.settings.defaultTimeoutMs / 60000); if (!jobTimeout.dataset.touched) jobTimeout.value = String(Math.min(tasks.timeoutMinutes, Math.ceil((tasks.agent?.base.requirements?.timeoutMs ?? 7200000) / 60000))); }, () => {});
     }
     jobTimeout.addEventListener('input', () => { jobTimeout.dataset.touched = 'true'; });
     /** What the job asks for, from the form: the same question the memory preview answers. */
     function jobAsk() {
       const projectId = jobProject.value || null, networkId = jobNetwork.value || null;
-      return { projectId, networkId, memory: !jobMemory.checked ? 'none' : networkId ? 'agent+network' : 'agent', projectLessons: Boolean(projectId) && jobLessons.checked };
+      return { projectId, networkId, memory: !jobMemory.checked ? 'none' : networkId && tasks.agent?.base.requirements?.memory?.network !== false ? 'agent+network' : 'agent', projectLessons: Boolean(projectId) && jobLessons.checked };
     }
     const jobPreviewKey = () => tasks.agent && JSON.stringify([tasks.agent.id, tasks.agent.revision, tasks.agent.enabled, tasks.agent.base.stale, jobAsk()]);
     function renderJobForm() {
@@ -660,6 +660,11 @@ window.PromptboardNetwork = (() => {
         if (reason) control.setAttribute('aria-describedby', jobBlocked.id); else control.removeAttribute('aria-describedby');
       }
       if (!reason) { jobLessons.disabled = !jobProject.value; jobLessons.title = jobProject.value ? '' : 'Choose a project first.'; }
+      const policy = agent?.base.requirements;
+      if (policy?.memory?.agent === false) { jobMemory.checked = false; jobMemory.disabled = true; jobMemory.title = 'Agent memory is disabled in this agent’s Base configuration.'; } else jobMemory.title = '';
+      if (policy?.memory?.projectLessons === false) { jobLessons.checked = false; jobLessons.disabled = true; jobLessons.title = 'Project lessons are disabled in this agent’s Base configuration.'; }
+      const minutes = Math.ceil((policy?.timeoutMs ?? 7200000) / 60000); jobTimeout.max = String(minutes); jobTimeout.title = policy?.timeoutMs ? `This agent’s Base limit is ${minutes} minutes.` : '';
+      if (Number(jobTimeout.value) > minutes) jobTimeout.value = String(minutes);
       if (!jobProject.value) jobLessons.checked = false;
       const preview = tasks.preview;
       jobReasons.replaceChildren(...(preview ? reasons(preview) : []).map(([included, text]) => {
