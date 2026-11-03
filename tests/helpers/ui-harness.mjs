@@ -100,6 +100,7 @@ export async function setup(t, { catalogReader = async id => ({ provider: id, ..
   // Same order as the page: prefs.js runs in <head>, app.js is deferred.
   win.eval(await readFile(new URL('../../public/prefs.js', import.meta.url), 'utf8'));
   win.eval(await readFile(new URL('../../public/dom.js', import.meta.url), 'utf8'));
+  win.eval(await readFile(new URL('../../public/base-configure.js', import.meta.url), 'utf8'));
   win.eval(await readFile(new URL('../../public/base.js', import.meta.url), 'utf8'));
   win.eval(await readFile(new URL('../../public/markdown-view.js', import.meta.url), 'utf8'));
   win.eval(await readFile(new URL('../../public/network-graph.js', import.meta.url), 'utf8'));

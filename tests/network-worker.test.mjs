@@ -78,6 +78,14 @@ const CODEX = web => ['exec', '--ephemeral', '--json', '--skip-git-repo-check', 
   '--config', 'features.apps=false', '--config', 'features.plugins=false', '--config', 'features.hooks=false', '--disable', 'shell_tool', '--disable', 'unified_exec', '--config', 'model_reasoning_effort="low"',
   '--config', `mcp_servers={"ambient"={enabled=false,command=${JSON.stringify(process.execPath)}}}`, '-'];
 
+test('a Network answer that violates the pinned Base output contract is failed rather than published as a completed result', { skip }, async t => {
+  const ctx = await fixture(t, { start: false }), lead = await ctx.base.detail('lead');
+  await bump(ctx.base, 'lead', { configuration: { ...lead.configuration, contract: { output: { format: 'json', schema: { type: 'object', required: ['summary'] } } } } });
+  const id = await ctx.submit('lead', 'Answer with the normal simulated text.'); await ctx.jobs.start(); const job = await ctx.finished(id);
+  assert.equal(job.status, 'failed'); assert.equal(job.attempts[0].errorCode, 'BASE_OUTPUT_INVALID'); assert.equal(job.result, null);
+  assert.match(job.reason, /Base output checks/);
+});
+
 test('each CLI runs headless and read-only with exactly the flags of its tool mode, in an empty attempt folder; coverage labels and activity follow what the CLI reports', { skip }, async t => {
   const ctx = await fixture(t), events = [];
   ctx.jobs.events = { append: async event => { events.push(event); return { seq: events.length, id: `evt_${events.length}` }; } };

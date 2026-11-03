@@ -2,6 +2,7 @@
 import { ADAPTERS } from './agents.mjs';
 import { strictReadOnlyColumn } from './pipeline-config.mjs';
 import { markdownActive } from './base-markdown.mjs';
+import { contractRequirements } from './base-agent-contract.mjs';
 
 const refs = values => (values || []).map(value => typeof value === 'string' ? { resourceId: value, required: true } : value);
 const resourcesOf = state => new Map((state?.base?.resources || []).map(resource => [resource.id, resource]));
@@ -42,6 +43,7 @@ export function deliveryFor(resource, provider, columnId, capabilities = null, r
   if (!supported) return { delivery: 'unavailable', issue: 'This provider does not support this Kanban stage.' };
   if (['pack', 'profile', 'agentProfile'].includes(resource.kind)) return { delivery: 'configuration' };
   if (resource.kind === 'markdown') return { delivery: 'instruction-file' };
+  if (resource.kind === 'skill' && resource.configuration?.format === 'native-package') return { delivery: 'native-skill', ...(provider !== 'claude' || readOnly ? { issue: 'Native Base skill packages are available only in Claude Code writing stages. Choose instruction delivery for other providers, Network and read-only stages.' } : {}) };
   if (resource.kind === 'mcp' || (resource.kind === 'tool' && resource.configuration?.delivery === 'mcp')) {
     if (readOnly) return { delivery: 'native-mcp', issue: 'Base MCP servers are unavailable in read-only Planning and Code Review.' };
     if (provider === 'codex' && resource.kind === 'mcp' && resource.configuration?.transport === 'stdio' && Object.entries(resource.configuration.env || {}).some(([name, reference]) => name !== reference)) return { delivery: 'native-mcp', issue: 'Codex stdio MCP delivery requires matching environment-variable names; aliases are unsupported without exposing credentials in CLI arguments.' };
@@ -94,6 +96,7 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
     entry.rank = Math.max(entry.rank, rank);
     if (ref.overrides) entry.overrides = ref.overrides;
     if (ref.disabledTools?.length) entry.disabledTools = [...new Set([...(entry.disabledTools || []), ...ref.disabledTools])];
+    if (ref.allowedTools !== undefined) entry.allowedTools = entry.allowedTools === undefined ? [...ref.allowedTools] : entry.allowedTools.filter(name => ref.allowedTools.includes(name));
     if (ref.responsibility) entry.responsibility = ref.responsibility;
     if (origin.startsWith('task')) entry.explicitTask = true;
     if (resource?.kind === 'profile' && origin.includes('/profile:')) entry.nativeSubagent = true;
@@ -185,6 +188,12 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
       if (resource.contentStatus === 'omitted') issues.push('Document content was omitted from the imported definition.');
       for (const source of resource.configuration?.sources || []) if (source.kind === 'external' && !state?.base?.approvedRoots?.some(root => root.id === source.rootId && root.enabled !== false)) issues.push('The external source root is not approved or its approval was revoked.');
       if (resource.kind === 'tool' && resource.configuration?.delivery === 'mcp' && !registry.get(resource.configuration.serverId)?.connectionTest?.tools?.some(tool => tool.name === resource.configuration.toolName)) issues.push('The parent MCP server has not discovered this tool. Run an explicit connection test before attaching it.');
+      if (resource.kind === 'mcp' && entry.allowedTools !== undefined) {
+        const tools = resource.connectionTest?.tools || [];
+        if (entry.allowedTools.some(name => !tools.some(tool => tool.name === name))) issues.push('The selected MCP tools are not in the last connection test. Test the connection and review the selection.');
+        const normalized = tools.map(tool => tool.name.replace(/[^A-Za-z0-9_-]/g, '_'));
+        if (new Set(normalized).size !== normalized.length) issues.push('The server has tool names that collide after CLI normalization. Explicit tool selection cannot be delivered safely.');
+      }
     }
     // A Markdown file is sent only where its activation says; elsewhere it stays attached and is simply not sent.
     const inactive = resource?.kind === 'markdown' ? markdownActive(resource.configuration?.activation, { projectId: project?.id, columnId, provider, explicitTask: entry.explicitTask }) : '';
@@ -199,8 +208,14 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
     if (result.issue) issues.push(result.issue);
     const disabledTools = [...new Set([...(resource?.kind === 'mcp' ? resource.configuration?.disabledTools || [] : []), ...(entry.disabledTools || [])])];
     return { resourceId: entry.resourceId, revision: resource?.revision || 0, revisionRef: resource?.revisionRef ? { ...resource.revisionRef } : null, kind: resource?.kind || 'missing', name: resource?.name || entry.resourceId, required: entry.required, origins: entry.origins, delivery: result.delivery, status: issues.length ? 'omitted' : 'ready', issues,
-      ...(disabledTools.length ? { disabledTools } : {}), ...(entry.overrides ? { overrides: entry.overrides } : {}), ...(entry.responsibility ? { responsibility: entry.responsibility } : {}), ...(entry.inactive ? { inactive: true } : {}) };
+      ...(disabledTools.length ? { disabledTools } : {}), ...(entry.allowedTools !== undefined ? { allowedTools: entry.allowedTools.filter(name => !disabledTools.includes(name)) } : {}), ...(entry.overrides ? { overrides: entry.overrides } : {}), ...(entry.responsibility ? { responsibility: entry.responsibility } : {}), ...(entry.inactive ? { inactive: true } : {}) };
   });
+  const serverNames = new Map();
+  for (const entry of resources.filter(entry => entry.kind === 'mcp' && entry.status === 'ready')) {
+    const name = entry.resourceId.replace(/[^A-Za-z0-9_]/g, '_'), previous = serverNames.get(name);
+    if (previous) for (const collision of [previous, entry]) { collision.status = 'omitted'; collision.issues.push('Two selected MCP identifiers collide after CLI normalization. Recreate one connection with a distinct ID.'); }
+    else serverNames.set(name, entry);
+  }
   // A parent cannot be supplied if one of its declared dependencies was omitted.
   for (let i = 0; i <= resources.length; i++) {
     let changed = false;
@@ -213,10 +228,15 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
   }
   // An inactive Markdown file is not a problem: it is attached and waits for its project, stage, CLI or task.
   for (const entry of resources.filter(item => !item.inactive)) for (const message of entry.issues) (entry.required ? errors : warnings).push({ resourceId: entry.resourceId, code: 'BASE_RESOURCE_UNAVAILABLE', message });
-  if (resources.some(entry => entry.status === 'ready' && entry.delivery === 'native-mcp')) warnings.push({ code: 'BASE_AMBIENT_CONFIGURATION', message: 'Base-managed MCP servers supplement the user-configured CLI tools; Base does not isolate ambient MCPs.' });
   if (ADAPTERS[provider]?.notLiveVerified && resources.length) warnings.push({ code: 'BASE_NOT_LIVE_VERIFIED', message: 'This provider adapter is covered by simulated checks, not authenticated live verification.' });
   const externalRoots = [...new Set(resources.filter(entry => entry.status === 'ready').flatMap(entry => (registry.get(entry.resourceId)?.configuration?.sources || []).filter(source => source.kind === 'external').map(source => source.rootId)))].map(id => ({ id, approvedAt: state?.base?.approvedRoots?.find(root => root.id === id)?.approvedAt || null }));
-  return { version: 1, baseRevision: state?.base?.revision || 0, provider, columnId, profiles, resources, externalRoots, exclusions, warnings, errors, configuredAt: null, supplied: [], observed: [] };
+  const contracts = [...new Set(profiles.map(p => p.resourceId))].map(id => registry.get(id)?.configuration?.contract).filter(Boolean);
+  const requirements = contractRequirements(contracts), target = custom ? 'network' : 'kanban';
+  const requiredText = contracts.flatMap(contract => contract.checks?.contains || []), forbiddenText = contracts.flatMap(contract => contract.checks?.excludes || []);
+  if (requiredText.some(required => forbiddenText.some(forbidden => required.includes(forbidden)))) errors.push({ code: 'BASE_OUTPUT_CONFLICT', message: 'The selected agent and profile have conflicting required/prohibited output text. Review their output checks.' });
+  if (requirements.mcpMode === 'inherit' && resources.some(entry => entry.status === 'ready' && entry.delivery === 'native-mcp')) warnings.push({ code: 'BASE_AMBIENT_CONFIGURATION', message: 'Base-managed MCP servers supplement the user-configured CLI tools. Choose Base-only MCP mode to isolate MCP connections for this agent.' });
+  if (!requirements.targets.includes(target)) errors.push({ code: 'BASE_TARGET_UNAVAILABLE', message: `This agent's execution policy does not permit ${target}.` });
+  return { version: 1, baseRevision: state?.base?.revision || 0, provider, columnId, profiles, resources, externalRoots, exclusions, warnings, errors, configuredAt: null, supplied: [], observed: [], ...(contracts.length ? { contracts, requirements } : {}) };
 }
 
 export function assertBaseReady(manifest) {

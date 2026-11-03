@@ -3014,14 +3014,15 @@ function effortsFor(provider) { return EFFORTS[provider] || []; }
  * Provider, model, and effort fields for one level of the agent hierarchy. `inherit` adds an
  * empty provider choice that means "use the next level" (its label says which agent that is).
  */
-function agentFields(value = {}, { inherit = '', stage = 'executing', inheritedProvider = board?.settings?.defaultAgent?.provider || 'claude' } = {}) {
+function agentFields(value = {}, { inherit = '', stage = 'executing', inheritedProvider = board?.settings?.defaultAgent?.provider || 'claude', providerDefinitions = board?.execution?.providers || {} } = {}) {
   const grid = document.createElement('div'); grid.className = 'select-grid';
   grid.dataset.inheritedProvider = inheritedProvider;
-  const providers = board?.execution?.providers || {};
+  const providers = providerDefinitions;
   const supported = Object.keys(providers).filter(id => providers[id][capabilityFor(stage)]?.supported);
   const label = (text, control) => { const field = document.createElement('label'); field.className = 'field-label'; field.textContent = text; field.append(control); return field; };
   const provider = document.createElement('select'); provider.dataset.field = 'provider';
   fillSelect(provider, [...(inherit ? [''] : []), ...(supported.length ? supported : ['claude'])], { '': inherit, ...Object.fromEntries(Object.entries(providers).map(([id, item]) => [id, item.name])) });
+  if (value.provider && ![...provider.options].some(option => option.value === value.provider)) provider.append(option(value.provider, `${providerName(value.provider)} · saved provider`));
   provider.value = value.provider || '';
   if (!inherit && !provider.value) provider.value = supported[0] || 'claude';
   const model = document.createElement('select'); model.dataset.field = 'model';

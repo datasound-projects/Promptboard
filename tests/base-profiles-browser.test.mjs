@@ -74,11 +74,11 @@ test('Base: add once, compose agent profiles, switch per assignment and globally
   await category('MCPs');
   await ev(`${row('docs')}.querySelector('.base-resource').click();`);
   await wait(`document.querySelector('.base-resource-form[data-kind="mcp"]')`, 'mcp editor');
-  await ev(`const t2 = document.querySelector('#base-resource-trust'); t2.value = 'trusted'; t2.dispatchEvent(new Event('change', { bubbles: true })); document.querySelector('#base-resource-enabled').checked = true;`);
+  await ev(`const t2 = document.querySelector('#base-resource-trust'); t2.value = 'trusted'; t2.dispatchEvent(new Event('change', { bubbles: true }));`);
   await save('trusted');
   await ev(`[...document.querySelectorAll('.base-resource-form button')].find(b => b.textContent === 'Test connection and discover tools').click();`);
   await wait(`document.querySelector('.base-tool-list [data-tool="read_document"]')`, 'tools discovered by a real connection', 30000);
-  await ev(`const tool = document.querySelector('.base-tool-list [data-tool="read_document"]'); tool.checked = false; tool.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await ev(`const tool = document.querySelector('.base-tool-list [data-tool="read_document"]'); tool.checked = false; tool.dispatchEvent(new Event('change', { bubbles: true })); const available = document.querySelector('#base-resource-enabled'); available.checked = true; available.dispatchEvent(new Event('change', { bubbles: true }));`);
   await save('tool switched off');
   await wait(`/Connected · 1 tool, 1 off/.test(${row('docs')}?.textContent || '')`, 'still connected with the tool off').catch(async failure => { console.log('ROW', await ev(`return ${row('docs')}?.textContent`), JSON.stringify((await named('docs')).connectionTest), JSON.stringify((await named('docs')).configuration)); throw failure; });
 
@@ -121,14 +121,17 @@ test('Base: add once, compose agent profiles, switch per assignment and globally
   await ev(`document.querySelector('#base-dialog [data-pick=${J(reviewer.id)}]').click();`); await dialogButton('Add selected');
   await wait(`document.querySelector('.base-profile-agents input[aria-label^="Responsibility"]')`, 'supporting agent');
   await ev(`const d = document.querySelector('.base-profile-agents input[aria-label^="Responsibility"]'); d.value = 'Checks every claim'; d.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await ev(`const m = document.querySelector('.base-mcp-select'); m.value = ${J(mcp.id)}; m.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await wait(`document.querySelectorAll('.base-connection-selections > .base-connection-selection').length === 1`, 'enabled MCP attached from dedicated dropdown');
   await ev(`[...document.querySelectorAll('.base-resource-form button')].find(b => b.textContent === 'Add from Base…').click();`);
-  await wait(`document.querySelector('#base-dialog [data-pick=${J(mcp.id)}]')`, 'library picker');
-  await ev(`const s = document.querySelector('#base-dialog input[type="search"]'); s.value = 'docs'; s.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await wait(`document.querySelector('#base-dialog [data-pick=${J(soul.id)}]')`, 'library picker');
+  assert.equal(await ev(`return Boolean(document.querySelector('#base-dialog [data-pick=${J(mcp.id)}]'));`), false, 'MCP setup and attachment stay in their dedicated controls');
+  await ev(`const s = document.querySelector('#base-dialog input[type="search"]'); s.value = 'SOUL'; s.dispatchEvent(new Event('input', { bubbles: true }));`);
   await wait(`document.querySelectorAll('#base-dialog [data-pick]').length === 1`, 'search narrows the library');
-  await ev(`document.querySelector('#base-dialog [data-pick=${J(mcp.id)}]').click(); const s = document.querySelector('#base-dialog input[type="search"]'); s.value = ''; s.dispatchEvent(new Event('input', { bubbles: true }));`);
-  await ev(`for (const id of ${J([pack.id, soul.id])}) document.querySelector('#base-dialog [data-pick="' + id + '"]').click();`);
+  await ev(`document.querySelector('#base-dialog [data-pick=${J(soul.id)}]').click(); const s = document.querySelector('#base-dialog input[type="search"]'); s.value = ''; s.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await ev(`document.querySelector('#base-dialog [data-pick=${J(pack.id)}]').click();`);
   await dialogButton('Add selected');
-  await wait(`document.querySelectorAll('.base-profile-resources .base-profile-row').length === 3`, 'three resources equipped');
+  await wait(`document.querySelectorAll('.base-profile-resources .base-profile-row').length === 2`, 'two resources and the dedicated MCP connection equipped');
   await ev(`const r = [...document.querySelectorAll('.base-profile-resources .base-profile-row')].find(x => x.querySelector('strong').textContent === 'Research pack'); const s = r.querySelector('input[role="switch"]'); s.checked = false; s.dispatchEvent(new Event('change', { bubbles: true }));`);
   await wait(`/Runs as Research Coordinator/.test(document.querySelector('.base-inventory').textContent)`, 'inventory');
   await save('profile saved');

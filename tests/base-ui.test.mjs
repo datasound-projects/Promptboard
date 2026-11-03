@@ -6,6 +6,7 @@ import { JSDOM } from 'jsdom';
 const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
 const domSource = await readFile(new URL('../public/dom.js', import.meta.url), 'utf8');
 const script = await readFile(new URL('../public/base.js', import.meta.url), 'utf8');
+const configureScript = await readFile(new URL('../public/base-configure.js', import.meta.url), 'utf8');
 const skill = { id: 'res_skill', kind: 'skill', name: 'Review checklist', description: 'Check invariants.', tags: [], enabled: true, trust: 'trusted', revision: 1, dependencies: [], configuration: { format: 'instruction' }, content: { body: 'Preserve this instruction exactly.\n', files: [] } };
 const pack = { id: 'res_pack', kind: 'pack', name: 'Project essentials', description: '', tags: [], enabled: true, trust: 'trusted', revision: 1, dependencies: [], configuration: { resources: [{ resourceId: skill.id, required: true }] }, content: {} };
 const target = { scope: 'project', projectId: 'project_a' };
@@ -22,7 +23,8 @@ function setup(t, { resources = [skill, pack], respond, savedView, remote = fals
   const confirms = []; let confirmAnswer = true;
   win.confirm = message => { confirms.push(message); return confirmAnswer; };
   if (savedView) win.localStorage.setItem('promptboard.base.library-view', JSON.stringify(savedView));
-  win.eval(domSource); win.eval(script);
+  win.HTMLElement.prototype.scrollIntoView = () => {};
+  win.eval(domSource); win.eval(configureScript); win.eval(script);
   t.after(async () => { await wait(50); win.close(); });
   const $ = selector => win.document.querySelector(selector);
   const calls = [], announcements = [];
@@ -502,4 +504,35 @@ test('a switch toggled from the keyboard keeps focus while the library is drawn 
   // Focus moved elsewhere in the meantime is never taken back.
   $('#base-search').focus(); await view.refresh(true);
   assert.equal(win.document.activeElement, $('#base-search'));
+});
+
+test('agent configuration has clear sections and selects only activated catalog connections with an explicit tool allowlist', async t => {
+  const mcp = { ...skill, id: 'docs_server', kind: 'mcp', name: 'Documentation', configuration: { transport: 'streamable-http', endpoint: 'https://example.com/mcp', disabledTools: ['write'] }, connectionTest: { status: 'connected', tools: [{ name: 'read' }, { name: 'write' }] }, content: {} };
+  const ctx = setup(t, { resources: [skill, mcp, { ...mcp, id: 'disabled', enabled: false }, { ...mcp, id: 'untrusted', trust: 'untrusted' }, { ...mcp, id: 'untested', connectionTest: undefined }] }), { $, view, change, clickText, submit, calls } = ctx;
+  await view.show(); change($('#base-new-kind'), 'profile'); clickText('Create');
+  assert.equal($('.base-configurator').querySelectorAll('.base-config-nav-item').length, 6);
+  assert.ok($('#base-config-identity #base-resource-name')); assert.ok($('#base-config-output #base-agent-output-format')); assert.ok($('#base-config-policy #base-agent-timeout')); assert.ok($('#base-config-test #base-agent-run-test'));
+  assert.deepEqual([...$('.base-mcp-select').options].map(n => n.value), ['', mcp.id]);
+  assert.equal($('#base-agent-mcp-mode').value, 'base-only');
+  assert.equal($('.base-configurator #base-mcp-json'), null, 'Connection definitions cannot be entered in an agent.');
+  change($('.base-mcp-select'), mcp.id);
+  const read = [...$('.base-connection-selection').querySelectorAll('label')].find(n => n.firstElementChild?.textContent === 'read').querySelector('input');
+  assert.equal(read.checked, false); read.checked = true; read.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+  const write = [...$('.base-connection-selection').querySelectorAll('label')].find(n => n.firstElementChild?.textContent === 'write').querySelector('input'); assert.equal(write.disabled, true);
+  $('#base-resource-name').value = 'Clear specialist'; change($('#base-agent-output-format'), 'json'); $('#base-agent-output-schema').value = '{"type":"object"}'; $('#base-agent-timeout').value = '5';
+  submit($('.base-resource-form')); await until(() => calls.some(c => c.method === 'POST' && c.path === '/api/base/resources'), 'save agent');
+  const saved = calls.find(c => c.method === 'POST' && c.path === '/api/base/resources').body;
+  assert.deepEqual(saved.configuration.binding.include, [{ resourceId: mcp.id, required: true, allowedTools: ['read'] }]); assert.equal(saved.configuration.contract.runtime.timeoutMinutes, 5); assert.equal(saved.configuration.contract.memory.agent, false); assert.deepEqual(saved.configuration.contract.output.schema, { type: 'object' });
+});
+
+test('MCP JSON setup fills a reviewed draft without copying credential values or running a server', async t => {
+  const ctx = setup(t, { resources: [], respond: call => call.path === '/api/base/mcp/import/preview' ? { response: { ok: true }, data: { servers: [{ name: 'Docs', importable: true, transport: 'streamable-http', endpoint: 'https://docs.example/mcp', headers: [{ name: 'Authorization', reference: 'DOCS_AUTHORIZATION' }], issues: ['Credential values were omitted.'] }] } } : null }), { $, view, change, clickText, submit, calls } = ctx;
+  await view.show(); clickText('MCPs'); clickText('Create'); change($('#base-mcp-source'), 'json'); $('#base-mcp-json').value = '{"mcpServers":{"Docs":{"url":"https://docs.example/mcp","headers":{"Authorization":"PRIVATE_TEST_CREDENTIAL"}}}}';
+  clickText('Review JSON configuration'); await until(() => [...$('.base-resource-form').querySelectorAll('button')].some(n => n.textContent === 'Use this server'), 'review configuration'); clickText('Use this server');
+  assert.equal($('#base-resource-name').value, 'Docs'); assert.equal($('#base-resource-enabled').checked, false); assert.equal($('#base-resource-trust').value, 'untrusted');
+  assert.equal($('.base-config-nav').children.length, 4); assert.ok($('#base-config-authentication #base-mcp-auth-mode'));
+  change($('#base-mcp-auth-mode'), 'environment'); submit($('.base-resource-form')); await until(() => calls.some(c => c.method === 'POST' && c.path === '/api/base/resources'), 'save MCP draft');
+  const saved = calls.find(c => c.method === 'POST' && c.path === '/api/base/resources').body;
+  assert.equal(saved.configuration.endpoint, 'https://docs.example/mcp'); assert.deepEqual(saved.configuration.headers, { Authorization: 'DOCS_AUTHORIZATION' }); assert.equal(saved.configuration.auth.mode, 'environment'); assert.doesNotMatch(JSON.stringify(saved), /PRIVATE_TEST_CREDENTIAL/);
+  assert.equal(calls.some(c => c.path.endsWith('/test') || c.path.includes('/auth/')), false);
 });

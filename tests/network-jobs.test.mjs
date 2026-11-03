@@ -57,6 +57,21 @@ async function agree(jobs, ctx, id) {
 }
 const statuses = job => job.history.map(entry => entry.status);
 
+test('Base policies narrow accepted timeout and memory permissions without granting filesystem access', async t => {
+  const ctx = await fixture(t);
+  const lead = await ctx.base.detail('lead');
+  await ctx.base.update('lead', { ...lead, configuration: { ...lead.configuration, contract: { runtime: { timeoutMinutes: 1, targets: ['network'] }, memory: { agent: false, network: false, projectLessons: false } } } }, { expectedRevision: lead.revision });
+  const jobs = ctx.open(); t.after(() => jobs.close());
+  const accepted = await submit(jobs, ctx.lead.id, { limits: { timeoutMs: 300000 }, idempotencyKey: 'base-policy-limit' }), { request } = await jobs.read(accepted.jobId);
+  assert.equal(request.limits.timeoutMs, 60000); assert.equal(request.permissions.filesystem, 'read_only'); assert.equal(request.permissions.memory, 'none', 'The implicit default is narrowed by the agent policy.');
+  const duplicate = await submit(jobs, ctx.lead.id, { limits: { timeoutMs: 300000 }, idempotencyKey: 'base-policy-limit' }); assert.equal(duplicate.deduplicated, true); assert.equal(duplicate.jobId, accepted.jobId, 'Policy limits do not mutate the idempotency fingerprint.');
+  await assert.rejects(submit(jobs, ctx.lead.id, { permissions: { memory: 'agent' } }), { code: 'BASE_MEMORY_DENIED' });
+  await assert.rejects(submit(jobs, ctx.lead.id, { projectId: 'p1', permissions: { memory: 'none', projectLessons: true } }), { code: 'BASE_MEMORY_DENIED' });
+  const shorter = await submit(jobs, ctx.lead.id, { permissions: { memory: 'none' }, limits: { timeoutMs: 5000 } }); assert.equal((await jobs.read(shorter.jobId)).request.limits.timeoutMs, 5000);
+  const current = await ctx.base.detail('lead'); await ctx.base.update('lead', { ...current, configuration: { ...current.configuration, contract: { runtime: { targets: ['kanban'] } } } }, { expectedRevision: current.revision });
+  await assert.rejects(submit(jobs, ctx.lead.id), { code: 'BASE_TARGET_UNAVAILABLE' });
+});
+
 test('submit answers a durable queued job (never completed); without a worker it stays queued and says why; the fake worker completes it', async t => {
   const ctx = await fixture(t);
   const idle = ctx.open();

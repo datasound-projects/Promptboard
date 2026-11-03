@@ -2,6 +2,26 @@
 
 Real CLI runs, recorded separately from the simulated (fake-CLI) test suite. Each checkpoint describes its driver and isolated test data: execution smoke checks use disposable repositories, while read-only Chat checks use synthetic app records and public guides. Nothing here ran against a user repository. Entries are newest first.
 
+## 3 November 2026 — Base configuration: merge validation
+
+The final implementation passed the configured ordinary phase (1,792 passed, one Windows-only skip) and all 28 stage-engine scenarios. A session interruption stopped Chrome after 82 passing scenarios; validation resumed from the interrupted file with unchanged deadlines. The continuation passed 90/90, covering 169 distinct browser scenarios across both logs, with three repeated checks. No failures or disabled tests. The source fingerprint was unchanged across the interruption. Syntax and whitespace checks pass; the fresh production dependency audit reports zero vulnerabilities.
+
+Review also corrected portable credential-file checks: reads verify the path and opened file identity in addition to available no-follow flags. The credential/OAuth regressions pass. POSIX permissions and Windows inherited ACL behavior are documented separately. These remain simulated-provider checks; live third-party OAuth and native-provider coverage limits below still apply.
+
+## 3 November 2026 — Base configuration: offline validation checkpoint
+
+This entry records automated validation, **not authenticated live-provider verification**. The new managed OAuth, positive tool policies and native skill-package paths have not been certified against every provider/account. The earlier live CLI checkpoints below remain separate.
+
+- macOS arm64, Node.js 22.22.0. No new dependency or lockfile change; production `npm audit --omit=dev` reports zero vulnerabilities. Syntax checking and `git diff --check` pass; this plain-JavaScript application has no separate build or TypeScript-check command.
+- The configured full runner exercised **1,980 checks**: 1,978 passed, one expected skip, and one remote-route inventory assertion failed because the new Base actions were absent from its test table. The table was expanded and the complete remote-access file passed on rerun. The full runner's stage-engine phase passed 28/28 and its browser phase 168/168. No tests were disabled and no deadlines changed. A single all-green full-run log for the final tree is not claimed; final changes were checked with the affected suites below.
+- Final Base capabilities/authentication/trials/UI, App guide/Chat and remote-access checks: **95/95 passed**. OAuth tests use a local simulated provider and the real pinned MCP SDK: PKCE, state, issuer checks, dynamic/static clients, fresh sign-in, shared refresh, disconnection/cancellation races, bounded fetches, private storage and secret-free exports.
+- Network jobs/worker/registry/job form/pipeline/delegation checks: **83/83 passed** after correcting timeout capping at accepted-request creation. Explicit forbidden memory is refused; implicit defaults narrow to none without changing legacy idempotency hashes. Time caps and target restrictions preserve read-only execution.
+- PTY execution and container regressions passed, including a failed final answer blocking confirmation, correction passing the same pinned requirements, payload-free MCP observations, native package isolation/cleanup, and actual-image version metadata without mounts/credentials/network/pulls. A real **one-minute** limit stopped only its owned waiting simulated CLI, retained its worktree/output, and left an unrelated session running.
+- Final Chrome Base configuration/import workflow and DOM checks: **30/30 passed**, including the new browser scenario. Real fixture MCP discovery, trust/test/activation, dedicated agent attachment, profile reuse/reload, saved output tests and keyboard focus were checked. Agent and MCP editors fit 320/390/820/1280 px in both themes, including open phone menus. Eight screenshots were visually inspected across the two editors/themes; no paid model call was used.
+- Preview: a separate synthetic data folder on port 4957, with Kanban execution and the Network worker disabled. Existing worktrees/previews were preserved. The new guide is bundled into App guide knowledge for this installed build.
+
+Provider behavior, account policies and third-party OAuth registration/callback requirements can still prevent a connection. Structural/phrase checks and successful instruction tests do not establish factual accuracy or prove MCP invocation. See [Configuring agents and MCP](base-agent-configuration.md) for current coverage and limits.
+
 ## 3 November 2026 — Workspace and App guide Chat
 
 The real Chat page and HTTP/storage/retrieval services were exercised on macOS arm64 with Node.js 22.22.0 and the installed CLIs. The preview used a separate data folder with synthetic projects only, with Kanban execution and the Network worker disabled. No user repository was read or changed. These checks used the normal tool-disabled headless adapters; they are not part of CI.

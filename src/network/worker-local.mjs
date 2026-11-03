@@ -17,6 +17,7 @@ import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { checkBaseRevocations } from '../base-resolver.mjs';
 import { prepareBase } from '../base-context.mjs';
+import { validateAgentOutput } from '../base-agent-contract.mjs';
 import { FAILURE_MESSAGES, resolveExecutable, runProvider } from '../providers.mjs';
 import { streamResearch } from '../research-cli.mjs';
 import { escapeId } from '../origin.mjs';
@@ -163,7 +164,9 @@ export class LocalJobWorker {
     try { const now = await this.registry.base.list(); checkBaseRevocations(entry.manifest, now.resources, now.approvedRoots); } catch { revoked = true; }
     const session = sessionOf(result?.session ?? failure?.session);
     const common = { coverage: entry.coverage, sideEffects: request.tools === 'web' ? 'read_only_web' : 'none', usage: usage ? { reported: true, ...usage } : { reported: false }, ...(session ? { nativeSessionId: session } : {}) };
-    const outcome = !failure ? { status: 'completed', exitCode: 0, result: resultOf(result.text) }
+    const validation = !failure ? validateAgentOutput(result.text, entry.manifest.contracts) : null;
+    const outcome = !failure && !validation.passed ? { status: 'failed', errorCode: 'BASE_OUTPUT_INVALID', reason: `The answer failed its Base output checks: ${validation.errors.join('; ')}`.slice(0, 500), exitCode: 0 }
+      : !failure ? { status: 'completed', exitCode: 0, result: resultOf(result.text) }
       : failure.code === 'INVALID_OUTPUT' ? { status: 'unknown', errorCode: 'INVALID_OUTPUT', reason: 'The CLI ended without its structured final answer, so whether the job finished is not known. Nothing is run again on its own: retry or close it.', exitCode: exitOf(failure) }
       : { status: 'failed', errorCode: CODE.test(failure.code ?? '') ? failure.code : 'CLI_FAILED', reason: FAILURE_MESSAGES[failure.code] || failure.message || FAILURE_MESSAGES.CLI_FAILED, exitCode: exitOf(failure) };
     if (revoked) outcome.reason = `${outcome.reason || ''} Its Base agent or one of its Base resources was revoked after the job started; it ran with what was accepted.`.trim();

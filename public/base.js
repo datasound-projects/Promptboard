@@ -298,6 +298,7 @@ window.PromptboardBase = (() => {
       if (document.activeElement === control) keepFocus(control); // Disabling the focused switch below drops its focus.
       control.disabled = true;
       try {
+        if (item.kind === 'mcp' && on && (item.trust !== 'trusted' || item.connectionTest?.status !== 'connected')) throw new Error('Open this MCP connection, review and trust it, then test the connection before switching it on.');
         const send = () => request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: { enabled: on, expectedRevision: resource(item.id)?.revision ?? item.revision, expectedBaseRevision: state.revision } });
         await retried(send);
         await load(); status(`${item.name} switched ${on ? 'on' : 'off'}. It stays in Base with its configuration; ${on ? 'future runs can use it' : 'future runs leave it out everywhere'}.`);
@@ -372,7 +373,12 @@ window.PromptboardBase = (() => {
     function createResource() {
       if (!leave()) return;
       if (categoryKind()) kindSelect.value = categoryKind();
-      editResource({ kind: kindSelect.value, name: '', enabled: true, trust: ['mcp', 'tool'].includes(kindSelect.value) ? 'untrusted' : 'trusted', dependencies: [], configuration: kindSelect.value === 'markdown' ? { fileName: 'AGENTS.md', activation: { mode: 'always' } } : {}, content: {} });
+      editResource({ kind: kindSelect.value, name: '', enabled: kindSelect.value !== 'mcp', trust: ['mcp', 'tool'].includes(kindSelect.value) ? 'untrusted' : 'trusted', dependencies: [], configuration: kindSelect.value === 'markdown' ? { fileName: 'AGENTS.md', activation: { mode: 'always' } } : {}, content: {} });
+    }
+    function setCategory(kind) {
+      if (!leave()) return;
+      category = kind; chosen = null; editingKind = null; persistView(); renderList();
+      $('#base-categories').querySelector(`[data-kind="${kind}"]`)?.focus();
     }
     for (const [kind, label] of CATEGORIES) {
       const node = button('', () => {
@@ -441,7 +447,7 @@ window.PromptboardBase = (() => {
       const box = el('div', undefined, 'base-references'); box.setAttribute('role', 'group'); box.setAttribute('aria-label', label);
       const value = new Map(selected.map(item => [typeof item === 'string' ? item : item.resourceId, typeof item === 'string' ? true : item.required !== false]));
       // Per-assignment extras kept as they are: the on/off switch and an MCP server's switched-off tools.
-      const extras = new Map(selected.filter(item => typeof item === 'object').map(item => [item.resourceId, { enabled: item.enabled, disabledTools: item.disabledTools }]));
+      const extras = new Map(selected.filter(item => typeof item === 'object').map(item => [item.resourceId, { enabled: item.enabled, disabledTools: item.disabledTools, allowedTools: item.allowedTools }]));
       const candidates = state.resources.filter(item => item.id !== excludeId && (!kinds || kinds.includes(item.kind)));
       for (const item of candidates) {
         const line = el('div', undefined, 'base-reference-row');
@@ -472,7 +478,7 @@ window.PromptboardBase = (() => {
         if (exclusions) return node.dataset.resource;
         const id = node.dataset.resource, on = box.querySelector(`[data-on="${id}"]`), kept = extras.get(id) || {};
         const enabled = on ? on.checked : kept.enabled !== false;
-        return { resourceId: id, required: box.querySelector(`[data-required="${id}"]`)?.checked ?? node.dataset.missingRequired !== 'false', ...(enabled ? {} : { enabled: false }), ...(kept.disabledTools?.length ? { disabledTools: kept.disabledTools } : {}) };
+        return { resourceId: id, required: box.querySelector(`[data-required="${id}"]`)?.checked ?? node.dataset.missingRequired !== 'false', ...(enabled ? {} : { enabled: false }), ...(kept.disabledTools?.length ? { disabledTools: kept.disabledTools } : {}), ...(kept.allowedTools !== undefined ? { allowedTools: kept.allowedTools } : {}) };
       });
       return box;
     }
@@ -567,16 +573,22 @@ window.PromptboardBase = (() => {
       const editorVersion = ++requestVersion;
       chosen = item.id || null; editingKind = item.kind; renderList();
       const form = el('form', undefined, 'base-resource-form'); form.dataset.kind = item.kind;
-      const heading = el('h2', item.id ? item.name : `New ${KINDS[item.kind].toLowerCase()}`);
+      const heading = el('h2', item.id ? item.name : item.kind === 'mcp' ? 'New MCP connection' : `New ${KINDS[item.kind].toLowerCase()}`);
       form.append(button('Back to library', () => closeResource(), 'text-button'), heading);
       if (item.id) form.append(p(metadata(item)));
       const name = input(item.name, 120); name.required = true; name.id = 'base-resource-name';
       const description = area(item.description || '', 2000); description.rows = 2;
       const tags = input((item.tags || []).join(', '), 1000);
       const enabled = check('Available for assignment and future runs', item.enabled !== false); enabled.control.id = 'base-resource-enabled';
+      enabled.control.setAttribute('role', 'switch');
+      enabled.control.classList.add('base-switch');
       const trust = select([['untrusted', 'Untrusted'], ['trusted', 'Trusted by me'], ['revoked', 'Trust revoked']], item.trust || 'untrusted'); trust.id = 'base-resource-trust';
-      form.append(field('Name', name), details('Description and tags', field('Description', description), field('Tags (comma separated)', tags)), actions(enabled.label, field('Trust', trust)));
-      const config = kindEditor(item, form);
+      const availability = actions(enabled.label, field('Trust', trust)); if (item.kind === 'mcp') availability.dataset.agentSection = 'activation';
+      form.append(field('Name', name), details('Description and tags', field('Description', description), field('Tags (comma separated)', tags)), availability);
+      if (item.kind === 'mcp') enabled.control.addEventListener('change', () => { if (enabled.control.checked && (trust.value !== 'trusted' || item.connectionTest?.status !== 'connected')) { enabled.control.checked = false; context.announce?.('Save and test this connection before activating it.'); } });
+      const kindConfig = kindEditor(item, form);
+      const requirements = AGENT_KINDS.includes(item.kind) ? window.PromptboardBaseConfigure?.requirements({ item, form, request }) : null;
+      const config = { read: () => { const value = kindConfig.read(); return requirements ? { ...value, configuration: { ...value.configuration, contract: requirements.read() } } : value; } };
       const dependencies = referenceFields(item.dependencies || [], { excludeId: item.id, label: 'Dependencies' });
       form.append(details('Dependencies', p('Required dependencies must resolve too. Excluded dependencies are never silently added back.'), dependencies));
       if (item.id) {
@@ -601,6 +613,7 @@ window.PromptboardBase = (() => {
         footer.append(button('Apply to…', () => openApply(item)), more);
       }
       form.append(footer);
+      if (AGENT_KINDS.includes(item.kind) || item.kind === 'mcp') window.PromptboardBaseConfigure?.organize(form, item);
       form.addEventListener('submit', async event => {
         event.preventDefault(); if (!name.value.trim()) { name.focus(); fail('Give this resource a name.'); return; }
         fail(''); save.disabled = true;
@@ -632,7 +645,7 @@ window.PromptboardBase = (() => {
       // Discovery and refresh publish new immutable revisions too. Keep their editor
       // synchronized, without discarding a draft or allowing saves during the operation.
       form.savedAction = async (action, success) => {
-        let result = el('div'); form.append(result);
+        let result = el('div', undefined, 'base-action-result'); (form.querySelector('.base-config-body') || form).append(result);
         try {
           if (JSON.stringify(editable()) !== savedDraft) throw new Error('Save your edits before testing or refreshing this resource.');
         } catch (error) { result.append(el('p', error.message, 'inline-error')); return; }
@@ -646,7 +659,7 @@ window.PromptboardBase = (() => {
           if (form.isConnected && chosen === item.id) {
             await openResource(item.id, true);
             const current = $('#base-detail .base-resource-form');
-            if (current && chosen === item.id) { result = el('div'); current.append(result); }
+            if (current && chosen === item.id) { result = el('div', undefined, 'base-action-result'); (current.querySelector('.base-config-body') || current).append(result); }
           }
           result.replaceChildren(failure ? el('p', failure.message, 'inline-error') : success(data));
         } catch (error) { result.replaceChildren(el('p', (failure || error).message, 'inline-error')); }
@@ -668,6 +681,7 @@ window.PromptboardBase = (() => {
     function environmentEditor(value = {}, heading) {
       const text = area(Object.entries(value).map(([key, reference]) => `${key}=${typeof reference === 'string' ? reference : reference.env || ''}`).join('\n'), 10000); text.rows = 3;
       const box = field(heading, text, 'One NAME=ENVIRONMENT_VARIABLE per line. Store variable names only, never passwords or tokens.');
+      box.set = value => { text.value = Object.entries(value || {}).map(([key, reference]) => `${key}=${reference}`).join('\n'); };
       box.read = () => Object.fromEntries(lineValues(text.value).map(line => {
         const at = line.indexOf('='); if (at < 1 || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(line.slice(at + 1))) throw new Error(`${heading}: use NAME=ENVIRONMENT_VARIABLE references.`);
         return [line.slice(0, at).trim(), line.slice(at + 1).trim()];
@@ -677,6 +691,7 @@ window.PromptboardBase = (() => {
       const config = item.configuration, content = item.content;
       if (item.kind === 'skill') {
         let importedSkill = false;
+        const delivery = select([['instruction', 'Instructions and reference text'], ['native-package', 'Native skill package · Claude Code writing stages']], config.format || 'instruction');
         const text = area(content.body || '', 200000); text.id = 'base-skill-body'; text.rows = 12;
         const files = fileEditor(content.files);
         const imported = Object.assign(el('input'), { type: 'file', accept: '.md,.markdown,text/markdown,text/plain' }); imported.id = 'base-skill-import';
@@ -687,19 +702,22 @@ window.PromptboardBase = (() => {
           catch (error) { importStatus.textContent = error.message; }
         });
         const preview = el('div'); const previewButton = button('Preview instructions', () => preview.replaceChildren(markdown(text.value)), 'text-button');
-        form.append(field('Instructions / SKILL.md', text), p('Instruction delivery: this text is appended separately to the existing agent message. It is not native skill installation.'), ...(item.id ? [] : [details('Import SKILL.md', field('Instruction file', imported), importStatus)]), files, previewButton, preview);
-        return { read: () => ({ configuration: { ...config, format: 'instruction', ...(text.value.startsWith('---') ? { entrypoint: 'SKILL.md' } : {}) }, content: { ...content, body: text.value, files: files.read() }, ...(importedSkill ? { skillImport: { markdown: text.value, files: files.read() } } : {}) }) };
+        form.append(field('Delivery', delivery), field('Instructions / SKILL.md', text), p('Instructions append reference text to the prompt. Native packages are prepared per run for Claude Code writing stages, with supporting files available on demand; scripts remain subject to CLI permissions. Saving or importing never installs or executes them.'), ...(item.id ? [] : [details('Import SKILL.md', field('Instruction file', imported), importStatus)]), files, previewButton, preview);
+        return { read: () => ({ configuration: { ...config, format: delivery.value, ...(text.value.startsWith('---') ? { entrypoint: 'SKILL.md' } : {}) }, content: { ...content, body: text.value, files: files.read() }, ...(importedSkill ? { skillImport: { markdown: text.value, files: files.read() } } : {}) }) };
       }
       if (item.kind === 'mcp') {
         const transport = select([['stdio', 'stdio — local process'], ['streamable-http', 'Streamable HTTP']], config.transport || 'stdio');
         const command = input(config.command || '', 4096), args = area((config.args || []).join('\n'), 16000), endpoint = input(config.endpoint || '', 4096);
         args.rows = 3; endpoint.placeholder = 'https://mcp.example.com/mcp';
         const env = environmentEditor(config.env, 'Environment references'); const headers = environmentEditor(config.headers, 'HTTP header references');
-        const auth = check('This server requires authentication', config.auth?.required || config.authRequired || false); const authDescription = input(config.auth?.description || '', 2000);
+        const auth = check('This server requires authentication', config.auth?.required || config.authRequired || false); const authDescription = input(config.auth?.description || '', 500);
         const stdio = group('Local server', field('Executable', command), field('Arguments (one per line; no shell)', args), env);
-        const http = group('HTTP server', field('Endpoint', endpoint), headers);
+        const http = group('HTTP server', field('Endpoint', endpoint), details('HTTP header references (advanced)', headers));
         const update = () => { stdio.hidden = transport.value !== 'stdio'; http.hidden = transport.value === 'stdio'; }; transport.addEventListener('change', update); update();
-        form.append(field('Transport', transport), stdio, http, auth.label, field('Authentication requirements', authDescription), p('MCP is available only where the agent adapter can safely deliver it. On legacy staged boards, Planning and Code Review do not receive Base MCP servers; every column of a pipeline board can. A connection test starts the configured server or contacts its endpoint; trust and an explicit action are required.'));
+        const setup = window.PromptboardBaseConfigure?.connection({ item, form, request, controls: { transport, endpoint, command, args, env, headers }, remote: context.remote?.() });
+        for (const node of [stdio, http]) node.dataset.agentSection = 'connection';
+        const authHelp = field('Authentication notes (optional)', authDescription); authHelp.dataset.agentSection = 'authentication';
+        form.append(...(setup ? [] : [field('Transport', transport)]), stdio, http, ...(setup ? [] : [auth.label]), authHelp);
         // Discovered tools, each on or off for the whole server; an assignment can switch more off for itself.
         const tools = item.connectionTest?.tools || [], off = new Set(config.disabledTools || []), toolList = el('div', undefined, 'base-tool-list');
         for (const tool of tools) {
@@ -708,14 +726,15 @@ window.PromptboardBase = (() => {
             ...(tool.description ? [el('span', tool.description, 'base-resource-description')] : []), ...(tool.inputs?.length ? [el('small', `needs: ${tool.inputs.join(', ')}`)] : []));
           toolList.append(row.label);
         }
-        form.append(group(`Tools${tools.length ? ` (${tools.length})` : ''}`, tools.length ? toolList : p('Test the connection to discover this server’s tools. The test lists tools, resources and prompts; it never calls a tool.'),
-          p('A tool switched off here is withheld from every agent that uses this server: Claude Code disallows it, Codex and Gemini CLI exclude it.')));
-        if (item.id) form.append(button('Test connection and discover tools', () => form.savedAction(
+        const toolGroup = group(`Tools${tools.length ? ` (${tools.length})` : ''}`, tools.length ? toolList : p('Test the connection to discover this server’s tools. The test lists tools, resources and prompts; it never calls a tool.'),
+          p('A tool switched off here is withheld from every agent that uses this server. Agents can select a smaller set of tools.')); toolGroup.dataset.agentSection = 'activation'; form.append(toolGroup);
+        const testButton = item.id ? button('Test connection and discover tools', () => form.savedAction(
           () => request(`/api/base/resources/${encodeURIComponent(item.id)}/test`, { method: 'POST', body: { expectedRevision: item.revision }, timeoutMs: 30000 }),
           data => { const result = el('div'); result.append(p('Connection test completed. This does not prove authenticated agent compatibility.'), el('pre', JSON.stringify(data.connection || data.result || data, null, 2), 'base-code')); return result; }
-        )));
+        )) : null;
+        const activation = group('Activate this connection', p('1. Save the reviewed connection as trusted. 2. Configure authentication. 3. Test and discover tools. 4. Switch availability on and save. It then appears in the Agent MCP selector.'), ...(testButton ? [testButton] : []), p('Base MCP connections are used in writing stages. They are not supplied to Network or read-only Planning and Code Review.')); activation.dataset.agentSection = 'activation'; form.append(activation);
         const disabledTools = () => tools.length ? [...toolList.querySelectorAll('[data-tool]')].filter(node => !node.checked).map(node => node.dataset.tool) : [...off];
-        return { read: () => ({ configuration: { ...config, transport: transport.value, ...(transport.value === 'stdio' ? { command: command.value.trim(), args: lineValues(args.value), env: env.read() } : { endpoint: endpoint.value.trim(), headers: headers.read() }), auth: { required: auth.control.checked, description: authDescription.value }, disabledTools: disabledTools() }, content }) };
+        return { read: () => { const authentication = setup?.read(); return { configuration: { ...config, transport: transport.value, ...(transport.value === 'stdio' ? { command: command.value.trim(), args: lineValues(args.value), env: env.read() } : { endpoint: endpoint.value.trim(), headers: headers.read() }), auth: { required: authentication ? authentication.mode !== 'none' : auth.control.checked, description: authDescription.value, ...authentication }, disabledTools: disabledTools() }, content }; } };
       }
       if (item.kind === 'knowledge') return knowledgeEditor(item, form);
       if (item.kind === 'context') {
@@ -759,14 +778,23 @@ window.PromptboardBase = (() => {
         return { read: () => ({ configuration: { ...config, delivery: delivery.value, ...(delivery.value === 'mcp' ? { serverId: server.value, toolName: tool.value.trim() } : { command: command.value, args: lineValues(args.value) }) }, content }) };
       }
       if (item.kind === 'profile') {
-        const agent = context.agentFields(config.agent || {}, { inherit: 'Inherit provider at the assigned scope' });
+        const agent = context.agentFields(config.agent || {}, { inherit: 'Inherit provider at the assigned scope', providerDefinitions: state.providers });
         const instructions = area(config.agent?.instructions || '', 4000);
         // A profile adds what it includes; where it is a target's agent, it can also ignore the resources inherited there.
         const saved = config.binding || INHERIT;
-        const includes = referenceFields(saved.include || [], { excludeId: item.id, label: 'Include resources', switches: true });
+        const mcpRefs = (saved.include || []).filter(ref => resource(ref.resourceId)?.kind === 'mcp').map(clone);
+        const knowledgeKinds = ['knowledge', 'context'];
+        const includes = referenceFields((saved.include || []).filter(ref => !['mcp', ...knowledgeKinds].includes(resource(ref.resourceId)?.kind)), { excludeId: item.id, label: 'Skills and capabilities', kinds: Object.keys(KINDS).filter(kind => !['mcp', ...knowledgeKinds].includes(kind)), switches: true });
+        const knowledge = referenceFields((saved.include || []).filter(ref => knowledgeKinds.includes(resource(ref.resourceId)?.kind)), { excludeId: item.id, label: 'Knowledge and context', kinds: knowledgeKinds, switches: true });
+        const knowledgeGroup = group('Knowledge and context', p('Select the reusable knowledge and context this specialist needs. Live sources resolve when the workflow starts.'), knowledge); knowledgeGroup.dataset.agentSection = 'knowledge';
+        const mcps = window.PromptboardBaseConfigure?.mcpPicker({ resources: state.resources, references: mcpRefs, manage: () => setCategory('mcp') });
         const only = check('Use only these (ignore inherited resources where this profile is assigned)', saved.mode === 'replace');
         const binding = el('div', undefined, 'base-binding-fields'); binding.append(group('Include', includes), only.label);
-        binding.read = () => ({ mode: only.control.checked ? 'replace' : 'extend', include: includes.read(), exclude: only.control.checked ? [] : saved.exclude || [] });
+        binding.read = () => {
+          const selected = [...includes.read(), ...knowledge.read(), ...(mcps ? mcps.read() : mcpRefs)], order = (saved.include || []).map(ref => ref.resourceId);
+          selected.sort((a, b) => (order.includes(a.resourceId) ? order.indexOf(a.resourceId) : order.length) - (order.includes(b.resourceId) ? order.indexOf(b.resourceId) : order.length));
+          return { mode: only.control.checked ? 'replace' : 'extend', include: selected, exclude: only.control.checked ? [] : saved.exclude || [] };
+        };
         let portrait = config.avatar ? clone(config.avatar) : undefined;
         let image = content.avatar;
         const avatarPrompt = input(portrait?.prompt || '', 2000); avatarPrompt.id = 'base-avatar-prompt'; avatarPrompt.placeholder = 'Purple-haired engineer with glasses';
@@ -785,7 +813,7 @@ window.PromptboardBase = (() => {
         }); generate.id = 'base-avatar-generate';
         // Who the agent is and what it brings first; the avatar is optional, below.
         const look = details('Avatar (optional)', preview, field('Avatar prompt', avatarPrompt), actions(generate, cancel, button('Reset avatar', () => { portrait = undefined; image = undefined; avatarPrompt.value = ''; preview.replaceChildren(avatar(null, item.id)); }, 'text-button')), feedback, errors, p('AI illustrations use OpenAI Images and require an API key in the server environment (OPENAI_API_KEY by default). Your prompt is sent to that service only when you generate. Save the profile to keep the reviewed face.')); look.open = Boolean(portrait);
-        form.append(group('Agent defaults', agent, field('Agent instructions', instructions)), group('Base resources', binding), p('Attach any Base resource, pack, or another profile by reference. Attached profile instructions and resources do not change this agent’s provider or permissions. Separate subagent execution depends on CLI support. Cycles are rejected.'), look);
+        form.append(group('Agent defaults', agent, field('Agent instructions', instructions)), group('Base resources', binding), knowledgeGroup, ...(mcps ? [mcps] : []), p('Select reusable resources from Base. MCP connections and authentication are configured only in Base → MCP. Separate subagent execution depends on the CLI and execution context.'), look);
         return { read: () => { const nextContent = { ...content }; if (image) nextContent.avatar = image; else delete nextContent.avatar;
           return { configuration: { ...config, avatar: portrait, agent: { ...(context.readAgentFields(agent) || {}), instructions: instructions.value }, binding: binding.read() }, content: nextContent }; } };
       }
@@ -804,7 +832,7 @@ window.PromptboardBase = (() => {
       const config = item.configuration;
       const agents = clone(config.agents || []), resources = clone(config.resources || []);
       const instructions = area(config.instructions || '', 4000); instructions.rows = 3;
-      const agentBox = el('div', undefined, 'base-profile-agents'), resourceBox = el('div', undefined, 'base-profile-resources'), inventory = el('div', undefined, 'base-inventory');
+      const agentBox = el('div', undefined, 'base-profile-agents'), resourceBox = el('div', undefined, 'base-profile-resources'), knowledgeBox = el('div', undefined, 'base-profile-knowledge'), inventory = el('div', undefined, 'base-inventory');
       const agentOptions = () => state.resources.filter(entry => entry.kind === 'profile');
       const renderAgents = () => {
         agentBox.replaceChildren();
@@ -830,9 +858,10 @@ window.PromptboardBase = (() => {
           onApply: ids => { for (const id of ids) agents.push({ resourceId: id, role: agents.some(agent => agent.role === 'primary') ? 'supporting' : 'primary', responsibility: '' }); renderAgents(); renderInventory(); form.dispatchEvent(new Event('input')); } }), 'text-button'));
       };
       const renderResources = () => {
-        resourceBox.replaceChildren();
-        if (!resources.length) resourceBox.append(p('Nothing equipped yet. Add MCP servers, skills, knowledge, context, tools, Markdown files or packs from your Base library.'));
-        for (const ref of resources) {
+        resourceBox.replaceChildren(); knowledgeBox.replaceChildren();
+        if (!resources.some(ref => !['mcp', 'knowledge', 'context'].includes(resource(ref.resourceId)?.kind))) resourceBox.append(p('Add skills, tools, Markdown files or packs from your Base library.'));
+        if (!resources.some(ref => ['knowledge', 'context'].includes(resource(ref.resourceId)?.kind))) knowledgeBox.append(p('No knowledge or context attached yet.'));
+        for (const ref of resources.filter(ref => !window.PromptboardBaseConfigure || resource(ref.resourceId)?.kind !== 'mcp')) {
           const target = resource(ref.resourceId), row = el('div', undefined, 'base-profile-row');
           const on = Object.assign(el('input'), { type: 'checkbox', checked: ref.enabled !== false }); on.setAttribute('role', 'switch'); on.setAttribute('aria-label', `${nameOf(ref.resourceId)} in this profile`);
           on.title = 'Switched off here only: other profiles and assignments keep it.';
@@ -851,9 +880,11 @@ window.PromptboardBase = (() => {
             }
             row.append(tools);
           }
-          resourceBox.append(row);
+          (['knowledge', 'context'].includes(target?.kind) ? knowledgeBox : resourceBox).append(row);
         }
-        resourceBox.append(button('Add from Base…', () => openLibraryPicker({ title: 'Equip from Base', kinds: Object.keys(KINDS).filter(kind => !AGENT_KINDS.includes(kind)), attached: new Set(resources.map(ref => ref.resourceId)),
+        resourceBox.append(button('Add from Base…', () => openLibraryPicker({ title: 'Equip from Base', kinds: Object.keys(KINDS).filter(kind => !AGENT_KINDS.includes(kind) && !['knowledge', 'context'].includes(kind) && (!window.PromptboardBaseConfigure || kind !== 'mcp')), attached: new Set(resources.map(ref => ref.resourceId)),
+          onApply: ids => { for (const id of ids) resources.push({ resourceId: id, required: true }); renderResources(); renderInventory(); form.dispatchEvent(new Event('input')); } }), 'secondary-button'));
+        knowledgeBox.append(button('Add knowledge or context…', () => openLibraryPicker({ title: 'Knowledge and context', kinds: ['knowledge', 'context'], attached: new Set(resources.map(ref => ref.resourceId)),
           onApply: ids => { for (const id of ids) resources.push({ resourceId: id, required: true }); renderResources(); renderInventory(); form.dispatchEvent(new Event('input')); } }), 'secondary-button'));
       };
       // What would actually run, per CLI: assigned is not the same as executable.
@@ -879,12 +910,15 @@ window.PromptboardBase = (() => {
         const fileNames = active.filter(target => target.kind === 'markdown').map(target => target.configuration?.fileName);
         for (const name of new Set(fileNames.filter((name, index) => fileNames.indexOf(name) !== index))) issues.push(`Two files named ${name} are attached; both are sent. Keep one.`);
         if (issues.length) { const list = el('ul', undefined, 'base-inventory-issues'); for (const issue of issues) list.append(el('li', issue)); inventory.append(list); }
-        else if (primary) inventory.append(p('Everything switched on can be delivered.'));
+        else if (primary) inventory.append(p('The selected resources pass this provider’s basic checks. Read-only stages and Network have additional restrictions; check the execution target before starting.'));
       };
       renderAgents(); renderResources(); renderInventory();
-      form.append(group('Agents', agentBox), group('Equipped resources', resourceBox), group('What runs', inventory), field('Profile instructions', instructions, 'Added after the primary agent’s own instructions.'),
+      form.append(group('Agents', agentBox, p('Supporting agents share the primary agent’s execution permissions. For separately enforced requirements, give them their own Kanban runs or Network jobs.')), group('Equipped resources', resourceBox), group('What runs', inventory), field('Profile instructions', instructions, 'Added after the primary agent’s own instructions.'),
         p('Resources are references to Base, never copies: editing one in Base changes it for every profile that uses it. A switch here affects this profile only. Use Apply to… to make it the agent profile of projects or columns.'));
-      return { read: () => ({ configuration: { agents: agents.map(agent => ({ resourceId: agent.resourceId, role: agent.role, responsibility: agent.responsibility || '', ...(agent.enabled === false ? { enabled: false } : {}) })), resources, instructions: instructions.value }, content: item.content }) };
+      const mcps = window.PromptboardBaseConfigure?.mcpPicker({ resources: state.resources, references: resources, onChange: renderInventory, manage: () => setCategory('mcp') });
+      if (mcps) form.append(mcps);
+      const knowledgeGroup = group('Knowledge and context', knowledgeBox); knowledgeGroup.dataset.agentSection = 'knowledge'; form.append(knowledgeGroup);
+      return { read: () => ({ configuration: { ...config, agents: agents.map(agent => ({ resourceId: agent.resourceId, role: agent.role, responsibility: agent.responsibility || '', ...(agent.enabled === false ? { enabled: false } : {}) })), resources, instructions: instructions.value }, content: item.content }) };
     }
     // ---- Custom Markdown files: write with a live preview, choose when it is active, version it per project ----
     function markdownEditor(item, form) {
@@ -1213,7 +1247,7 @@ window.PromptboardBase = (() => {
       const box = el('div'); box.append(p(`Delete “${item.name}” from the current library? Immutable revisions needed by historical runs remain available.`), el('h3', 'Used by'), ...(used.length ? [list, detach.label] : [p('No current references.')]));
       const fail = inlineError(box);
       box.append(actions(button('Cancel', closeDialog), busyButton(used.length ? 'Detach and delete' : 'Delete resource', async () => {
-        try { await request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'DELETE', body: { expectedRevision: item.revision, expectedBaseRevision: state.revision, detach: used.length > 0 && detach.control.checked } }); await load(); await context.refreshBoard?.(); closeDialog(); if (chosen === item.id) closeResource(true); status('Resource deleted. Historical revisions are retained.'); }
+        try { const data = await request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'DELETE', body: { expectedRevision: item.revision, expectedBaseRevision: state.revision, detach: used.length > 0 && detach.control.checked } }); await load(); await context.refreshBoard?.(); closeDialog(); if (chosen === item.id) closeResource(true); status(data.warning || 'Resource deleted. Historical revisions are retained.'); }
         catch (error) { fail(error); }
       }, 'danger')));
       openDialog('Delete resource', [box]);

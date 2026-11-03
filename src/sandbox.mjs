@@ -184,6 +184,14 @@ export class Sandbox {
   async #settings() { try { return JSON.parse(await readFile(join(this.dir, 'settings.json'), 'utf8')) || {}; } catch { return {}; } }
   async image() { const own = (await this.#settings()).image; return own ? { name: own, custom: true } : { ...(await this.defaultImage()), custom: false }; }
 
+  /** Capability metadata from the actual image, without mounts, credentials or network access. */
+  async cliVersion(provider, { signal } = {}) {
+    if (!['claude', 'codex'].includes(provider)) throw fail('SANDBOX_PROVIDER_UNSUPPORTED');
+    const { name } = await this.image();
+    if (!await this.#hasImage(name, signal)) throw fail('SANDBOX_IMAGE_MISSING');
+    return (await this.#docker(['run', '--rm', '--pull=never', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--entrypoint', provider, name, '--version'], { signal, timeoutMs: 15000 })).stdout;
+  }
+
   async setImage(name) {
     const image = typeof name === 'string' ? name.trim() : '';
     if (name !== undefined && name !== null && typeof name !== 'string' || image && !IMAGE_NAME.test(image)) throw fail('SANDBOX_INVALID_IMAGE');

@@ -9,6 +9,8 @@ import { WikiJobs } from './base-wiki.mjs';
 import { AvatarJobs } from './base-avatar.mjs';
 import { MARKDOWN_TEMPLATES, deployToRepository, markdownConvention, markdownFrontmatter, readRepositoryFile, scanRepository } from './base-markdown.mjs';
 import { mcpResourceFrom, parseMcpConfig, readMcpSource } from './base-mcp-import.mjs';
+import { McpConnections } from './base-mcp-auth.mjs';
+import { BaseTrials } from './base-trials.mjs';
 const digest = text => createHash('sha256').update(text).digest('hex');
 
 const fail = (message, code = 'BASE_INVALID_INPUT', status = 400) => { throw new BaseError(message, code, status); };
@@ -18,10 +20,12 @@ export class BaseRoutes {
     Object.assign(this, { board, track, send, jsonBody, mcpTester });
     this.wiki = new WikiJobs({ board, runner, claim, track, catalog });
     this.avatars = new AvatarJobs({ board, claim, track, imageGenerator });
+    this.trials = new BaseTrials({ board, runner, claim, track, catalog });
     this.operations = new Set();
+    this.connections = board.mcpConnections || (board.dataDir ? new McpConnections({ dataDir: board.dataDir, readResource: id => board.base.detail(id) }) : null);
   }
 
-  close() { this.wiki.close(); this.avatars.close(); for (const controller of this.operations) controller.abort(); }
+  close() { this.wiki.close(); this.avatars.close(); this.trials.close(); this.connections?.close(); for (const controller of this.operations) controller.abort(); }
 
   async body(req) {
     // An import carries a whole export (up to BASE_LIMITS.importBytes) inside its request; 1 MiB is left for the wrapper and ID remap.
@@ -45,6 +49,42 @@ export class BaseRoutes {
     const { board } = this, method = req.method;
     if (method === 'GET' && pathname === '/api/base') return this.send(res, 200, await board.baseView());
     if (method === 'GET' && pathname === '/api/base/presets') return this.send(res, 200, { presets: [CONTEXT7_PRESET] });
+    const trial = /^\/api\/base\/resources\/([A-Za-z0-9_-]{1,100})\/(preflight|trial)(\/cancel)?$/.exec(pathname);
+    if (trial) {
+      const [, id, action, cancel] = trial;
+      if (action === 'preflight' && method === 'GET' && !cancel) return this.send(res, 200, await this.trials.preflight(id));
+      if (action !== 'trial' || method !== 'POST') fail('This test action does not exist.', 'BASE_NOT_FOUND', 404);
+      const body = await this.body(req);
+      if (cancel) return this.send(res, 200, this.trials.cancel(body.operationId, id));
+      const controller = new AbortController(), abort = () => { if (!res.writableEnded) controller.abort(); };
+      res.once('close', abort); if (res.destroyed) controller.abort();
+      try { return this.send(res, 200, await this.track(this.trials.run(id, body, { signal: controller.signal }))); }
+      finally { res.off('close', abort); }
+    }
+    const connection = /^\/api\/base\/resources\/([A-Za-z0-9_-]{1,100})\/auth(?:\/(credentials|start|cancel|disconnect))?$/.exec(pathname);
+    if (connection) {
+      const [, id, action] = connection;
+      if (!action && method === 'GET') return this.send(res, 200, await this.connections.status(id));
+      if (method !== 'POST' || !action) fail('This connection action does not exist.', 'BASE_NOT_FOUND', 404);
+      const body = await this.body(req);
+      if (action === 'cancel') { this.connections.cancel(id); return this.send(res, 200, { cancelled: true }); }
+      const definition = action === 'disconnect' ? await board.base.detail(id) : await this.connections.definition(id);
+      if (definition.kind !== 'mcp') fail('Choose an MCP connection.');
+      if (action !== 'disconnect' && body.expectedRevision !== definition.revision) fail('The connection changed. Reload it.', 'RESOURCE_REVISION_CONFLICT', 409);
+      if (action === 'credentials') {
+        await this.connections.credentials(id, body.values, body.expectedRevision);
+        await board.base.recordConnectionTest(id, { status: 'failed', code: 'BASE_AUTH_CHANGED' }, { expectedRevision: definition.revision });
+        return this.changed(res, { authentication: await this.connections.status(id) });
+      }
+      if (action === 'start') {
+        if (definition.configuration.transport !== 'streamable-http' || definition.configuration.auth?.mode !== 'oauth') fail('Choose browser sign-in for an HTTP MCP connection.', 'BASE_AUTH_UNSUPPORTED', 409);
+        const updated = await board.base.recordConnectionTest(id, { status: 'failed', code: 'BASE_AUTH_CHANGED' }, { expectedRevision: definition.revision });
+        return this.changed(res, await this.connections.start(id, updated.revision));
+      }
+      await this.connections.disconnect(id);
+      await board.base.recordConnectionTest(id, { status: 'failed', code: 'BASE_AUTH_DISCONNECTED' }, { expectedRevision: definition.revision });
+      return this.changed(res, { disconnected: true });
+    }
     if (method === 'POST' && pathname === '/api/base/avatar/cancel') return this.send(res, 200, this.avatars.cancel((await this.body(req)).operationId));
     if (method === 'POST' && pathname === '/api/base/avatar/generate') {
       const body = await this.body(req), controller = new AbortController();
@@ -176,18 +216,27 @@ export class BaseRoutes {
       }
       if (method === 'PATCH' && !action) {
         const body = await this.body(req);
-        return this.changed(res, { resource: await board.base.update(id, body.resource || body, body) });
+        const resource = await board.base.update(id, body.resource || body, body);
+        if (resource.kind === 'mcp') this.connections?.cancel(id);
+        return this.changed(res, { resource });
       }
       if (method === 'DELETE' && !action) {
         const body = req.headers['content-type'] ? await this.body(req) : { expectedRevision: Number(search.get('expectedRevision')), expectedBaseRevision: Number(search.get('expectedBaseRevision')), detach: search.get('detach') === 'true' };
-        return this.changed(res, { removed: await board.base.remove(id, body) });
+        const definition = await board.base.detail(id), removed = await board.base.remove(id, body);
+        let warning;
+        if (definition.kind === 'mcp') try { await this.connections?.disconnect(id); } catch { warning = 'The connection was deleted, but its private credential file could not be removed. Remove its record from the data folder’s base-connections directory.'; }
+        return this.changed(res, { removed, ...(warning ? { warning } : {}) });
       }
       if (method === 'POST' && action === 'test') {
         const body = await this.body(req), resource = await board.base.detail(id);
         if (resource.kind !== 'mcp' || resource.trust !== 'trusted') fail('Trust this MCP server before explicitly testing its connection.', 'BASE_TRUST_REQUIRED', 409);
         if (resource.revision !== body.expectedRevision) fail('This resource changed. Reload it before testing.', 'RESOURCE_REVISION_CONFLICT', 409);
+        if (this.connections && (await this.connections.status(id)).pending) fail('Complete or cancel the provider sign-in before testing this connection.', 'BASE_AUTH_PENDING', 409);
         let result;
-        try { result = await this.bounded(res, signal => this.mcpTester(resource, { signal })); }
+        try { result = await this.bounded(res, async signal => {
+          const connection = this.connections ? await this.connections.delivery(resource) : { definition: resource, environment: process.env };
+          return this.mcpTester(connection.definition, { signal, environment: connection.environment });
+        }); }
         catch (error) {
           await board.base.recordConnectionTest(id, { status: 'failed', code: error.code || 'BASE_MCP_FAILED' }, { expectedRevision: resource.revision });
           throw error;

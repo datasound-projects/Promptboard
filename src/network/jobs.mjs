@@ -34,6 +34,8 @@ import { cut, JobMessages, POSTED_KINDS, threadText } from './messages.mjs';
 import { cleanText, conflict, fail, LINE_BREAK, newId, NetworkError, object, oneLine, only, page, readDocument, requireRevision, sha256, writeDocument, writeImmutable } from './storage.mjs';
 
 const SCHEMA = { job: 'promptboard.network-job', request: 'promptboard.network-job-request', settings: 'promptboard.network-settings' };
+// Request-local metadata only; keep the persisted/idempotency representation unchanged for existing jobs.
+const defaultMemory = new WeakSet();
 const KIB = 1024, MINUTE = 60_000, DAY = 86_400_000;
 /** Resource ceilings (architecture §4.2 rule 8, §7.4), not product limits: the number of saved jobs is unbounded. */
 export const JOB_LIMITS = Object.freeze({ inputBytes: 256 * KIB, jsonBytes: 64 * KIB, instructionsBytes: 32 * KIB, resultBytes: 1024 * KIB, submitBody: 1024 * KIB,
@@ -141,8 +143,10 @@ function submission(input) {
     only(pipeline, ['runId', 'nodeId'], 'the pipeline link');
     if (typeof pipeline.runId !== 'string' || !RUN_ID.test(pipeline.runId) || typeof pipeline.nodeId !== 'string' || !PLAN_NODE_ID.test(pipeline.nodeId)) fail('The pipeline link names a run and one of its steps.');
   }
-  return { agentId: peerId ? null : agentId, ...(peerId ? { peerId } : {}), input: { text, ...(json !== undefined ? { json } : {}) }, instructions: cleanText(instructions), tools, permissions: { filesystem, memory, projectLessons },
+  const normalized = { agentId: peerId ? null : agentId, ...(peerId ? { peerId } : {}), input: { text, ...(json !== undefined ? { json } : {}) }, instructions: cleanText(instructions), tools, permissions: { filesystem, memory, projectLessons },
     timeoutMs, requireApproval, projectId, networkId, parentJobId, idempotencyKey, ...(pipeline ? { pipeline: { runId: pipeline.runId, nodeId: pipeline.nodeId } } : {}) };
+  if (permissions.memory === undefined) defaultMemory.add(normalized);
+  return normalized;
 }
 /** The submission check, for definitions that submit later (Task 12 schedules): the same rules, nothing saved. */
 export const jobSubmission = submission;
@@ -408,7 +412,15 @@ export class NetworkJobs {
     if (resource?.revision !== view.base.revision) fail('The Base agent changed while the job was submitted. Try again.', 'BASE_CHANGED', 409);
     // Pinned now with the revision references of everything it delivers; the worker supplies exactly these revisions.
     const manifest = jobManifest(listed, { registrationId: view.id, baseResourceId: view.baseResourceId, provider: view.base.provider });
+    const policy = manifest.requirements;
+    if (policy?.memory) {
+      const memory = defaultMemory.has(spec) && policy.memory.agent === false ? 'none' : spec.permissions.memory;
+      if (memory !== 'none' && !policy.memory.agent || memory === 'agent+network' && !policy.memory.network || spec.permissions.projectLessons && !policy.memory.projectLessons)
+        fail('This job requests memory outside the Base agent’s memory policy. Change the job’s context selection.', 'BASE_MEMORY_DENIED', 409);
+    }
     if (manifest.errors.length) {
+      const policyError = manifest.errors.find(error => ['BASE_TARGET_UNAVAILABLE', 'BASE_OUTPUT_CONFLICT'].includes(error.code));
+      if (policyError) fail(policyError.message, policyError.code, 409);
       const names = [...new Set(manifest.errors.map(error => oneLine(manifest.resources.find(entry => entry.resourceId === error.resourceId)?.name || error.resourceId).slice(0, 80)))];
       fail(`This agent needs Base resources a Network job cannot be given: ${names.map(name => `“${name}”`).join(', ')}. Network jobs only read: Base MCP servers, command recipes and supporting agents are not supplied. Make them optional for this agent in Base, or run the work on a Kanban card. Nothing was submitted.`,
         'BASE_REQUIRED_UNAVAILABLE', 409, { errors: manifest.errors.map(({ resourceId = null, code }) => ({ resourceId, code })) });
@@ -441,8 +453,9 @@ export class NetworkJobs {
     }
     if (this.#closing) fail('The app is shutting down. Nothing was submitted.', 'SHUTTING_DOWN', 503);
     const snapshot = pinned ?? await this.#pin(spec), id = newId('job'), at = this.now(), status = spec.requireApproval ? 'waiting_for_approval' : 'queued', linked = linkOf(link);
-    const request = { schema: SCHEMA.request, version: 1, jobId: id, acceptedAt: at, input: spec.input, instructions: spec.instructions, tools: spec.tools, permissions: spec.permissions,
-      limits: { timeoutMs: spec.timeoutMs ?? this.#settings.defaultTimeoutMs, maxOutputBytes: LIMITS.resultBytes }, requireApproval: spec.requireApproval,
+    const permissions = { ...spec.permissions, ...(defaultMemory.has(spec) && snapshot.agent?.manifest?.requirements?.memory?.agent === false ? { memory: 'none' } : {}) };
+    const request = { schema: SCHEMA.request, version: 1, jobId: id, acceptedAt: at, input: spec.input, instructions: spec.instructions, tools: spec.tools, permissions,
+      limits: { timeoutMs: Math.min(spec.timeoutMs ?? this.#settings.defaultTimeoutMs, snapshot.agent?.manifest?.requirements?.timeoutMs ?? Infinity), maxOutputBytes: LIMITS.resultBytes }, requireApproval: spec.requireApproval,
       projectId: spec.projectId, networkId: spec.networkId, parentJobId: spec.parentJobId, ...(spec.pipeline ? { pipeline: spec.pipeline } : {}), ...linked, ...snapshot };
     const text = `${JSON.stringify(request)}\n`;
     const job = { schema: SCHEMA.job, version: 1, id, revision: 1, status, source: SOURCE[requester.kind], requester: { kind: requester.kind, id: requester.id ?? null },

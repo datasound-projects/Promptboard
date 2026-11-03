@@ -36,10 +36,12 @@ if (args[0] === 'build') {
   next();
 } else if (args[0] === 'run') {
   // Options before the image: these take a value; --rm, -it and --init do not.
-  const valued = new Set(['--name', '--label', '--user', '-w', '-v', '-e']);
+  const valued = new Set(['--name', '--label', '--user', '-w', '-v', '-e', '--network', '--cap-drop', '--security-opt', '--entrypoint']);
   let at = 1; const options = [];
   while (at < args.length && args[at].startsWith('-')) { if (valued.has(args[at])) { options.push([args[at], args[at + 1]]); at += 2; } else at += 1; }
   const [, command, ...rest] = args.slice(at);
+  const entrypoint = options.find(([flag]) => flag === '--entrypoint')?.[1];
+  if (entrypoint) done(spawnSync(join(env.FAKE_DOCKER_BIN, entrypoint), args.slice(at + 1), { env: { PATH: env.PATH }, stdio: 'inherit' }).status ?? 1);
   // The mount check: FAKE_DOCKER_HIDE names a path the "container" cannot see, FAKE_DOCKER_CHECK_FAIL fails to start.
   if (command === 'sh') {
     if (env.FAKE_DOCKER_CHECK_FAIL) done(125);

@@ -9,7 +9,7 @@ export const APP_ROOT = fileURLToPath(new URL('../', import.meta.url));
 // can describe features that this release does not have.
 export const GUIDE_FILES = Object.freeze(['README.md', 'SECURITY.md', ...[
   'origin', 'origin-research', 'origin-project-context', 'compose-context', 'compose-batch',
-  'shared-projects', 'kanban-execution', 'base-delivery', 'project-memory',
+  'shared-projects', 'kanban-execution', 'base-delivery', 'base-agent-configuration', 'project-memory',
   'workspace-files', 'project-explorer', 'task-labels', 'task-priority', 'task-numbers',
   'schedules', 'coordinator', 'insights', 'live-preview', 'docker-sandbox', 'github', 'remote-access',
   'session-persistence', 'cli-adapters', 'pipeline-lifecycle', 'pipeline-prompts',
